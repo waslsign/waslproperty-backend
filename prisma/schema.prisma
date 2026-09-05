@@ -10,19 +10,21 @@ datasource db {
 // --- Tenancy & Auth (Slice 1 / M2) ---
 
 model Organisation {
-  id                     String   @id @default(cuid())
-  name                   String
-  slug                   String   @unique
-  status                 OrgStatus @default(ACTIVE)
+  id     String    @id @default(cuid())
+  name   String
+  slug   String    @unique
+  status OrgStatus @default(ACTIVE)
 
   /// Set once this organisation is provisioned as a 1:1 mapped Organization in WaslSign.
   /// Nullable — provisioning happens lazily, on first need for a signed document, not at signup.
-  waslSignOrganisationId String?  @unique
+  waslSignOrganisationId String? @unique
 
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   memberships OrganisationMembership[]
+  properties  Property[]
+  contacts    PropertyContact[]
 
   @@map("organisations")
 }
@@ -44,6 +46,7 @@ model User {
 
   organisationMemberships OrganisationMembership[]
   sessions                Session[]
+  propertyContact         PropertyContact?
 
   @@map("users")
 }
@@ -96,4 +99,169 @@ model Session {
 
   @@index([userId])
   @@map("sessions")
+}
+
+// --- Property Foundation (Slice 1 / M3-M4) ---
+
+model Property {
+  id             String         @id @default(cuid())
+  organisationId String
+  name           String
+  code           String
+  addressLine1   String
+  addressLine2   String?
+  city           String
+  state          String?
+  country        String
+  postalCode     String?
+  propertyType   PropertyType
+  status         PropertyStatus @default(ACTIVE)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  organisation        Organisation         @relation(fields: [organisationId], references: [id])
+  spaces              Space[]
+  propertyMemberships PropertyMembership[]
+
+  @@unique([organisationId, code])
+  @@index([organisationId])
+  @@map("properties")
+}
+
+enum PropertyType {
+  RESIDENTIAL
+  COMMERCIAL
+  MIXED_USE
+}
+
+enum PropertyStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+/// A generic leasable/occupiable unit within a property. Deliberately not
+/// named "Unit" so the domain stays generic across residential, commercial,
+/// retail, mixed-use, villas, parking, storage and common areas. The UI may
+/// still label these "Units" for residential properties.
+model Space {
+  id             String      @id @default(cuid())
+  organisationId String
+  propertyId     String
+  name           String
+  code           String
+  spaceType      SpaceType
+  floor          String?
+  sizeSqft       Int?
+  status         SpaceStatus @default(VACANT)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  property    Property             @relation(fields: [propertyId], references: [id])
+  memberships PropertyMembership[]
+
+  @@unique([propertyId, code])
+  @@index([organisationId])
+  @@index([propertyId])
+  @@map("spaces")
+}
+
+enum SpaceType {
+  APARTMENT
+  VILLA
+  OFFICE
+  RETAIL
+  WAREHOUSE
+  PARKING
+  STORAGE
+  COMMON_AREA
+  OTHER
+}
+
+enum SpaceStatus {
+  VACANT
+  OCCUPIED
+  UNDER_MAINTENANCE
+  RESERVED
+}
+
+/// A business/person record: an owner, tenant or resident on file for an
+/// organisation. Independent of login — userId is set only once this contact
+/// activates portal access (Slice 2), and stays nullable forever otherwise.
+model PropertyContact {
+  id             String        @id @default(cuid())
+  organisationId String
+  userId         String?       @unique
+  contactType    ContactType
+  firstName      String
+  lastName       String
+  email          String
+  phone          String?
+  status         ContactStatus @default(ACTIVE)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organisation Organisation         @relation(fields: [organisationId], references: [id])
+  user         User?                @relation(fields: [userId], references: [id])
+  memberships  PropertyMembership[]
+
+  @@unique([organisationId, email])
+  @@index([organisationId])
+  @@map("property_contacts")
+}
+
+enum ContactType {
+  OWNER
+  TENANT
+  RESIDENT
+}
+
+enum ContactStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+/// The relationship between a contact and a property or a specific space
+/// within it (spaceId is nullable so property-level roles like Property
+/// Manager / Facility Manager are representable alongside space-level roles
+/// like Owner / Tenant / Resident).
+model PropertyMembership {
+  id             String           @id @default(cuid())
+  organisationId String
+  propertyId     String
+  spaceId        String?
+  contactId      String
+  role           PropertyRole
+  startDate      DateTime
+  endDate        DateTime?
+  status         MembershipStatus @default(ACTIVE)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  property Property        @relation(fields: [propertyId], references: [id])
+  space    Space?          @relation(fields: [spaceId], references: [id])
+  contact  PropertyContact @relation(fields: [contactId], references: [id])
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([spaceId])
+  @@index([contactId])
+  @@map("property_memberships")
+}
+
+enum PropertyRole {
+  OWNER
+  TENANT
+  RESIDENT
+  PROPERTY_MANAGER
+  FACILITY_MANAGER
+  AGENT
+  OTHER
+}
+
+enum MembershipStatus {
+  ACTIVE
+  ENDED
+  PENDING
 }
