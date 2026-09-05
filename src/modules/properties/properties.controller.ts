@@ -22,7 +22,7 @@ export async function listProperties(req: Request, res: Response) {
 export async function createProperty(req: Request, res: Response) {
   const auth = requireAuth(req);
   const input = createPropertySchema.parse(req.body);
-  const property = await propertiesService.create(auth.organisationId, input);
+  const property = await propertiesService.create(auth.organisationId, auth.userId, input);
   res.status(201).json(property);
 }
 
@@ -37,6 +37,7 @@ export async function updateProperty(req: Request, res: Response) {
   const input = updatePropertySchema.parse(req.body);
   const property = await propertiesService.update(
     auth.organisationId,
+    auth.userId,
     req.params.id as string,
     input,
   );

@@ -1,4 +1,5 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
+import { recordActivity } from '../activity/activity.js';
 import { ConflictError, NotFoundError } from '../../errors/AppError.js';
 import type { PaginatedResult, PaginationQuery } from '../../lib/pagination.js';
 import type { AddPersonInput, PeopleDirectoryQuery } from './people.schemas.js';
@@ -10,6 +11,14 @@ const membershipInclude = {
   property: { select: { id: true, name: true, code: true } },
   space: { select: { id: true, name: true, code: true } },
 } satisfies Prisma.PropertyMembershipInclude;
+
+function formatRoleLabel(role: string): string {
+  return role
+    .toLowerCase()
+    .split('_')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
 
 export class PeopleService {
   constructor(private readonly prisma: PrismaClient) {}
@@ -61,12 +70,17 @@ export class PeopleService {
     });
   }
 
-  async addPerson(organisationId: string, propertyId: string, input: AddPersonInput) {
-    await this.assertPropertyInOrg(organisationId, propertyId);
+  async addPerson(
+    organisationId: string,
+    actorUserId: string,
+    propertyId: string,
+    input: AddPersonInput,
+  ) {
+    const property = await this.assertPropertyInOrg(organisationId, propertyId);
 
-    if (input.spaceId) {
-      await this.assertSpaceInProperty(organisationId, propertyId, input.spaceId);
-    }
+    const space = input.spaceId
+      ? await this.assertSpaceInProperty(organisationId, propertyId, input.spaceId)
+      : null;
 
     return this.prisma.$transaction(async (tx) => {
       const contact = await this.findOrCreateContact(
@@ -90,7 +104,7 @@ export class PeopleService {
         throw new ConflictError('This person already has this role for this property or space');
       }
 
-      return tx.propertyMembership.create({
+      const membership = await tx.propertyMembership.create({
         data: {
           organisationId,
           propertyId,
@@ -102,6 +116,25 @@ export class PeopleService {
         },
         include: membershipInclude,
       });
+
+      const fullName = `${contact.firstName} ${contact.lastName}`;
+      const title = space
+        ? `${fullName} added to ${space.name}`
+        : `${fullName} added as ${formatRoleLabel(input.role)} to ${property.name}`;
+
+      await recordActivity(tx, {
+        organisationId,
+        propertyId,
+        spaceId: input.spaceId ?? null,
+        actorUserId,
+        eventType: 'PERSON_ADDED',
+        entityType: 'PropertyMembership',
+        entityId: membership.id,
+        title,
+        metadata: { role: input.role, contactId: contact.id },
+      });
+
+      return membership;
     });
   }
 

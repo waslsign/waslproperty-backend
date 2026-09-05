@@ -17,6 +17,7 @@ export async function addPersonToProperty(req: Request, res: Response) {
   const input = addPersonSchema.parse(req.body);
   const membership = await peopleService.addPerson(
     auth.organisationId,
+    auth.userId,
     req.params.propertyId as string,
     input,
   );

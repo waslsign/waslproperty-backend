@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate, requireOrgRole } from '../../middlewares/auth.middleware.js';
 import { asyncHandler } from '../../middlewares/asyncHandler.js';
+import { listActivityForProperty } from '../activity/activity.controller.js';
 import { addPersonToProperty, listPeopleForProperty } from '../people/people.controller.js';
 import { createSpaceForProperty, listSpacesForProperty } from '../spaces/spaces.controller.js';
 import {
@@ -32,3 +33,5 @@ propertiesRouter.post(
   requireOrgRole(['OWNER', 'ADMIN']),
   asyncHandler(addPersonToProperty),
 );
+
+propertiesRouter.get('/:propertyId/activity', asyncHandler(listActivityForProperty));

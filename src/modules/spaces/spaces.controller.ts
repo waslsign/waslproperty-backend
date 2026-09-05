@@ -28,6 +28,7 @@ export async function createSpaceForProperty(req: Request, res: Response) {
   const input = createSpaceSchema.parse(req.body);
   const space = await spacesService.create(
     auth.organisationId,
+    auth.userId,
     req.params.propertyId as string,
     input,
   );
@@ -43,6 +44,11 @@ export async function getSpace(req: Request, res: Response) {
 export async function updateSpace(req: Request, res: Response) {
   const auth = requireAuth(req);
   const input = updateSpaceSchema.parse(req.body);
-  const space = await spacesService.update(auth.organisationId, req.params.id as string, input);
+  const space = await spacesService.update(
+    auth.organisationId,
+    auth.userId,
+    req.params.id as string,
+    input,
+  );
   res.json(space);
 }

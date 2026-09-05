@@ -22,9 +22,10 @@ model Organisation {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  memberships OrganisationMembership[]
-  properties  Property[]
-  contacts    PropertyContact[]
+  memberships    OrganisationMembership[]
+  properties     Property[]
+  activityEvents ActivityEvent[]
+  contacts       PropertyContact[]
 
   @@map("organisations")
 }
@@ -47,6 +48,7 @@ model User {
   organisationMemberships OrganisationMembership[]
   sessions                Session[]
   propertyContact         PropertyContact?
+  activityEvents          ActivityEvent[]
 
   @@map("users")
 }
@@ -122,6 +124,7 @@ model Property {
   organisation        Organisation         @relation(fields: [organisationId], references: [id])
   spaces              Space[]
   propertyMemberships PropertyMembership[]
+  activityEvents      ActivityEvent[]
 
   @@unique([organisationId, code])
   @@index([organisationId])
@@ -157,8 +160,9 @@ model Space {
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
-  property    Property             @relation(fields: [propertyId], references: [id])
-  memberships PropertyMembership[]
+  property       Property             @relation(fields: [propertyId], references: [id])
+  memberships    PropertyMembership[]
+  activityEvents ActivityEvent[]
 
   @@unique([propertyId, code])
   @@index([organisationId])
@@ -256,4 +260,46 @@ enum PropertyRole {
 enum MembershipStatus {
   ACTIVE
   ENDED
+}
+
+// --- Activity (Slice 1 / M5) ---
+
+/// Wasl Property's own operational history for a property/space (created,
+/// updated, people added, ...). This is deliberately separate from
+/// WaslSign's agreement/signature audit trail, which WaslSign continues to
+/// own — this log never records signing events.
+model ActivityEvent {
+  id             String            @id @default(cuid())
+  organisationId String
+  propertyId     String
+  spaceId        String?
+  actorUserId    String?
+  eventType      ActivityEventType
+  entityType     String?
+  entityId       String?
+  title          String
+  description    String?
+  metadata       Json?
+  createdAt      DateTime          @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+  property     Property     @relation(fields: [propertyId], references: [id])
+  space        Space?       @relation(fields: [spaceId], references: [id])
+  actorUser    User?        @relation(fields: [actorUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([propertyId, createdAt])
+  @@index([spaceId, createdAt])
+  @@map("activity_events")
+}
+
+/// Only event types for actions that already exist. Extend this enum when
+/// a new module actually ships (e.g. maintenance, work orders) rather than
+/// pre-declaring values nothing can emit yet.
+enum ActivityEventType {
+  PROPERTY_CREATED
+  PROPERTY_UPDATED
+  SPACE_CREATED
+  SPACE_UPDATED
+  PERSON_ADDED
 }
