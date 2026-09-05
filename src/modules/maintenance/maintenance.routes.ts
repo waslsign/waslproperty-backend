@@ -2,6 +2,11 @@ import { Router } from 'express';
 import { authenticate, requireOrgRole } from '../../middlewares/auth.middleware.js';
 import { asyncHandler } from '../../middlewares/asyncHandler.js';
 import {
+  listMaintenanceAttachments,
+  presignMaintenanceAttachments,
+  registerMaintenanceAttachments,
+} from './attachments.controller.js';
+import {
   createMaintenanceRequest,
   getMaintenanceRequest,
   listMaintenanceRequests,
@@ -26,3 +31,7 @@ maintenanceRouter.patch(
   requireOrgRole(['OWNER', 'ADMIN']),
   asyncHandler(updateMaintenanceRequest),
 );
+
+maintenanceRouter.post('/:id/attachments/presign', asyncHandler(presignMaintenanceAttachments));
+maintenanceRouter.post('/:id/attachments', asyncHandler(registerMaintenanceAttachments));
+maintenanceRouter.get('/:id/attachments', asyncHandler(listMaintenanceAttachments));

@@ -2,10 +2,13 @@ import type { Request, Response } from 'express';
 import { UnauthorizedError } from '../../errors/AppError.js';
 import { getPrismaClient } from '../../lib/prisma.js';
 import { paginationQuerySchema } from '../../lib/pagination.js';
+import { AuthService } from '../auth/auth.service.js';
+import { InvitesService } from '../invites/invites.service.js';
 import { PeopleService } from './people.service.js';
 import { addPersonSchema, peopleDirectoryQuerySchema } from './people.schemas.js';
 
 const peopleService = new PeopleService(getPrismaClient());
+const invitesService = new InvitesService(getPrismaClient(), new AuthService(getPrismaClient()));
 
 function requireAuth(req: Request) {
   if (!req.auth) throw new UnauthorizedError();
@@ -57,4 +60,33 @@ export async function listPeopleDirectory(req: Request, res: Response) {
   const query = peopleDirectoryQuerySchema.parse(req.query);
   const result = await peopleService.listDirectory(auth.organisationId, query);
   res.json(result);
+}
+
+export async function inviteContact(req: Request, res: Response) {
+  const auth = requireAuth(req);
+  const invite = await invitesService.createInvite(
+    auth.organisationId,
+    auth.userId,
+    req.params.contactId as string,
+  );
+  res.status(201).json(invite);
+}
+
+export async function resendContactInvite(req: Request, res: Response) {
+  const auth = requireAuth(req);
+  const invite = await invitesService.resendInvite(
+    auth.organisationId,
+    auth.userId,
+    req.params.contactId as string,
+  );
+  res.json(invite);
+}
+
+export async function revokeContactInvite(req: Request, res: Response) {
+  const auth = requireAuth(req);
+  const invite = await invitesService.revokeInvite(
+    auth.organisationId,
+    req.params.contactId as string,
+  );
+  res.json(invite);
 }

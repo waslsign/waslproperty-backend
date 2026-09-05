@@ -116,6 +116,34 @@ export class AuthService {
     };
   }
 
+  /**
+   * Issues a full session for a user we've already authenticated by some
+   * other means (e.g. accepting a resident invite) — no password check
+   * here, the caller is responsible for having established trust first.
+   */
+  async signInAfterActivation(userId: string): Promise<AuthResult> {
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: userId } });
+
+    const access = await this.resolveAccess(userId);
+    if (!access) {
+      throw new UnauthorizedError('This account is not associated with any organisation yet');
+    }
+
+    const organisation = await this.prisma.organisation.findUniqueOrThrow({
+      where: { id: access.organisationId },
+    });
+
+    const tokens = await this.issueTokens(user.id, access);
+
+    return {
+      user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName },
+      organisation: { id: organisation.id, name: organisation.name, slug: organisation.slug },
+      orgRole: access.orgRole,
+      accountType: access.orgRole ? 'staff' : 'resident',
+      tokens,
+    };
+  }
+
   async refresh(rawRefreshToken: string): Promise<AuthTokens> {
     const tokenHash = hashRefreshToken(rawRefreshToken);
     const session = await this.prisma.session.findFirst({

@@ -22,11 +22,13 @@ model Organisation {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  memberships         OrganisationMembership[]
-  properties          Property[]
-  activityEvents      ActivityEvent[]
-  maintenanceRequests MaintenanceRequest[]
-  contacts            PropertyContact[]
+  memberships                   OrganisationMembership[]
+  properties                    Property[]
+  activityEvents                ActivityEvent[]
+  maintenanceRequests           MaintenanceRequest[]
+  maintenanceRequestAttachments MaintenanceRequestAttachment[]
+  contacts                      PropertyContact[]
+  contactInvites                ContactInvite[]
 
   @@map("organisations")
 }
@@ -46,11 +48,13 @@ model User {
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
-  organisationMemberships OrganisationMembership[]
-  sessions                Session[]
-  propertyContact         PropertyContact?
-  activityEvents          ActivityEvent[]
-  maintenanceRequests     MaintenanceRequest[]
+  organisationMemberships       OrganisationMembership[]
+  sessions                      Session[]
+  propertyContact               PropertyContact?
+  activityEvents                ActivityEvent[]
+  maintenanceRequests           MaintenanceRequest[]
+  maintenanceRequestAttachments MaintenanceRequestAttachment[]
+  sentContactInvites            ContactInvite[]
 
   @@map("users")
 }
@@ -211,6 +215,7 @@ model PropertyContact {
   organisation Organisation         @relation(fields: [organisationId], references: [id])
   user         User?                @relation(fields: [userId], references: [id])
   memberships  PropertyMembership[]
+  invites      ContactInvite[]
 
   @@unique([organisationId, email])
   @@index([organisationId])
@@ -309,6 +314,42 @@ enum ActivityEventType {
   MAINTENANCE_REQUEST_CREATED
   MAINTENANCE_REQUEST_STATUS_CHANGED
   MAINTENANCE_REQUEST_UPDATED
+  MAINTENANCE_REQUEST_ATTACHMENTS_ADDED
+}
+
+// --- Resident invitations (Slice 2 / M6.5) ---
+
+/// A single-use, expiring invitation for a PropertyContact to activate
+/// resident portal access. Only the sha256 hash of the raw token is ever
+/// stored — the raw token exists only in the emailed activation link.
+model ContactInvite {
+  id                String @id @default(cuid())
+  organisationId    String
+  propertyContactId String
+  invitedByUserId   String
+
+  tokenHash String              @unique
+  expiresAt DateTime
+  status    ContactInviteStatus @default(PENDING)
+
+  createdAt  DateTime  @default(now())
+  acceptedAt DateTime?
+  revokedAt  DateTime?
+
+  organisation    Organisation    @relation(fields: [organisationId], references: [id])
+  propertyContact PropertyContact @relation(fields: [propertyContactId], references: [id])
+  invitedBy       User            @relation(fields: [invitedByUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([propertyContactId])
+  @@map("contact_invites")
+}
+
+enum ContactInviteStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
 }
 
 // --- Maintenance (Slice 2 / M6) ---
@@ -341,6 +382,8 @@ model MaintenanceRequest {
   property     Property     @relation(fields: [propertyId], references: [id])
   space        Space?       @relation(fields: [spaceId], references: [id])
   reportedBy   User?        @relation(fields: [reportedByUserId], references: [id])
+
+  attachments MaintenanceRequestAttachment[]
 
   @@index([organisationId])
   @@index([propertyId])
@@ -376,4 +419,34 @@ enum MaintenanceRequestStatus {
   RESOLVED
   CLOSED
   CANCELLED
+}
+
+/// Photo evidence attached to a maintenance request. Deliberately not a
+/// generic document-management model — this exists only for maintenance
+/// request photos. Bytes live in S3; only metadata + the storage key live
+/// here. Never expose storageKey to the frontend — always mediate access
+/// through a freshly-issued presigned GET URL.
+model MaintenanceRequestAttachment {
+  id                   String  @id @default(cuid())
+  organisationId       String
+  maintenanceRequestId String
+  uploadedByUserId     String?
+
+  storageKey  String
+  fileName    String
+  contentType String
+  fileSize    Int
+
+  width  Int?
+  height Int?
+
+  createdAt DateTime @default(now())
+
+  organisation       Organisation       @relation(fields: [organisationId], references: [id])
+  maintenanceRequest MaintenanceRequest @relation(fields: [maintenanceRequestId], references: [id])
+  uploadedBy         User?              @relation(fields: [uploadedByUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([maintenanceRequestId])
+  @@map("maintenance_request_attachments")
 }

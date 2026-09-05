@@ -34,3 +34,21 @@ export function refreshTokenExpiresAt(): Date {
   const days = env.JWT_REFRESH_EXPIRES_IN_DAYS;
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
 }
+
+/**
+ * Raw invite tokens are only ever emailed to the resident and returned once
+ * at issuance — only their sha256 hash is persisted (ContactInvite.tokenHash),
+ * mirroring the refresh-token hashing above.
+ */
+export function generateInviteToken(): string {
+  return randomBytes(32).toString('hex');
+}
+
+export function hashInviteToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+export function inviteTokenExpiresAt(): Date {
+  const hours = env.INVITE_TOKEN_EXPIRES_IN_HOURS;
+  return new Date(Date.now() + hours * 60 * 60 * 1000);
+}

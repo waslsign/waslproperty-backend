@@ -16,6 +16,23 @@ const envSchema = z.object({
     .transform((v) => v === 'true'),
   FRONTEND_URL: z.string().default('http://localhost:5174'),
   LOG_LEVEL: z.string().default('info'),
+
+  INVITE_TOKEN_EXPIRES_IN_HOURS: z.coerce.number().default(72),
+
+  AWS_REGION: z.string().min(1, 'AWS_REGION is required'),
+  S3_BUCKET_NAME: z.string().min(1, 'S3_BUCKET_NAME is required'),
+  MAINTENANCE_ATTACHMENT_MAX_FILES: z.coerce.number().default(5),
+  MAINTENANCE_ATTACHMENT_MAX_SIZE_MB: z.coerce.number().default(10),
+
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().default(587),
+  SMTP_SECURE: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_FROM: z.string().default('Wasl Property <no-reply@waslproperty.dev>'),
 });
 
 const parsed = envSchema.safeParse(process.env);

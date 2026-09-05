@@ -6,7 +6,19 @@ import type { AddPersonInput, PeopleDirectoryQuery } from './people.schemas.js';
 
 const membershipInclude = {
   contact: {
-    select: { id: true, firstName: true, lastName: true, email: true, status: true },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      status: true,
+      userId: true,
+      invites: {
+        orderBy: { createdAt: 'desc' },
+        take: 1,
+        select: { status: true, expiresAt: true },
+      },
+    },
   },
   property: { select: { id: true, name: true, code: true } },
   space: { select: { id: true, name: true, code: true } },
