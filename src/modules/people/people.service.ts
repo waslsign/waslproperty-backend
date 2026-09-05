@@ -151,6 +151,25 @@ export class PeopleService {
     return this.paginateMemberships({ organisationId, spaceId }, query);
   }
 
+  /** The caller's own active memberships — used to preselect a resident's property/space. */
+  async listMyMemberships(organisationId: string, userId: string) {
+    const contact = await this.prisma.propertyContact.findFirst({
+      where: { organisationId, userId },
+    });
+    if (!contact) {
+      return [];
+    }
+
+    return this.prisma.propertyMembership.findMany({
+      where: { contactId: contact.id, status: 'ACTIVE' },
+      include: {
+        property: { select: { id: true, name: true, code: true } },
+        space: { select: { id: true, name: true, code: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
   async listDirectory(organisationId: string, query: PeopleDirectoryQuery) {
     if (query.propertyId) {
       await this.assertPropertyInOrg(organisationId, query.propertyId);

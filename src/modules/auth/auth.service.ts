@@ -1,4 +1,4 @@
-import type { PrismaClient } from '@prisma/client';
+import type { OrgRole, PrismaClient } from '@prisma/client';
 import { ConflictError, UnauthorizedError } from '../../errors/AppError.js';
 import { slugify, withRandomSuffix } from '../../lib/slug.js';
 import { hashPassword, verifyPassword } from '../../lib/password.js';
@@ -16,10 +16,17 @@ export interface AuthTokens {
   refreshTokenExpiresAt: Date;
 }
 
+export interface AuthAccessContext {
+  organisationId: string;
+  orgRole: OrgRole | null;
+  propertyContactId: string | null;
+}
+
 export interface AuthResult {
   user: { id: string; email: string; firstName: string; lastName: string };
   organisation: { id: string; name: string; slug: string };
-  orgRole: 'OWNER' | 'ADMIN' | 'MEMBER';
+  orgRole: OrgRole | null;
+  accountType: 'staff' | 'resident';
   tokens: AuthTokens;
 }
 
@@ -63,12 +70,17 @@ export class AuthService {
       return { user, organisation, membership };
     });
 
-    const tokens = await this.issueTokens(user.id, organisation.id, membership.role);
+    const tokens = await this.issueTokens(user.id, {
+      organisationId: organisation.id,
+      orgRole: membership.role,
+      propertyContactId: null,
+    });
 
     return {
       user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName },
       organisation: { id: organisation.id, name: organisation.name, slug: organisation.slug },
       orgRole: membership.role,
+      accountType: 'staff',
       tokens,
     };
   }
@@ -84,25 +96,22 @@ export class AuthService {
       throw new UnauthorizedError('Invalid email or password');
     }
 
-    const membership = await this.prisma.organisationMembership.findFirst({
-      where: { userId: user.id, status: 'ACTIVE' },
-      include: { organisation: true },
-      orderBy: { createdAt: 'asc' },
-    });
-    if (!membership) {
-      throw new UnauthorizedError('No active organisation membership found for this account');
+    const access = await this.resolveAccess(user.id);
+    if (!access) {
+      throw new UnauthorizedError('This account is not associated with any organisation yet');
     }
 
-    const tokens = await this.issueTokens(user.id, membership.organisationId, membership.role);
+    const organisation = await this.prisma.organisation.findUniqueOrThrow({
+      where: { id: access.organisationId },
+    });
+
+    const tokens = await this.issueTokens(user.id, access);
 
     return {
       user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName },
-      organisation: {
-        id: membership.organisation.id,
-        name: membership.organisation.name,
-        slug: membership.organisation.slug,
-      },
-      orgRole: membership.role,
+      organisation: { id: organisation.id, name: organisation.name, slug: organisation.slug },
+      orgRole: access.orgRole,
+      accountType: access.orgRole ? 'staff' : 'resident',
       tokens,
     };
   }
@@ -117,12 +126,9 @@ export class AuthService {
       throw new UnauthorizedError('Session expired, please log in again');
     }
 
-    const membership = await this.prisma.organisationMembership.findFirst({
-      where: { userId: session.userId, status: 'ACTIVE' },
-      orderBy: { createdAt: 'asc' },
-    });
-    if (!membership) {
-      throw new UnauthorizedError('No active organisation membership found for this account');
+    const access = await this.resolveAccess(session.userId);
+    if (!access) {
+      throw new UnauthorizedError('This account is not associated with any organisation yet');
     }
 
     // Rotate: revoke the old session, issue a new one.
@@ -131,7 +137,7 @@ export class AuthService {
       data: { revokedAt: new Date() },
     });
 
-    return this.issueTokens(session.userId, membership.organisationId, membership.role);
+    return this.issueTokens(session.userId, access);
   }
 
   async logout(rawRefreshToken: string): Promise<void> {
@@ -142,12 +148,46 @@ export class AuthService {
     });
   }
 
-  private async issueTokens(
-    userId: string,
-    organisationId: string,
-    orgRole: 'OWNER' | 'ADMIN' | 'MEMBER',
-  ): Promise<AuthTokens> {
-    const accessToken = signAccessToken({ sub: userId, organisationId, orgRole });
+  /**
+   * Staff (an active OrganisationMembership) takes precedence when both
+   * exist. Otherwise, fall back to a resident session for a User linked to
+   * a PropertyContact — see PeopleService for how that link is made (it is
+   * never created by a self-service sign-up in this milestone).
+   */
+  private async resolveAccess(userId: string): Promise<AuthAccessContext | null> {
+    const membership = await this.prisma.organisationMembership.findFirst({
+      where: { userId, status: 'ACTIVE' },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (membership) {
+      return {
+        organisationId: membership.organisationId,
+        orgRole: membership.role,
+        propertyContactId: null,
+      };
+    }
+
+    const contact = await this.prisma.propertyContact.findFirst({
+      where: { userId, status: 'ACTIVE' },
+    });
+    if (contact) {
+      return {
+        organisationId: contact.organisationId,
+        orgRole: null,
+        propertyContactId: contact.id,
+      };
+    }
+
+    return null;
+  }
+
+  private async issueTokens(userId: string, access: AuthAccessContext): Promise<AuthTokens> {
+    const accessToken = signAccessToken({
+      sub: userId,
+      organisationId: access.organisationId,
+      orgRole: access.orgRole,
+      propertyContactId: access.propertyContactId,
+    });
     const refreshToken = generateRefreshToken();
     const expiresAt = refreshTokenExpiresAt();
 

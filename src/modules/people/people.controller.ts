@@ -46,6 +46,12 @@ export async function listPeopleForSpace(req: Request, res: Response) {
   res.json(result);
 }
 
+export async function listMyMemberships(req: Request, res: Response) {
+  const auth = requireAuth(req);
+  const memberships = await peopleService.listMyMemberships(auth.organisationId, auth.userId);
+  res.json({ items: memberships });
+}
+
 export async function listPeopleDirectory(req: Request, res: Response) {
   const auth = requireAuth(req);
   const query = peopleDirectoryQuerySchema.parse(req.query);

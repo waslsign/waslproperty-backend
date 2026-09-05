@@ -6,7 +6,10 @@ import type { OrgRole } from '@prisma/client';
 export interface AccessTokenPayload {
   sub: string;
   organisationId: string;
-  orgRole: OrgRole;
+  /** null for a resident session — see AuthService for the staff/resident distinction. */
+  orgRole: OrgRole | null;
+  /** Set only for a resident session (a User linked to a PropertyContact, not an OrganisationMembership). */
+  propertyContactId?: string | null;
 }
 
 export function signAccessToken(payload: AccessTokenPayload): string {

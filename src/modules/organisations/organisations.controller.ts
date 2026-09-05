@@ -22,5 +22,7 @@ export async function getCurrentOrganisation(req: Request, res: Response) {
     slug: organisation.slug,
     status: organisation.status,
     orgRole: req.auth.orgRole,
+    accountType: req.auth.orgRole ? 'staff' : 'resident',
+    propertyContactId: req.auth.propertyContactId ?? null,
   });
 }

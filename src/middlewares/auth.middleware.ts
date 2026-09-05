@@ -6,7 +6,10 @@ import { verifyAccessToken } from '../lib/tokens.js';
 export interface AuthContext {
   userId: string;
   organisationId: string;
-  orgRole: OrgRole;
+  /** null for a resident session. */
+  orgRole: OrgRole | null;
+  /** Set only for a resident session. */
+  propertyContactId?: string | null;
 }
 
 export function authenticate(req: Request, _res: Response, next: NextFunction) {
@@ -23,6 +26,7 @@ export function authenticate(req: Request, _res: Response, next: NextFunction) {
       userId: payload.sub,
       organisationId: payload.organisationId,
       orgRole: payload.orgRole,
+      propertyContactId: payload.propertyContactId,
     };
     next();
   } catch {
@@ -35,7 +39,7 @@ export function requireOrgRole(allowedRoles: OrgRole[]) {
     if (!req.auth) {
       throw new UnauthorizedError();
     }
-    if (!allowedRoles.includes(req.auth.orgRole)) {
+    if (!req.auth.orgRole || !allowedRoles.includes(req.auth.orgRole)) {
       throw new ForbiddenError('You do not have permission to perform this action');
     }
     next();

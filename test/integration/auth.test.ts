@@ -2,6 +2,7 @@ import request from 'supertest';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../../src/app.js';
 import { resetDb, testPrisma } from '../helpers/db.js';
+import { authHeader, createPlainUser } from '../helpers/auth.js';
 
 const app = createApp();
 
@@ -137,6 +138,81 @@ describe('GET /organisations/me', () => {
     const res = await request(app)
       .get('/api/v1/organisations/me')
       .set('Authorization', 'Bearer not-a-real-token');
+
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('resident login (M6)', () => {
+  beforeEach(async () => {
+    await resetDb();
+  });
+
+  afterAll(async () => {
+    await resetDb();
+    await testPrisma.$disconnect();
+  });
+
+  it('logs in a User with no OrganisationMembership but a linked PropertyContact as a resident', async () => {
+    const registerRes = await request(app).post('/api/v1/auth/register').send(validRegisterBody);
+    const ownerToken = registerRes.body.accessToken as string;
+    const organisationId = registerRes.body.organisation.id as string;
+
+    const propertyRes = await request(app)
+      .post('/api/v1/properties')
+      .set(authHeader(ownerToken))
+      .send({
+        name: 'Wasl Heights',
+        code: 'WASL-HTS',
+        addressLine1: '1 Wasl Blvd',
+        city: 'Dubai',
+        country: 'UAE',
+        propertyType: 'MIXED_USE',
+      });
+    const spaceRes = await request(app)
+      .post(`/api/v1/properties/${propertyRes.body.id}/spaces`)
+      .set(authHeader(ownerToken))
+      .send({ name: 'Office 1204', code: '1204', spaceType: 'OFFICE' });
+
+    // Pre-condition: a plain login already exists for this email (no
+    // self-service resident sign-up exists yet in M6).
+    const resident = await createPlainUser({ email: 'tara.tenant@example.com' });
+
+    // Adding the person links the pre-existing User by email match — the
+    // existing M4 behaviour, unmodified.
+    await request(app)
+      .post(`/api/v1/properties/${propertyRes.body.id}/memberships`)
+      .set(authHeader(ownerToken))
+      .send({
+        email: resident.email,
+        firstName: 'Tara',
+        lastName: 'Tenant',
+        role: 'TENANT',
+        spaceId: spaceRes.body.id,
+      });
+
+    const loginRes = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: resident.email, password: resident.password });
+
+    expect(loginRes.status).toBe(200);
+    expect(loginRes.body.orgRole).toBeNull();
+    expect(loginRes.body.accountType).toBe('resident');
+    expect(loginRes.body.organisation.id).toBe(organisationId);
+
+    const meRes = await request(app)
+      .get('/api/v1/organisations/me')
+      .set(authHeader(loginRes.body.accessToken));
+    expect(meRes.body.accountType).toBe('resident');
+    expect(meRes.body.orgRole).toBeNull();
+  });
+
+  it('rejects login for a User with neither a membership nor a linked contact', async () => {
+    const resident = await createPlainUser();
+
+    const res = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: resident.email, password: resident.password });
 
     expect(res.status).toBe(401);
   });

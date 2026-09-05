@@ -13,6 +13,7 @@ function respondWithAuthResult(res: Response, result: AuthResult, status: number
     user: result.user,
     organisation: result.organisation,
     orgRole: result.orgRole,
+    accountType: result.accountType,
     accessToken: result.tokens.accessToken,
   });
 }

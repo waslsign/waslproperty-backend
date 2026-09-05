@@ -5,6 +5,7 @@ export const testPrisma = getPrismaClient();
 export async function resetDb() {
   await testPrisma.$transaction([
     testPrisma.activityEvent.deleteMany(),
+    testPrisma.maintenanceRequest.deleteMany(),
     testPrisma.propertyMembership.deleteMany(),
     testPrisma.propertyContact.deleteMany(),
     testPrisma.space.deleteMany(),

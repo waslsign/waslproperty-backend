@@ -22,10 +22,11 @@ model Organisation {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  memberships    OrganisationMembership[]
-  properties     Property[]
-  activityEvents ActivityEvent[]
-  contacts       PropertyContact[]
+  memberships         OrganisationMembership[]
+  properties          Property[]
+  activityEvents      ActivityEvent[]
+  maintenanceRequests MaintenanceRequest[]
+  contacts            PropertyContact[]
 
   @@map("organisations")
 }
@@ -49,6 +50,7 @@ model User {
   sessions                Session[]
   propertyContact         PropertyContact?
   activityEvents          ActivityEvent[]
+  maintenanceRequests     MaintenanceRequest[]
 
   @@map("users")
 }
@@ -125,6 +127,7 @@ model Property {
   spaces              Space[]
   propertyMemberships PropertyMembership[]
   activityEvents      ActivityEvent[]
+  maintenanceRequests MaintenanceRequest[]
 
   @@unique([organisationId, code])
   @@index([organisationId])
@@ -160,9 +163,10 @@ model Space {
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
-  property       Property             @relation(fields: [propertyId], references: [id])
-  memberships    PropertyMembership[]
-  activityEvents ActivityEvent[]
+  property            Property             @relation(fields: [propertyId], references: [id])
+  memberships         PropertyMembership[]
+  activityEvents      ActivityEvent[]
+  maintenanceRequests MaintenanceRequest[]
 
   @@unique([propertyId, code])
   @@index([organisationId])
@@ -302,4 +306,74 @@ enum ActivityEventType {
   SPACE_CREATED
   SPACE_UPDATED
   PERSON_ADDED
+  MAINTENANCE_REQUEST_CREATED
+  MAINTENANCE_REQUEST_STATUS_CHANGED
+  MAINTENANCE_REQUEST_UPDATED
+}
+
+// --- Maintenance (Slice 2 / M6) ---
+
+/// The first operational object in Wasl Property. Deliberately separate
+/// from any future WorkOrder concept — a request is what was reported;
+/// a work order (later) is the work actually dispatched to resolve it.
+model MaintenanceRequest {
+  id               String  @id @default(cuid())
+  organisationId   String
+  propertyId       String
+  spaceId          String?
+  reportedByUserId String?
+
+  title       String
+  description String
+
+  category MaintenanceCategory
+  priority MaintenancePriority
+  status   MaintenanceRequestStatus @default(NEW)
+
+  reportedAt DateTime  @default(now())
+  resolvedAt DateTime?
+  closedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+  property     Property     @relation(fields: [propertyId], references: [id])
+  space        Space?       @relation(fields: [spaceId], references: [id])
+  reportedBy   User?        @relation(fields: [reportedByUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([spaceId])
+  @@index([reportedByUserId])
+  @@map("maintenance_requests")
+}
+
+enum MaintenanceCategory {
+  PLUMBING
+  ELECTRICAL
+  HVAC
+  APPLIANCE
+  STRUCTURAL
+  COMMON_AREA
+  SECURITY
+  CLEANING
+  PEST_CONTROL
+  OTHER
+}
+
+enum MaintenancePriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum MaintenanceRequestStatus {
+  NEW
+  UNDER_REVIEW
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+  CANCELLED
 }
