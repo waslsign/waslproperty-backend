@@ -3,7 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../../src/app.js';
 import { signAccessToken } from '../../src/lib/tokens.js';
 import { resetDb, testPrisma } from '../helpers/db.js';
-import { authHeader, registerTestUser } from '../helpers/auth.js';
+import { authHeader, createPlainUser, registerTestUser } from '../helpers/auth.js';
 
 const app = createApp();
 
@@ -206,6 +206,49 @@ describe('people / property memberships', () => {
       where: { id: res.body.contact.id },
     });
     expect(contact?.userId).toBe(secondOrgUser.userId);
+  });
+
+  it('adds a person successfully even when their email is already a portal identity in another organisation', async () => {
+    // PropertyContact.userId is globally unique — a User can be the portal
+    // identity for at most one contact system-wide. Reproduces a real bug:
+    // adding a person by an email already linked elsewhere used to hit that
+    // unique constraint directly and 500 instead of degrading cleanly.
+    const orgA = await registerTestUser(app);
+    const { propertyId: propertyAId, spaceId: spaceAId } = await setupPropertyAndSpace(
+      orgA.accessToken,
+    );
+    const existingUser = await createPlainUser();
+    const sharedEmail = existingUser.email;
+    const firstLinkRes = await request(app)
+      .post(`/api/v1/properties/${propertyAId}/memberships`)
+      .set(authHeader(orgA.accessToken))
+      .send({
+        email: sharedEmail,
+        firstName: 'Already',
+        lastName: 'Linked',
+        role: 'RESIDENT',
+        spaceId: spaceAId,
+      });
+    const linkedUserId = firstLinkRes.body.contact.userId as string;
+    expect(linkedUserId).toBe(existingUser.userId);
+
+    const orgB = await registerTestUser(app);
+    const { propertyId: propertyBId } = await setupPropertyAndSpace(orgB.accessToken);
+
+    const secondRes = await request(app)
+      .post(`/api/v1/properties/${propertyBId}/memberships`)
+      .set(authHeader(orgB.accessToken))
+      .send({ email: sharedEmail, firstName: 'Already', lastName: 'Linked', role: 'OWNER' });
+
+    expect(secondRes.status).toBe(201);
+    // Added successfully, but not auto-linked to the portal identity that's
+    // already claimed by Org A's contact.
+    expect(secondRes.body.contact.userId).toBeNull();
+
+    const orgAContact = await testPrisma.propertyContact.findFirst({
+      where: { organisationId: orgA.organisationId, email: sharedEmail },
+    });
+    expect(orgAContact?.userId).toBe(linkedUserId);
   });
 
   it('rejects duplicate active memberships for the same contact/property/space/role', async () => {

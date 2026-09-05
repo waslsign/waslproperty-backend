@@ -344,4 +344,54 @@ describe('resident invites', () => {
       .set(authHeader(ownerToken));
     expect(wrongUser.status).toBe(409);
   });
+
+  it('rejects accept-existing when the account is already the portal identity for a different contact', async () => {
+    const sharedEmail = 'already-a-resident@example.com';
+
+    // This account is already a resident of its own organisation (Org A) —
+    // PropertyContact.userId is globally unique, so it can never also
+    // become the portal identity for a second contact elsewhere.
+    const { accessToken: orgAOwnerToken } = await registerTestUser(app, {
+      organisationName: 'Org A',
+      email: sharedEmail,
+      password: 'shared-secret-1',
+    });
+    const orgAPropertyRes = await request(app)
+      .post('/api/v1/properties')
+      .set(authHeader(orgAOwnerToken))
+      .send(validProperty);
+    await addContact(orgAOwnerToken, orgAPropertyRes.body.id, { email: sharedEmail });
+
+    // Org B invites the same email as a brand-new, not-yet-linked contact.
+    const { accessToken: orgBOwnerToken } = await registerTestUser(app, {
+      organisationName: 'Org B',
+    });
+    const orgBPropertyRes = await request(app)
+      .post('/api/v1/properties')
+      .set(authHeader(orgBOwnerToken))
+      .send(validProperty);
+    const { contactId: orgBContactId } = await addContact(orgBOwnerToken, orgBPropertyRes.body.id, {
+      email: sharedEmail,
+    });
+    await request(app)
+      .post(`/api/v1/people/${orgBContactId}/invite`)
+      .set(authHeader(orgBOwnerToken));
+    const token = activationLinkToken();
+
+    const login = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: sharedEmail, password: 'shared-secret-1' });
+    expect(login.status).toBe(200);
+    expect(login.body.accountType).toBe('staff');
+
+    const acceptExisting = await request(app)
+      .post(`/api/v1/invites/${token}/accept-existing`)
+      .set(authHeader(login.body.accessToken as string));
+    expect(acceptExisting.status).toBe(409);
+
+    const orgBContact = await testPrisma.propertyContact.findUniqueOrThrow({
+      where: { id: orgBContactId },
+    });
+    expect(orgBContact.userId).toBeNull();
+  });
 });

@@ -71,13 +71,23 @@ export class PeopleService {
 
     const matchingUser = await tx.user.findUnique({ where: { email } });
 
+    // PropertyContact.userId is globally unique — a User can be the portal
+    // identity for at most one contact, system-wide (they may still be
+    // staff in any number of other organisations; see AuthService). If
+    // this email's account is already claimed by a contact elsewhere,
+    // adding this person must still succeed — it just can't also grant
+    // portal access here, so the auto-link is skipped rather than hitting
+    // that unique constraint.
+    const alreadyLinkedElsewhere =
+      matchingUser && (await tx.propertyContact.findUnique({ where: { userId: matchingUser.id } }));
+
     return tx.propertyContact.create({
       data: {
         organisationId,
         email,
         firstName,
         lastName,
-        userId: matchingUser?.id,
+        userId: alreadyLinkedElsewhere ? undefined : matchingUser?.id,
       },
     });
   }
