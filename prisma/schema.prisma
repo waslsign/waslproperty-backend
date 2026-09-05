@@ -29,6 +29,7 @@ model Organisation {
   maintenanceRequestAttachments MaintenanceRequestAttachment[]
   contacts                      PropertyContact[]
   contactInvites                ContactInvite[]
+  sessions                      Session[]
 
   @@map("organisations")
 }
@@ -95,17 +96,24 @@ enum MemberStatus {
   SUSPENDED
 }
 
+/// A session is pinned to exactly one organisation for its whole lifetime —
+/// the same organisationId that was resolved at login/token-issue time.
+/// Refreshing never re-resolves a different organisation, even if the user
+/// has since gained (or lost) access elsewhere — see AuthService.refresh.
 model Session {
   id               String    @id @default(cuid())
   userId           String
+  organisationId   String
   refreshTokenHash String
   expiresAt        DateTime
   createdAt        DateTime  @default(now())
   revokedAt        DateTime?
 
-  user User @relation(fields: [userId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+  organisation Organisation @relation(fields: [organisationId], references: [id])
 
   @@index([userId])
+  @@index([organisationId])
   @@map("sessions")
 }
 

@@ -26,8 +26,25 @@ export async function register(req: Request, res: Response) {
 
 export async function login(req: Request, res: Response) {
   const input = loginSchema.parse(req.body);
-  const result = await authService.login(input);
-  respondWithAuthResult(res, result, 200);
+  const outcome = await authService.login(input);
+
+  if (outcome.kind === 'chooseOrganisation') {
+    // Deliberately a distinct shape (no accessToken/user) rather than a
+    // guess — a single-organisation account never sees this. The frontend
+    // re-submits the same credentials with the chosen organisationId.
+    res.status(200).json({
+      requiresOrganisationSelection: true,
+      organisations: outcome.options.map((option) => ({
+        id: option.organisationId,
+        name: option.organisationName,
+        slug: option.organisationSlug,
+        accountType: option.accountType,
+      })),
+    });
+    return;
+  }
+
+  respondWithAuthResult(res, outcome.result, 200);
 }
 
 export async function refresh(req: Request, res: Response) {
