@@ -6,3 +6,94 @@ datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+// --- Tenancy & Auth (Slice 1 / M2) ---
+
+model Organisation {
+  id                     String   @id @default(cuid())
+  name                   String
+  slug                   String   @unique
+  status                 OrgStatus @default(ACTIVE)
+
+  /// Set once this organisation is provisioned as a 1:1 mapped Organization in WaslSign.
+  /// Nullable — provisioning happens lazily, on first need for a signed document, not at signup.
+  waslSignOrganisationId String?  @unique
+
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  memberships OrganisationMembership[]
+
+  @@map("organisations")
+}
+
+enum OrgStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  organisationMemberships OrganisationMembership[]
+  sessions                Session[]
+
+  @@map("users")
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+model OrganisationMembership {
+  id             String       @id @default(cuid())
+  organisationId String
+  userId         String
+  role           OrgRole
+  status         MemberStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@unique([organisationId, userId])
+  @@index([organisationId])
+  @@index([userId])
+  @@map("organisation_memberships")
+}
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum MemberStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+model Session {
+  id               String    @id @default(cuid())
+  userId           String
+  refreshTokenHash String
+  expiresAt        DateTime
+  createdAt        DateTime  @default(now())
+  revokedAt        DateTime?
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("sessions")
+}
