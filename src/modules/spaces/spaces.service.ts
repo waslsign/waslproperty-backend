@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { ConflictError, NotFoundError } from '../../errors/AppError.js';
+import { getOccupancyForSpace, getOccupiedSpaceIds, type Occupancy } from '../../lib/occupancy.js';
 import type { PaginatedResult, PaginationQuery } from '../../lib/pagination.js';
 import type { CreateSpaceInput, UpdateSpaceInput } from './spaces.schemas.js';
 
@@ -20,7 +21,7 @@ export class SpacesService {
     organisationId: string,
     propertyId: string,
     query: PaginationQuery,
-  ): Promise<PaginatedResult<Prisma.SpaceGetPayload<object>>> {
+  ): Promise<PaginatedResult<Prisma.SpaceGetPayload<object> & { occupancy: Occupancy }>> {
     await this.assertPropertyInOrg(organisationId, propertyId);
 
     const where: Prisma.SpaceWhereInput = {
@@ -45,7 +46,20 @@ export class SpacesService {
       this.prisma.space.count({ where }),
     ]);
 
-    return { items, page: query.page, pageSize: query.pageSize, total };
+    const occupiedIds = await getOccupiedSpaceIds(
+      this.prisma,
+      items.map((space) => space.id),
+    );
+
+    return {
+      items: items.map((space) => ({
+        ...space,
+        occupancy: occupiedIds.has(space.id) ? 'OCCUPIED' : ('VACANT' as Occupancy),
+      })),
+      page: query.page,
+      pageSize: query.pageSize,
+      total,
+    };
   }
 
   async create(organisationId: string, propertyId: string, input: CreateSpaceInput) {
@@ -71,7 +85,9 @@ export class SpacesService {
     if (!space) {
       throw new NotFoundError('Space not found');
     }
-    return space;
+
+    const occupancy = await getOccupancyForSpace(this.prisma, space.id);
+    return { ...space, occupancy };
   }
 
   async update(organisationId: string, spaceId: string, input: UpdateSpaceInput) {

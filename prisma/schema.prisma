@@ -192,7 +192,6 @@ model PropertyContact {
   id             String        @id @default(cuid())
   organisationId String
   userId         String?       @unique
-  contactType    ContactType
   firstName      String
   lastName       String
   email          String
@@ -208,12 +207,6 @@ model PropertyContact {
   @@unique([organisationId, email])
   @@index([organisationId])
   @@map("property_contacts")
-}
-
-enum ContactType {
-  OWNER
-  TENANT
-  RESIDENT
 }
 
 enum ContactStatus {
@@ -257,11 +250,10 @@ enum PropertyRole {
   PROPERTY_MANAGER
   FACILITY_MANAGER
   AGENT
-  OTHER
+  COMMITTEE_MEMBER
 }
 
 enum MembershipStatus {
   ACTIVE
   ENDED
-  PENDING
 }
