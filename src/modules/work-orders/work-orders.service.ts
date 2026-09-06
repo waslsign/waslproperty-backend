@@ -18,7 +18,10 @@ const workOrderInclude = {
   maintenanceRequest: { select: { id: true, title: true, category: true } },
   contractor: { select: { id: true, name: true, companyName: true, status: true } },
   createdBy: { select: { id: true, firstName: true, lastName: true } },
-  quotes: { orderBy: { createdAt: 'desc' } },
+  quotes: {
+    orderBy: { createdAt: 'desc' },
+    include: { contractor: { select: { id: true, name: true, companyName: true, email: true } } },
+  },
 } satisfies Prisma.WorkOrderInclude;
 
 /** Same shape as MaintenanceService's transition table — see that file's comment. */

@@ -257,6 +257,39 @@ describe('work orders', () => {
     expect(activity).toBeTruthy();
   });
 
+  it('includes each quote contractor when fetching a work order (regression: the frontend renders quote.contractor.name directly)', async () => {
+    const { accessToken } = await registerTestUser(app);
+    const { maintenanceRequestId } = await setupPropertySpaceAndRequest(accessToken);
+    const workOrder = await request(app)
+      .post('/api/v1/work-orders')
+      .set(authHeader(accessToken))
+      .send({ maintenanceRequestId, title: 'Repair AC', description: 'Fix it.', priority: 'HIGH' });
+
+    const contractorRes = await request(app)
+      .post('/api/v1/contractors')
+      .set(authHeader(accessToken))
+      .send({ name: 'Acme HVAC', email: 'ops@acmehvac.com', tradeTypes: ['HVAC'] });
+    await request(app)
+      .patch(`/api/v1/work-orders/${workOrder.body.id}/contractor`)
+      .set(authHeader(accessToken))
+      .send({ contractorId: contractorRes.body.id });
+
+    await request(app)
+      .post('/api/v1/quotes')
+      .set(authHeader(accessToken))
+      .send({ workOrderId: workOrder.body.id, contractorId: contractorRes.body.id, amount: 500 });
+
+    const res = await request(app)
+      .get(`/api/v1/work-orders/${workOrder.body.id}`)
+      .set(authHeader(accessToken));
+    expect(res.status).toBe(200);
+    expect(res.body.quotes).toHaveLength(1);
+    expect(res.body.quotes[0].contractor).toMatchObject({
+      id: contractorRes.body.id,
+      name: 'Acme HVAC',
+    });
+  });
+
   it('denies resident access entirely', async () => {
     const { accessToken: ownerToken, organisationId } = await registerTestUser(app);
     const { propertyId, spaceId, maintenanceRequestId } =
