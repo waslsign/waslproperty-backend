@@ -3,6 +3,7 @@ import { recordActivity } from '../activity/activity.js';
 import { ConflictError, ForbiddenError, NotFoundError } from '../../errors/AppError.js';
 import type { PaginatedResult } from '../../lib/pagination.js';
 import type { AuthContext } from '../../middlewares/auth.middleware.js';
+import { residentWorkOrderStatusLabel } from '../work-orders/work-orders.service.js';
 import type {
   CreateMaintenanceRequestInput,
   MaintenanceRequestQuery,
@@ -196,6 +197,19 @@ export class MaintenanceService {
       // A resident probing another resident's request id — 404, not 403,
       // so existence isn't leaked.
       throw new NotFoundError('Maintenance request not found');
+    }
+
+    // A resident gets only a plain-language progress label — never the
+    // WorkOrder object itself (no cost, contractor, or workflow fields).
+    if (!auth.orgRole) {
+      const workOrder = await this.prisma.workOrder.findFirst({
+        where: { organisationId, maintenanceRequestId: request.id, status: { not: 'CANCELLED' } },
+        select: { status: true },
+      });
+      return {
+        ...request,
+        residentWorkOrderStatus: workOrder ? residentWorkOrderStatusLabel[workOrder.status] : null,
+      };
     }
 
     return request;

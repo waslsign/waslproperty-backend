@@ -15,6 +15,7 @@ const envSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
   FRONTEND_URL: z.string().default('http://localhost:5174'),
+  BACKEND_PUBLIC_URL: z.string().default('http://localhost:4100'),
   LOG_LEVEL: z.string().default('info'),
 
   INVITE_TOKEN_EXPIRES_IN_HOURS: z.coerce.number().default(72),
@@ -33,6 +34,20 @@ const envSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   SMTP_FROM: z.string().default('Wasl Property <no-reply@waslproperty.dev>'),
+
+  // --- WaslSign integration (M9-A) ---
+  // Optional: an environment with none of these set simply can't offer
+  // SIGNATURE_ONLY / APPROVAL_THEN_SIGNATURE — WaslSignService treats that
+  // as "unavailable", never as a hard startup failure.
+  WASLSIGN_API_BASE_URL: z.string().optional(),
+  WASLSIGN_SERVICE_CLIENT_ID: z.string().optional(),
+  WASLSIGN_SERVICE_CLIENT_SECRET: z.string().optional(),
+  WASLSIGN_WEBHOOK_SECRET: z.string().optional(),
+
+  WORK_ORDER_WASLSIGN_THRESHOLD_AED: z.coerce.number().default(5000),
+  WORK_ORDER_DEFAULT_WORKFLOW_MODE: z
+    .enum(['APPROVAL_ONLY', 'SIGNATURE_ONLY', 'APPROVAL_THEN_SIGNATURE'])
+    .default('APPROVAL_ONLY'),
 });
 
 const parsed = envSchema.safeParse(process.env);

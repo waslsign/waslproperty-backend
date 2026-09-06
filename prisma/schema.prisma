@@ -30,6 +30,9 @@ model Organisation {
   contacts                      PropertyContact[]
   contactInvites                ContactInvite[]
   sessions                      Session[]
+  workOrders                    WorkOrder[]
+  contractors                   Contractor[]
+  contractorQuotes              ContractorQuote[]
 
   @@map("organisations")
 }
@@ -56,6 +59,8 @@ model User {
   maintenanceRequests           MaintenanceRequest[]
   maintenanceRequestAttachments MaintenanceRequestAttachment[]
   sentContactInvites            ContactInvite[]
+  createdWorkOrders             WorkOrder[]                    @relation("WorkOrderCreatedBy")
+  approvedContractorQuotes      ContractorQuote[]              @relation("ContractorQuoteApprovedBy")
 
   @@map("users")
 }
@@ -140,6 +145,7 @@ model Property {
   propertyMemberships PropertyMembership[]
   activityEvents      ActivityEvent[]
   maintenanceRequests MaintenanceRequest[]
+  workOrders          WorkOrder[]
 
   @@unique([organisationId, code])
   @@index([organisationId])
@@ -179,6 +185,7 @@ model Space {
   memberships         PropertyMembership[]
   activityEvents      ActivityEvent[]
   maintenanceRequests MaintenanceRequest[]
+  workOrders          WorkOrder[]
 
   @@unique([propertyId, code])
   @@index([organisationId])
@@ -323,6 +330,16 @@ enum ActivityEventType {
   MAINTENANCE_REQUEST_STATUS_CHANGED
   MAINTENANCE_REQUEST_UPDATED
   MAINTENANCE_REQUEST_ATTACHMENTS_ADDED
+  WORK_ORDER_CREATED
+  WORK_ORDER_STATUS_CHANGED
+  CONTRACTOR_ASSIGNED
+  QUOTE_SUBMITTED
+  QUOTE_WORKFLOW_REQUESTED
+  QUOTE_APPROVED
+  QUOTE_REJECTED
+  QUOTE_SIGNING_STARTED
+  QUOTE_SIGNED
+  QUOTE_DECLINED
 }
 
 // --- Resident invitations (Slice 2 / M6.5) ---
@@ -392,6 +409,7 @@ model MaintenanceRequest {
   reportedBy   User?        @relation(fields: [reportedByUserId], references: [id])
 
   attachments MaintenanceRequestAttachment[]
+  workOrders  WorkOrder[]
 
   @@index([organisationId])
   @@index([propertyId])
@@ -457,4 +475,198 @@ model MaintenanceRequestAttachment {
   @@index([organisationId])
   @@index([maintenanceRequestId])
   @@map("maintenance_request_attachments")
+}
+
+// --- Work Orders (M7) ---
+
+/// The work actually dispatched to resolve an issue — deliberately separate
+/// from MaintenanceRequest (see that model's doc comment): a request is what
+/// was reported, a work order is what a manager decided to do about it.
+/// maintenanceRequestId is nullable because a manager can also open a work
+/// order directly (e.g. planned/preventive work with no originating report).
+model WorkOrder {
+  id                   String  @id @default(cuid())
+  organisationId       String
+  propertyId           String
+  spaceId              String?
+  maintenanceRequestId String?
+
+  title       String
+  description String
+
+  status   WorkOrderStatus     @default(DRAFT)
+  priority MaintenancePriority
+
+  scheduledAt DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  estimatedCost Decimal? @db.Decimal(10, 2)
+  actualCost    Decimal? @db.Decimal(10, 2)
+
+  contractorId    String?
+  createdByUserId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation       Organisation        @relation(fields: [organisationId], references: [id])
+  property           Property            @relation(fields: [propertyId], references: [id])
+  space              Space?              @relation(fields: [spaceId], references: [id])
+  maintenanceRequest MaintenanceRequest? @relation(fields: [maintenanceRequestId], references: [id])
+  contractor         Contractor?         @relation(fields: [contractorId], references: [id])
+  createdBy          User                @relation("WorkOrderCreatedBy", fields: [createdByUserId], references: [id])
+
+  quotes ContractorQuote[]
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([spaceId])
+  @@index([maintenanceRequestId])
+  @@index([contractorId])
+  @@map("work_orders")
+}
+
+enum WorkOrderStatus {
+  DRAFT
+  READY
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+// --- Contractors (M8) ---
+
+model Contractor {
+  id             String           @id @default(cuid())
+  organisationId String
+  name           String
+  companyName    String?
+  email          String
+  phone          String?
+  status         ContractorStatus @default(ACTIVE)
+  tradeTypes     String[]
+  notes          String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organisation Organisation      @relation(fields: [organisationId], references: [id])
+  workOrders   WorkOrder[]
+  quotes       ContractorQuote[]
+
+  @@unique([organisationId, email])
+  @@index([organisationId])
+  @@map("contractors")
+}
+
+enum ContractorStatus {
+  ACTIVE
+  INACTIVE
+}
+
+// --- Contractor quotes + configurable WaslSign workflow (M8 / M9-A) ---
+
+/// Approval and signature are tracked as two separate, independently
+/// nullable statuses — never collapsed into one "approved" flag. Which of
+/// them apply (if either) is entirely determined by `workflowMode`. See
+/// docs on WorkflowMode below; the overall pass/fail result for a quote is
+/// *derived* from (workflowMode, approvalStatus, signatureStatus) in
+/// application code rather than stored redundantly here.
+model ContractorQuote {
+  id             String @id @default(cuid())
+  organisationId String
+  workOrderId    String
+  contractorId   String
+
+  amount      Decimal @db.Decimal(10, 2)
+  currency    String  @default("AED")
+  description String?
+
+  status ContractorQuoteStatus @default(REQUESTED)
+
+  submittedAt DateTime?
+  approvedAt  DateTime?
+  rejectedAt  DateTime?
+
+  /// What Wasl Property asked WaslSign (or nothing) to execute for this
+  /// quote. Null until a manager makes that choice.
+  workflowMode WorkflowMode?
+
+  /// Native to Wasl Property — WaslSign has no approval primitive today
+  /// (see docs/waslsign-integration.md). Populated only when workflowMode
+  /// is APPROVAL_ONLY or APPROVAL_THEN_SIGNATURE.
+  approvalStatus   ApprovalStatus?
+  approvedByUserId String?
+
+  /// Backed by a real WaslSign agreement. Populated only when workflowMode
+  /// is SIGNATURE_ONLY or APPROVAL_THEN_SIGNATURE (and, for the latter,
+  /// only once approval has actually passed).
+  signatureStatus     SignatureStatus?
+  signedAt            DateTime?
+  waslSignAgreementId String?
+  waslSignStatus      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation   Organisation @relation(fields: [organisationId], references: [id])
+  workOrder      WorkOrder    @relation(fields: [workOrderId], references: [id])
+  contractor     Contractor   @relation(fields: [contractorId], references: [id])
+  approvedByUser User?        @relation("ContractorQuoteApprovedBy", fields: [approvedByUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([workOrderId])
+  @@index([contractorId])
+  @@index([waslSignAgreementId])
+  @@map("contractor_quotes")
+}
+
+enum ContractorQuoteStatus {
+  REQUESTED
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+/// What Wasl Property asks WaslSign to execute for one quote/work order.
+/// Deliberately never forces both approval and signature — a business
+/// process picks exactly the shape it needs.
+enum WorkflowMode {
+  NONE
+  APPROVAL_ONLY
+  SIGNATURE_ONLY
+  APPROVAL_THEN_SIGNATURE
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum SignatureStatus {
+  PENDING
+  PARTIALLY_SIGNED
+  SIGNED
+  DECLINED
+  EXPIRED
+  CANCELLED
+}
+
+/// Idempotency ledger for inbound WaslSign webhook callbacks — a duplicate
+/// delivery of the same eventId is a guaranteed no-op. Deliberately holds no
+/// organisationId: the callback payload's sourceEntityId is what gets
+/// cross-checked against the target ContractorQuote's own organisationId at
+/// handling time (see waslsign.service.ts), not this ledger.
+model WaslSignWebhookEvent {
+  id         String   @id @default(cuid())
+  eventId    String   @unique
+  receivedAt DateTime @default(now())
+  payload    Json
+
+  @@map("waslsign_webhook_events")
 }
