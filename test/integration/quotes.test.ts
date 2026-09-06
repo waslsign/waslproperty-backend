@@ -113,6 +113,26 @@ describe('contractor quotes + workflow modes', () => {
       expect(toReady.status).toBe(200);
       expect(waslSignServiceMock.createAgreementWorkflow).not.toHaveBeenCalled();
     });
+
+    it('a high-value quote still blocks release before the manager confirms a workflow, even though workflowMode already carries a threshold-based default', async () => {
+      // Regression: create() pre-fills workflowMode with a suggested default
+      // for amounts at/above the threshold — that must never be mistaken for
+      // an actually-confirmed, in-progress workflow.
+      const { accessToken } = await registerTestUser(app);
+      const { workOrderId, quoteId } = await setupWorkOrderWithContractor(accessToken, 7500);
+
+      const quote = await request(app)
+        .get(`/api/v1/quotes/${quoteId}`)
+        .set(authHeader(accessToken));
+      expect(quote.body.workflowMode).toBe('APPROVAL_ONLY');
+      expect(quote.body.approvalStatus).toBeNull();
+
+      const toReady = await request(app)
+        .patch(`/api/v1/work-orders/${workOrderId}/status`)
+        .set(authHeader(accessToken))
+        .send({ status: 'READY' });
+      expect(toReady.status).toBe(409);
+    });
   });
 
   describe('APPROVAL_ONLY', () => {
