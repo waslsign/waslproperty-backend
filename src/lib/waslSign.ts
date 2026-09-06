@@ -16,6 +16,11 @@ export interface WaslSignSigner {
   email: string;
   role?: string;
   signingOrder: number;
+  /** Where this signer's field sits on the document — normalized (0-1),
+   * top-left origin. Omit only if the document has no fixed layout for it;
+   * WaslSign falls back to a generic stacked position in that case, which
+   * won't line up with anything drawn on the page. */
+  field?: { page: number; x: number; y: number; width: number; height: number };
 }
 
 export interface CreateAgreementWorkflowInput {
@@ -183,6 +188,7 @@ export class WaslSignService {
             email: s.email,
             role: s.role,
             signingOrder: s.signingOrder,
+            field: s.field,
           })),
           documentBase64: input.documentBase64,
           webhookUrl: callbackUrl,

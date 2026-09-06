@@ -292,7 +292,7 @@ export class QuotesService {
         });
       }
 
-      const documentBytes = await generateQuoteAcceptanceDocument({
+      const { bytes: documentBytes, signatureFields } = await generateQuoteAcceptanceDocument({
         organisationName: organisation.name,
         propertyName: quote.workOrder.property.name,
         spaceName: quote.workOrder.space?.name,
@@ -315,8 +315,14 @@ export class QuotesService {
             name: `${actor.firstName} ${actor.lastName} (Authorised Signatory)`,
             email: actor.email,
             signingOrder: 1,
+            field: signatureFields[0],
           },
-          { name: quote.contractor.name, email: quote.contractor.email, signingOrder: 2 },
+          {
+            name: quote.contractor.name,
+            email: quote.contractor.email,
+            signingOrder: 2,
+            field: signatureFields[1],
+          },
         ],
         documentBase64: Buffer.from(documentBytes).toString('base64'),
       });

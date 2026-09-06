@@ -14,20 +14,62 @@ export interface QuoteAcceptanceDocumentInput {
   scheduledAt?: string | null;
 }
 
+export interface NormalizedSignatureField {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface QuoteAcceptanceDocument {
+  bytes: Uint8Array;
+  /** [0] = authorised signatory's box, [1] = contractor's box — same order
+   * as the two signature lines drawn on the document, in WaslSign's
+   * normalized (0-1, origin top-left) field coordinates. Computed from the
+   * exact pixel position those lines ended up at, so a signature field
+   * placed at these coordinates lands exactly on its line — never
+   * hardcoded/guessed independently by the caller. */
+  signatureFields: [NormalizedSignatureField, NormalizedSignatureField];
+}
+
+const PAGE_WIDTH = 612;
+const PAGE_HEIGHT = 792;
+/** Height of the clickable signature box sitting just above its line. */
+const SIGNATURE_BOX_HEIGHT = 36;
+
+/** Converts a box anchored by its bottom-left corner in pdf-lib's
+ * bottom-left-origin point space into WaslSign's normalized (0-1),
+ * top-left-origin field space (see utils/pdf.ts's renderPlaceholders,
+ * which does the exact inverse of this when actually drawing a field). */
+function toNormalizedField(
+  bottomLeftX: number,
+  bottomY: number,
+  widthPt: number,
+  heightPt: number,
+): NormalizedSignatureField {
+  return {
+    page: 1,
+    x: bottomLeftX / PAGE_WIDTH,
+    y: 1 - heightPt / PAGE_HEIGHT - bottomY / PAGE_HEIGHT,
+    width: widthPt / PAGE_WIDTH,
+    height: heightPt / PAGE_HEIGHT,
+  };
+}
+
 /**
  * Generates the simple, single-page Work Order / Quote Acceptance document
  * used for SIGNATURE_ONLY and the signature phase of APPROVAL_THEN_SIGNATURE.
  * Deliberately plain — no branding system, no layout engine. Returns the
- * raw PDF bytes; the caller base64-encodes them for the WaslSign API.
- *
- * Never includes resident identity or contact details — only what's needed
- * to identify the property/space and the work being accepted.
+ * raw PDF bytes plus where the two signature fields actually landed, so the
+ * caller can tell WaslSign exactly where each signer's box belongs instead
+ * of the two ever being computed independently and drifting apart.
  */
 export async function generateQuoteAcceptanceDocument(
   input: QuoteAcceptanceDocumentInput,
-): Promise<Uint8Array> {
+): Promise<QuoteAcceptanceDocument> {
   const doc = await PDFDocument.create();
-  const page = doc.addPage([612, 792]); // US Letter
+  const page = doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
 
@@ -86,34 +128,47 @@ export async function generateQuoteAcceptanceDocument(
     'By signing below, the parties acknowledge the scope of work and amount stated above and authorise the work to proceed.',
   );
 
-  y -= 60;
+  // Leave room above each line for the signature box itself, then draw the
+  // line right under it — the box's bottom edge sits exactly on the line.
+  y -= 60 + SIGNATURE_BOX_HEIGHT;
+  const signatoryLineY = y;
+  const signatoryWidth = 220;
   page.drawLine({
-    start: { x: left, y },
-    end: { x: left + 220, y },
+    start: { x: left, y: signatoryLineY },
+    end: { x: left + signatoryWidth, y: signatoryLineY },
     thickness: 1,
     color: rgb(0.5, 0.5, 0.5),
   });
   page.drawText('Authorised signatory', {
     x: left,
-    y: y - 14,
+    y: signatoryLineY - 14,
     size: 9,
     font,
     color: rgb(0.4, 0.4, 0.4),
   });
 
+  const contractorX = left + 280;
+  const contractorWidth = 220;
   page.drawLine({
-    start: { x: left + 280, y },
-    end: { x: left + 500, y },
+    start: { x: contractorX, y: signatoryLineY },
+    end: { x: contractorX + contractorWidth, y: signatoryLineY },
     thickness: 1,
     color: rgb(0.5, 0.5, 0.5),
   });
   page.drawText('Contractor', {
-    x: left + 280,
-    y: y - 14,
+    x: contractorX,
+    y: signatoryLineY - 14,
     size: 9,
     font,
     color: rgb(0.4, 0.4, 0.4),
   });
 
-  return doc.save();
+  const bytes = await doc.save();
+  return {
+    bytes,
+    signatureFields: [
+      toNormalizedField(left, signatoryLineY, signatoryWidth, SIGNATURE_BOX_HEIGHT),
+      toNormalizedField(contractorX, signatoryLineY, contractorWidth, SIGNATURE_BOX_HEIGHT),
+    ],
+  };
 }
