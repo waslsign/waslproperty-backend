@@ -1,5 +1,6 @@
 import { MaintenanceCategory, MaintenancePriority, MaintenanceRequestStatus } from '@prisma/client';
 import { z } from 'zod';
+import { csvEnum } from '../../lib/zod-helpers.js';
 
 export const createMaintenanceRequestSchema = z.object({
   propertyId: z.string().trim().min(1),
@@ -30,7 +31,7 @@ export const maintenanceRequestQuerySchema = z.object({
   search: z.string().trim().min(1).optional(),
   propertyId: z.string().trim().min(1).optional(),
   spaceId: z.string().trim().min(1).optional(),
-  status: z.nativeEnum(MaintenanceRequestStatus).optional(),
+  status: csvEnum(MaintenanceRequestStatus).optional(),
   priority: z.nativeEnum(MaintenancePriority).optional(),
   category: z.nativeEnum(MaintenanceCategory).optional(),
 });

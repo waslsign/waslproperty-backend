@@ -312,6 +312,7 @@ model ActivityEvent {
   actorUser    User?        @relation(fields: [actorUserId], references: [id])
 
   @@index([organisationId])
+  @@index([organisationId, createdAt])
   @@index([propertyId, createdAt])
   @@index([spaceId, createdAt])
   @@map("activity_events")

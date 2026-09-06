@@ -160,7 +160,7 @@ export class MaintenanceService {
 
     if (query.propertyId) where.propertyId = query.propertyId;
     if (query.spaceId) where.spaceId = query.spaceId;
-    if (query.status) where.status = query.status;
+    if (query.status) where.status = { in: query.status };
     if (query.priority) where.priority = query.priority;
     if (query.category) where.category = query.category;
     if (query.search) {

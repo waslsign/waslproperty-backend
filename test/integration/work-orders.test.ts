@@ -290,6 +290,56 @@ describe('work orders', () => {
     });
   });
 
+  it('filters by a comma-separated list of statuses (used by dashboard deep-links)', async () => {
+    const { accessToken } = await registerTestUser(app);
+    const { propertyId, maintenanceRequestId: reqA } =
+      await setupPropertySpaceAndRequest(accessToken);
+    const draft = await request(app)
+      .post('/api/v1/work-orders')
+      .set(authHeader(accessToken))
+      .send({
+        maintenanceRequestId: reqA,
+        title: 'Repair AC',
+        description: 'Fix it.',
+        priority: 'HIGH',
+      });
+
+    const spaceRes = await request(app)
+      .post(`/api/v1/properties/${propertyId}/spaces`)
+      .set(authHeader(accessToken))
+      .send({ name: 'Apartment 2001', code: '2001', spaceType: 'APARTMENT' });
+    const reqBRes = await request(app)
+      .post('/api/v1/maintenance-requests')
+      .set(authHeader(accessToken))
+      .send({ ...validRequestPayload, propertyId, spaceId: spaceRes.body.id });
+    const ready = await request(app).post('/api/v1/work-orders').set(authHeader(accessToken)).send({
+      maintenanceRequestId: reqBRes.body.id,
+      title: 'Repair heater',
+      description: 'Fix it.',
+      priority: 'LOW',
+    });
+    await request(app)
+      .patch(`/api/v1/work-orders/${ready.body.id}/status`)
+      .set(authHeader(accessToken))
+      .send({ status: 'READY' });
+
+    // Single value keeps working exactly as before.
+    const singleStatus = await request(app)
+      .get('/api/v1/work-orders?status=DRAFT')
+      .set(authHeader(accessToken));
+    expect(singleStatus.status).toBe(200);
+    expect(singleStatus.body.items.map((w: { id: string }) => w.id)).toEqual([draft.body.id]);
+
+    // Comma-separated list matches the union.
+    const multiStatus = await request(app)
+      .get('/api/v1/work-orders?status=DRAFT,READY')
+      .set(authHeader(accessToken));
+    expect(multiStatus.status).toBe(200);
+    expect(multiStatus.body.items.map((w: { id: string }) => w.id).sort()).toEqual(
+      [draft.body.id, ready.body.id].sort(),
+    );
+  });
+
   it('denies resident access entirely', async () => {
     const { accessToken: ownerToken, organisationId } = await registerTestUser(app);
     const { propertyId, spaceId, maintenanceRequestId } =

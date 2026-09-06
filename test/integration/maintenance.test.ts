@@ -232,6 +232,37 @@ describe('maintenance requests', () => {
     expect(residentASnooping.body.total).toBe(1);
   });
 
+  it('filters by a comma-separated list of statuses (used by dashboard deep-links)', async () => {
+    const { accessToken } = await registerTestUser(app);
+    const { propertyId, spaceId } = await setupPropertyAndSpace(accessToken);
+    const newReq = await request(app)
+      .post('/api/v1/maintenance-requests')
+      .set(authHeader(accessToken))
+      .send({ ...validRequestPayload, propertyId, spaceId });
+    const closedReq = await request(app)
+      .post('/api/v1/maintenance-requests')
+      .set(authHeader(accessToken))
+      .send({ ...validRequestPayload, propertyId, spaceId });
+    await request(app)
+      .patch(`/api/v1/maintenance-requests/${closedReq.body.id}/status`)
+      .set(authHeader(accessToken))
+      .send({ status: 'CANCELLED' });
+
+    const singleStatus = await request(app)
+      .get('/api/v1/maintenance-requests?status=NEW')
+      .set(authHeader(accessToken));
+    expect(singleStatus.status).toBe(200);
+    expect(singleStatus.body.items.map((r: { id: string }) => r.id)).toEqual([newReq.body.id]);
+
+    const multiStatus = await request(app)
+      .get('/api/v1/maintenance-requests?status=NEW,CANCELLED')
+      .set(authHeader(accessToken));
+    expect(multiStatus.status).toBe(200);
+    expect(multiStatus.body.items.map((r: { id: string }) => r.id).sort()).toEqual(
+      [newReq.body.id, closedReq.body.id].sort(),
+    );
+  });
+
   it('is organisation-isolated for both list and detail', async () => {
     const orgA = await registerTestUser(app);
     const orgB = await registerTestUser(app);

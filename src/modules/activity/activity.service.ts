@@ -29,6 +29,11 @@ export class ActivityService {
     return this.paginate({ organisationId, spaceId }, query);
   }
 
+  /** Org-wide feed, crossing property boundaries within the same org — used by the dashboard. */
+  async listForOrganisation(organisationId: string, query: ActivityQuery) {
+    return this.paginate({ organisationId }, query);
+  }
+
   private async paginate(
     where: Prisma.ActivityEventWhereInput,
     query: ActivityQuery,

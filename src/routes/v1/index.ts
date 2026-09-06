@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authRouter } from '../../modules/auth/auth.routes.js';
 import { contractorsRouter } from '../../modules/contractors/contractors.routes.js';
+import { dashboardRouter } from '../../modules/dashboard/dashboard.routes.js';
 import { invitesRouter } from '../../modules/invites/invites.routes.js';
 import { maintenanceRouter } from '../../modules/maintenance/maintenance.routes.js';
 import { organisationsRouter } from '../../modules/organisations/organisations.routes.js';
@@ -26,3 +27,4 @@ apiV1Router.use('/invites', invitesRouter);
 apiV1Router.use('/work-orders', workOrdersRouter);
 apiV1Router.use('/contractors', contractorsRouter);
 apiV1Router.use('/quotes', quotesRouter);
+apiV1Router.use('/dashboard', dashboardRouter);

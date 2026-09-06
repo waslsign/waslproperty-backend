@@ -139,7 +139,7 @@ export class WorkOrdersService {
   ): Promise<PaginatedResult<Prisma.WorkOrderGetPayload<{ include: typeof workOrderInclude }>>> {
     const where: Prisma.WorkOrderWhereInput = { organisationId };
     if (query.propertyId) where.propertyId = query.propertyId;
-    if (query.status) where.status = query.status;
+    if (query.status) where.status = { in: query.status };
     if (query.priority) where.priority = query.priority;
     if (query.search) {
       where.OR = [

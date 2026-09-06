@@ -1,5 +1,6 @@
 import { MaintenancePriority, WorkOrderStatus } from '@prisma/client';
 import { z } from 'zod';
+import { csvEnum } from '../../lib/zod-helpers.js';
 
 export const createWorkOrderSchema = z.object({
   maintenanceRequestId: z.string().trim().min(1),
@@ -31,7 +32,7 @@ export const workOrderQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
   search: z.string().trim().min(1).optional(),
   propertyId: z.string().trim().min(1).optional(),
-  status: z.nativeEnum(WorkOrderStatus).optional(),
+  status: csvEnum(WorkOrderStatus).optional(),
   priority: z.nativeEnum(MaintenancePriority).optional(),
 });
 export type WorkOrderQuery = z.infer<typeof workOrderQuerySchema>;
