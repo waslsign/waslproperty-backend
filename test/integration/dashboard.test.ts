@@ -361,7 +361,7 @@ describe('dashboard', () => {
   });
 
   describe('portfolio + breakdowns', () => {
-    it('reflects real space occupancy status and groupBy breakdowns including zero-count values', async () => {
+    it('derives space occupancy from active tenant/resident memberships (never Space.status) and groupBy breakdowns include zero-count values', async () => {
       const { accessToken } = await registerTestUser(app);
       const propertyRes = await request(app)
         .post('/api/v1/properties')
@@ -371,14 +371,31 @@ describe('dashboard', () => {
         .post(`/api/v1/properties/${propertyRes.body.id}/spaces`)
         .set(authHeader(accessToken))
         .send({ name: 'Unit A', code: 'A', spaceType: 'APARTMENT' });
-      await testPrisma.space.update({
-        where: { id: occupiedSpace.body.id },
-        data: { status: 'OCCUPIED' },
-      });
       await request(app)
+        .post(`/api/v1/properties/${propertyRes.body.id}/memberships`)
+        .set(authHeader(accessToken))
+        .send({
+          email: 'tenant@example.com',
+          firstName: 'Tina',
+          lastName: 'Tenant',
+          role: 'TENANT',
+          spaceId: occupiedSpace.body.id,
+        });
+      const ownerOnlySpace = await request(app)
         .post(`/api/v1/properties/${propertyRes.body.id}/spaces`)
         .set(authHeader(accessToken))
         .send({ name: 'Unit B', code: 'B', spaceType: 'APARTMENT' });
+      // An OWNER-only membership must NOT count as occupied — only TENANT/RESIDENT does.
+      await request(app)
+        .post(`/api/v1/properties/${propertyRes.body.id}/memberships`)
+        .set(authHeader(accessToken))
+        .send({
+          email: 'owner@example.com',
+          firstName: 'Oscar',
+          lastName: 'Owner',
+          role: 'OWNER',
+          spaceId: ownerOnlySpace.body.id,
+        });
 
       await createRequest(accessToken, propertyRes.body.id, occupiedSpace.body.id, {
         category: 'PLUMBING',

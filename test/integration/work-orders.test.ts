@@ -294,15 +294,12 @@ describe('work orders', () => {
     const { accessToken } = await registerTestUser(app);
     const { propertyId, maintenanceRequestId: reqA } =
       await setupPropertySpaceAndRequest(accessToken);
-    const draft = await request(app)
-      .post('/api/v1/work-orders')
-      .set(authHeader(accessToken))
-      .send({
-        maintenanceRequestId: reqA,
-        title: 'Repair AC',
-        description: 'Fix it.',
-        priority: 'HIGH',
-      });
+    const draft = await request(app).post('/api/v1/work-orders').set(authHeader(accessToken)).send({
+      maintenanceRequestId: reqA,
+      title: 'Repair AC',
+      description: 'Fix it.',
+      priority: 'HIGH',
+    });
 
     const spaceRes = await request(app)
       .post(`/api/v1/properties/${propertyId}/spaces`)

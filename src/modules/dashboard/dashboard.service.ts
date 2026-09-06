@@ -8,6 +8,7 @@ import {
   WorkOrderStatus,
 } from '@prisma/client';
 import { ActivityService } from '../activity/activity.service.js';
+import { getOccupiedSpaceIds } from '../../lib/occupancy.js';
 import { deriveWorkflowResult, type WorkflowResult } from '../quotes/workflow-result.js';
 import type { DashboardPeriod, DashboardQuery } from './dashboard.schemas.js';
 
@@ -227,13 +228,23 @@ export class DashboardService {
     return { openRequests, activeWorkOrders, completedThisPeriod, pendingSignature };
   }
 
+  // Occupancy is derived from active TENANT/RESIDENT memberships — never
+  // from Space.status, which covers unrelated operational states
+  // (under maintenance, reserved). See src/lib/occupancy.ts, the single
+  // source of truth for this already used elsewhere (e.g. property/space
+  // detail pages) — reused here rather than reimplemented.
   private async getPortfolio(organisationId: string) {
-    const [totalProperties, totalSpaces, occupiedSpaces, vacantSpaces] = await Promise.all([
+    const [totalProperties, spaceRows] = await Promise.all([
       this.prisma.property.count({ where: { organisationId } }),
-      this.prisma.space.count({ where: { organisationId } }),
-      this.prisma.space.count({ where: { organisationId, status: 'OCCUPIED' } }),
-      this.prisma.space.count({ where: { organisationId, status: 'VACANT' } }),
+      this.prisma.space.findMany({ where: { organisationId }, select: { id: true } }),
     ]);
+    const totalSpaces = spaceRows.length;
+    const occupiedIds = await getOccupiedSpaceIds(
+      this.prisma,
+      spaceRows.map((s) => s.id),
+    );
+    const occupiedSpaces = occupiedIds.size;
+    const vacantSpaces = totalSpaces - occupiedSpaces;
     const occupancyRatePct =
       totalSpaces === 0 ? 0 : Math.round((occupiedSpaces / totalSpaces) * 1000) / 10;
     return { totalProperties, totalSpaces, occupiedSpaces, vacantSpaces, occupancyRatePct };
