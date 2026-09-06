@@ -274,6 +274,10 @@ export class QuotesService {
     const organisation = await this.prisma.organisation.findUniqueOrThrow({
       where: { id: organisationId },
     });
+    // The authorised signatory is the real manager who confirmed this
+    // workflow — a synthetic address here would mean WaslSign faithfully
+    // emails a signing link to an inbox that can never exist.
+    const actor = await this.prisma.user.findUniqueOrThrow({ where: { id: actorUserId } });
     let waslSignOrganisationId = organisation.waslSignOrganisationId;
 
     try {
@@ -308,8 +312,8 @@ export class QuotesService {
         description: quote.description ?? undefined,
         signers: [
           {
-            name: 'Authorised Signatory',
-            email: organisation.name.toLowerCase().replace(/\s+/g, '.') + '@signer.local',
+            name: `${actor.firstName} ${actor.lastName} (Authorised Signatory)`,
+            email: actor.email,
             signingOrder: 1,
           },
           { name: quote.contractor.name, email: quote.contractor.email, signingOrder: 2 },
