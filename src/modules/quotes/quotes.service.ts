@@ -5,6 +5,7 @@ import { env } from '../../config/env.js';
 import { logger } from '../../lib/logger.js';
 import { generateQuoteAcceptanceDocument } from '../../lib/quoteAcceptanceDocument.js';
 import { waslSignService, WaslSignServiceError } from '../../lib/waslSign.js';
+import { WorkOrdersService } from '../work-orders/work-orders.service.js';
 import type {
   CreateQuoteInput,
   RejectQuoteInput,
@@ -27,7 +28,36 @@ const quoteInclude = {
 } satisfies Prisma.ContractorQuoteInclude;
 
 export class QuotesService {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly workOrdersService: WorkOrdersService;
+
+  constructor(private readonly prisma: PrismaClient) {
+    this.workOrdersService = new WorkOrdersService(prisma);
+  }
+
+  /**
+   * The DRAFT → READY step isn't really a manager decision — it's just
+   * reflecting that the required workflow finished. Advance it the moment
+   * that becomes true, rather than making the manager click "Update status"
+   * purely to acknowledge something that already happened. Scheduling,
+   * starting, and completing stay genuinely manual (see M7's Work Order
+   * Release rule). Best-effort: if the work order already moved on or isn't
+   * actually eligible yet, this silently no-ops rather than surfacing an
+   * error the caller has no reason to handle.
+   */
+  private async maybeReleaseWorkOrder(
+    organisationId: string,
+    workOrderId: string,
+    actorUserId: string | null,
+  ) {
+    try {
+      await this.workOrdersService.updateStatus(organisationId, actorUserId, workOrderId, {
+        status: 'READY',
+      });
+    } catch (err) {
+      if (err instanceof ConflictError) return;
+      throw err;
+    }
+  }
 
   private defaultWorkflowMode(
     amount: number,
@@ -113,8 +143,8 @@ export class QuotesService {
         spaceId: quote.workOrder.space?.id ?? null,
         actorUserId,
         eventType: 'QUOTE_SUBMITTED',
-        entityType: 'ContractorQuote',
-        entityId: quoteId,
+        entityType: 'WorkOrder',
+        entityId: quote.workOrder.id,
         title: `Quote submitted by ${quote.contractor.name}`,
         description: `${updated.amount} ${updated.currency} · ${quote.workOrder.title}`,
       });
@@ -194,8 +224,8 @@ export class QuotesService {
         spaceId: quote.workOrder.space?.id ?? null,
         actorUserId,
         eventType: 'QUOTE_APPROVED',
-        entityType: 'ContractorQuote',
-        entityId: quoteId,
+        entityType: 'WorkOrder',
+        entityId: quote.workOrder.id,
         title: `Quote approved: ${quote.workOrder.title}`,
         description: `${quote.amount} ${quote.currency} · ${quote.contractor.name}`,
       });
@@ -204,6 +234,7 @@ export class QuotesService {
     });
 
     if (quote.workflowMode === 'APPROVAL_ONLY') {
+      await this.maybeReleaseWorkOrder(organisationId, quote.workOrder.id, actorUserId);
       return approved;
     }
 
@@ -249,8 +280,8 @@ export class QuotesService {
         spaceId: quote.workOrder.space?.id ?? null,
         actorUserId,
         eventType: 'QUOTE_REJECTED',
-        entityType: 'ContractorQuote',
-        entityId: quoteId,
+        entityType: 'WorkOrder',
+        entityId: quote.workOrder.id,
         title: `Quote rejected: ${quote.workOrder.title}`,
         description: input.reason ?? `${quote.amount} ${quote.currency} · ${quote.contractor.name}`,
       });
@@ -325,6 +356,7 @@ export class QuotesService {
           },
         ],
         documentBase64: Buffer.from(documentBytes).toString('base64'),
+        senderDisplayName: organisation.name,
       });
 
       return this.prisma.$transaction(async (tx) => {
@@ -346,8 +378,8 @@ export class QuotesService {
           spaceId: quote.workOrder.space?.id ?? null,
           actorUserId,
           eventType: 'QUOTE_SIGNING_STARTED',
-          entityType: 'ContractorQuote',
-          entityId: quote.id,
+          entityType: 'WorkOrder',
+          entityId: quote.workOrder.id,
           title: `Signing started: ${quote.workOrder.title}`,
           description: `${quote.amount} ${quote.currency} · ${quote.contractor.name}`,
         });
@@ -429,14 +461,20 @@ export class QuotesService {
         propertyId: quote.workOrder.property.id,
         spaceId: quote.workOrder.space?.id ?? null,
         eventType: nowCompleting ? 'QUOTE_SIGNED' : 'QUOTE_SUBMITTED',
-        entityType: 'ContractorQuote',
-        entityId: quote.id,
+        entityType: 'WorkOrder',
+        entityId: quote.workOrder.id,
         title: nowCompleting
           ? `Agreement signed: ${quote.workOrder.title}`
           : `Signature update: ${quote.workOrder.title}`,
         description: `Status: ${signatureStatus}`,
       });
     });
+
+    if (nowCompleting) {
+      // No human actor for a webhook-driven completion — signer identities
+      // are recorded in WaslSign's own audit trail, not duplicated here.
+      await this.maybeReleaseWorkOrder(quote.organisationId, quote.workOrder.id, null);
+    }
 
     return { handled: true as const };
   }

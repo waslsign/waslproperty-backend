@@ -162,11 +162,12 @@ describe('contractor quotes + workflow modes', () => {
       expect(approve.body.status).toBe('APPROVED');
       expect(waslSignServiceMock.createAgreementWorkflow).not.toHaveBeenCalled();
 
-      const ready = await request(app)
-        .patch(`/api/v1/work-orders/${workOrderId}/status`)
-        .set(authHeader(accessToken))
-        .send({ status: 'READY' });
-      expect(ready.status).toBe(200);
+      // Approval alone completes this workflow — the work order is released
+      // automatically, without a separate manual "move to Ready" click.
+      const workOrder = await request(app)
+        .get(`/api/v1/work-orders/${workOrderId}`)
+        .set(authHeader(accessToken));
+      expect(workOrder.body.status).toBe('READY');
 
       const approvedActivity = await testPrisma.activityEvent.findFirst({
         where: { organisationId, eventType: 'QUOTE_APPROVED' },
@@ -259,8 +260,8 @@ describe('contractor quotes + workflow modes', () => {
       expect(waslSignServiceMock.provisionOrganisation).toHaveBeenCalledTimes(1); // still just once
     });
 
-    it('completing the signature via webhook releases the work order', async () => {
-      const { accessToken } = await registerTestUser(app);
+    it('completing the signature via webhook releases the work order automatically', async () => {
+      const { accessToken, organisationId } = await registerTestUser(app);
       const { workOrderId, quoteId } = await setupWorkOrderWithContractor(accessToken, 7500);
       await request(app)
         .patch(`/api/v1/quotes/${quoteId}/workflow-mode`)
@@ -272,11 +273,17 @@ describe('contractor quotes + workflow modes', () => {
       const callbackRes = await sendCallback(payload);
       expect(callbackRes.status).toBe(200);
 
-      const ready = await request(app)
-        .patch(`/api/v1/work-orders/${workOrderId}/status`)
-        .set(authHeader(accessToken))
-        .send({ status: 'READY' });
-      expect(ready.status).toBe(200);
+      // The webhook itself already released it — DRAFT -> READY is not a
+      // manager decision, just an acknowledgement that the gate opened.
+      const workOrder = await request(app)
+        .get(`/api/v1/work-orders/${workOrderId}`)
+        .set(authHeader(accessToken));
+      expect(workOrder.body.status).toBe('READY');
+
+      const releaseActivity = await testPrisma.activityEvent.findFirst({
+        where: { organisationId, eventType: 'WORK_ORDER_STATUS_CHANGED', actorUserId: null },
+      });
+      expect(releaseActivity).toBeTruthy();
     });
 
     it('does not release on a declined signature', async () => {
@@ -421,7 +428,7 @@ describe('contractor quotes + workflow modes', () => {
       expect(ready.status).toBe(409);
     });
 
-    it('the final signature completes the workflow and releases the work order', async () => {
+    it('the final signature completes the workflow and releases the work order automatically', async () => {
       const { accessToken } = await registerTestUser(app);
       const { workOrderId, quoteId } = await setupWorkOrderWithContractor(accessToken, 30_000);
       await request(app)
@@ -433,11 +440,10 @@ describe('contractor quotes + workflow modes', () => {
       const quote = await testPrisma.contractorQuote.findUniqueOrThrow({ where: { id: quoteId } });
       await sendCallback(signedCallbackFor(quote.waslSignAgreementId!, quoteId));
 
-      const ready = await request(app)
-        .patch(`/api/v1/work-orders/${workOrderId}/status`)
-        .set(authHeader(accessToken))
-        .send({ status: 'READY' });
-      expect(ready.status).toBe(200);
+      const workOrder = await request(app)
+        .get(`/api/v1/work-orders/${workOrderId}`)
+        .set(authHeader(accessToken));
+      expect(workOrder.body.status).toBe('READY');
     });
   });
 

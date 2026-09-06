@@ -30,6 +30,10 @@ export interface CreateAgreementWorkflowInput {
   description?: string;
   signers: WaslSignSigner[];
   documentBase64: string;
+  /** Shown to the first recipient as "X sent you a document to review and
+   * sign" — omit to fall back to WaslSign's own internal integration-user
+   * address, which reads oddly to an actual human recipient. */
+  senderDisplayName?: string;
 }
 
 export interface CreateAgreementWorkflowResult {
@@ -192,6 +196,7 @@ export class WaslSignService {
           })),
           documentBase64: input.documentBase64,
           webhookUrl: callbackUrl,
+          senderDisplayName: input.senderDisplayName,
         }),
       },
     );

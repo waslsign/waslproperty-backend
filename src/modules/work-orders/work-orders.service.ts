@@ -175,7 +175,9 @@ export class WorkOrdersService {
 
   async updateStatus(
     organisationId: string,
-    actorUserId: string,
+    // Null for a system-triggered transition (e.g. auto-release once a
+    // quote's workflow completes) — there is no human actor for that event.
+    actorUserId: string | null,
     workOrderId: string,
     input: UpdateWorkOrderStatusInput,
   ) {
@@ -227,7 +229,9 @@ export class WorkOrdersService {
         entityType: 'WorkOrder',
         entityId: workOrder.id,
         title: `Work order moved to ${formatStatusLabel(input.status)}`,
-        description: workOrder.title,
+        description: actorUserId
+          ? workOrder.title
+          : `${workOrder.title} · released automatically once its workflow completed`,
       });
 
       return updated;
