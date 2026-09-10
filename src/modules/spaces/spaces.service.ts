@@ -34,7 +34,11 @@ export class SpacesService {
     organisationId: string,
     propertyId: string,
     query: PaginationQuery,
-  ): Promise<PaginatedResult<Prisma.SpaceGetPayload<object> & { occupancy: Occupancy }>> {
+  ): Promise<
+    PaginatedResult<
+      Prisma.SpaceGetPayload<object> & { occupancy: Occupancy; occupantName: string | null }
+    >
+  > {
     await this.assertPropertyInOrg(organisationId, propertyId);
 
     const where: Prisma.SpaceWhereInput = {
@@ -59,20 +63,55 @@ export class SpacesService {
       this.prisma.space.count({ where }),
     ]);
 
-    const occupiedIds = await getOccupiedSpaceIds(
-      this.prisma,
-      items.map((space) => space.id),
-    );
+    const spaceIds = items.map((space) => space.id);
+    const [occupiedIds, occupantByOrder] = await Promise.all([
+      getOccupiedSpaceIds(this.prisma, spaceIds),
+      this.getPrimaryOccupantNames(spaceIds),
+    ]);
 
     return {
       items: items.map((space) => ({
         ...space,
         occupancy: occupiedIds.has(space.id) ? 'OCCUPIED' : ('VACANT' as Occupancy),
+        occupantName: occupantByOrder.get(space.id) ?? null,
       })),
       page: query.page,
       pageSize: query.pageSize,
       total,
     };
+  }
+
+  /** One display name per space — the person a manager would call "the
+   * current occupant". A TENANT or RESIDENT wins over an OWNER who doesn't
+   * live there; ties within the same tier keep the earliest membership. */
+  private async getPrimaryOccupantNames(spaceIds: string[]): Promise<Map<string, string>> {
+    if (spaceIds.length === 0) return new Map();
+
+    const memberships = await this.prisma.propertyMembership.findMany({
+      where: {
+        spaceId: { in: spaceIds },
+        status: 'ACTIVE',
+        role: { in: ['TENANT', 'RESIDENT', 'OWNER'] },
+      },
+      orderBy: { startDate: 'asc' },
+      select: {
+        spaceId: true,
+        role: true,
+        contact: { select: { firstName: true, lastName: true } },
+      },
+    });
+
+    const roleRank: Record<string, number> = { TENANT: 0, RESIDENT: 0, OWNER: 1 };
+    const best = new Map<string, { rank: number; name: string }>();
+    for (const m of memberships) {
+      if (!m.spaceId) continue;
+      const rank = roleRank[m.role] ?? 2;
+      const current = best.get(m.spaceId);
+      if (!current || rank < current.rank) {
+        best.set(m.spaceId, { rank, name: `${m.contact.firstName} ${m.contact.lastName}` });
+      }
+    }
+    return new Map([...best.entries()].map(([spaceId, v]) => [spaceId, v.name]));
   }
 
   async create(

@@ -87,7 +87,13 @@ describe('property/space overview summaries', () => {
       .get(`/api/v1/properties/${propertyId}`)
       .set(authHeader(accessToken));
 
-    expect(res.body.summary).toEqual({ spaces: 2, occupied: 1, vacant: 1, people: 3 });
+    expect(res.body.summary).toEqual({
+      spaces: 2,
+      occupied: 1,
+      vacant: 1,
+      people: 3,
+      peopleByRole: { owners: 1, tenants: 1, residents: 0 },
+    });
   });
 
   it('shows a natural 1/1/0/N summary for a single-space property', async () => {
@@ -109,7 +115,13 @@ describe('property/space overview summaries', () => {
       .get(`/api/v1/properties/${propertyId}`)
       .set(authHeader(accessToken));
 
-    expect(res.body.summary).toEqual({ spaces: 1, occupied: 1, vacant: 0, people: 1 });
+    expect(res.body.summary).toEqual({
+      spaces: 1,
+      occupied: 1,
+      vacant: 0,
+      people: 1,
+      peopleByRole: { owners: 0, tenants: 0, residents: 1 },
+    });
   });
 
   it('derives owner/tenant key people on the space and leaves vacant spaces empty', async () => {

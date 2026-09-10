@@ -7,6 +7,7 @@ import { createSpaceForProperty, listSpacesForProperty } from '../spaces/spaces.
 import {
   createProperty,
   getProperty,
+  getPropertyInsights,
   listProperties,
   updateProperty,
 } from './properties.controller.js';
@@ -19,6 +20,13 @@ propertiesRouter.get('/', asyncHandler(listProperties));
 propertiesRouter.post('/', requireOrgRole(['OWNER', 'ADMIN']), asyncHandler(createProperty));
 propertiesRouter.get('/:id', asyncHandler(getProperty));
 propertiesRouter.patch('/:id', requireOrgRole(['OWNER', 'ADMIN']), asyncHandler(updateProperty));
+// Attention/operational data — same staff-only sensitivity as the org-wide
+// dashboard (quote/work-order context residents must never see).
+propertiesRouter.get(
+  '/:id/insights',
+  requireOrgRole(['OWNER', 'ADMIN']),
+  asyncHandler(getPropertyInsights),
+);
 
 propertiesRouter.get('/:propertyId/spaces', asyncHandler(listSpacesForProperty));
 propertiesRouter.post(

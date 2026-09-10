@@ -124,6 +124,44 @@ describe('spaces', () => {
     expect(res.body.items[0].code).toBe('1204');
   });
 
+  it('includes the current occupant name on the spaces list, null when vacant', async () => {
+    const { accessToken } = await registerTestUser(app);
+    const propertyId = await createProperty(app, accessToken);
+    const spaceRes = await request(app)
+      .post(`/api/v1/properties/${propertyId}/spaces`)
+      .set(authHeader(accessToken))
+      .send(validSpace);
+    const vacantSpaceRes = await request(app)
+      .post(`/api/v1/properties/${propertyId}/spaces`)
+      .set(authHeader(accessToken))
+      .send({ name: 'Apartment 1205', code: '1205', spaceType: 'APARTMENT' });
+
+    const before = await request(app)
+      .get(`/api/v1/properties/${propertyId}/spaces`)
+      .set(authHeader(accessToken));
+    const beforeOccupied = before.body.items.find((s: { id: string }) => s.id === spaceRes.body.id);
+    expect(beforeOccupied.occupantName).toBeNull();
+
+    await request(app)
+      .post(`/api/v1/properties/${propertyId}/memberships`)
+      .set(authHeader(accessToken))
+      .send({
+        email: 'tenant@example.com',
+        firstName: 'Tara',
+        lastName: 'Tenant',
+        role: 'TENANT',
+        spaceId: spaceRes.body.id,
+      });
+
+    const after = await request(app)
+      .get(`/api/v1/properties/${propertyId}/spaces`)
+      .set(authHeader(accessToken));
+    const occupied = after.body.items.find((s: { id: string }) => s.id === spaceRes.body.id);
+    const vacant = after.body.items.find((s: { id: string }) => s.id === vacantSpaceRes.body.id);
+    expect(occupied.occupantName).toBe('Tara Tenant');
+    expect(vacant.occupantName).toBeNull();
+  });
+
   it('returns a space 360 view including its parent property', async () => {
     const { accessToken } = await registerTestUser(app);
     const propertyId = await createProperty(app, accessToken);

@@ -11,6 +11,7 @@ const membershipInclude = {
       firstName: true,
       lastName: true,
       email: true,
+      phone: true,
       status: true,
       userId: true,
       invites: {

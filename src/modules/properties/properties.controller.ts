@@ -32,6 +32,16 @@ export async function getProperty(req: Request, res: Response) {
   res.json(property);
 }
 
+export async function getPropertyInsights(req: Request, res: Response) {
+  const auth = requireAuth(req);
+  const insights = await propertiesService.getInsights(
+    auth.organisationId,
+    req.params.id as string,
+    new Date(),
+  );
+  res.json(insights);
+}
+
 export async function updateProperty(req: Request, res: Response) {
   const auth = requireAuth(req);
   const input = updatePropertySchema.parse(req.body);

@@ -3,7 +3,12 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../../src/app.js';
 import { signAccessToken } from '../../src/lib/tokens.js';
 import { resetDb, testPrisma } from '../helpers/db.js';
-import { authHeader, registerTestUser } from '../helpers/auth.js';
+import {
+  authHeader,
+  createPlainUser,
+  registerTestUser,
+  residentAccessToken,
+} from '../helpers/auth.js';
 
 const app = createApp();
 
@@ -153,5 +158,149 @@ describe('properties', () => {
     expect(res.status).toBe(200);
     expect(res.body.name).toBe('Marina Heights Tower');
     expect(res.body.status).toBe('INACTIVE');
+  });
+
+  describe('GET /properties/:id/insights', () => {
+    let insightsPropertyCodeCounter = 0;
+
+    async function setupPropertyWithSpace(accessToken: string) {
+      const code = `MARINA-${++insightsPropertyCodeCounter}`;
+      const propertyRes = await request(app)
+        .post('/api/v1/properties')
+        .set(authHeader(accessToken))
+        .send({ ...validProperty, code });
+      const spaceRes = await request(app)
+        .post(`/api/v1/properties/${propertyRes.body.id}/spaces`)
+        .set(authHeader(accessToken))
+        .send({ name: 'Apartment 1204', code: '1204', spaceType: 'APARTMENT' });
+      return { propertyId: propertyRes.body.id as string, spaceId: spaceRes.body.id as string };
+    }
+
+    it('requires authentication', async () => {
+      const { accessToken } = await registerTestUser(app);
+      const { propertyId } = await setupPropertyWithSpace(accessToken);
+      const res = await request(app).get(`/api/v1/properties/${propertyId}/insights`);
+      expect(res.status).toBe(401);
+    });
+
+    it('denies a resident', async () => {
+      const { accessToken: ownerToken, organisationId } = await registerTestUser(app);
+      const { propertyId, spaceId } = await setupPropertyWithSpace(ownerToken);
+      const resident = await createPlainUser();
+      await request(app)
+        .post(`/api/v1/properties/${propertyId}/memberships`)
+        .set(authHeader(ownerToken))
+        .send({
+          email: resident.email,
+          firstName: 'Resi',
+          lastName: 'Dent',
+          role: 'TENANT',
+          spaceId,
+        });
+      const contact = await testPrisma.propertyContact.findFirst({
+        where: { email: resident.email },
+      });
+      const residentToken = residentAccessToken(resident.userId, organisationId, contact!.id);
+
+      const res = await request(app)
+        .get(`/api/v1/properties/${propertyId}/insights`)
+        .set(authHeader(residentToken));
+      expect(res.status).toBe(403);
+    });
+
+    it('returns 404 for a property in another organisation', async () => {
+      const orgA = await registerTestUser(app);
+      const orgB = await registerTestUser(app);
+      const { propertyId } = await setupPropertyWithSpace(orgA.accessToken);
+
+      const res = await request(app)
+        .get(`/api/v1/properties/${propertyId}/insights`)
+        .set(authHeader(orgB.accessToken));
+      expect(res.status).toBe(404);
+    });
+
+    it('scopes openRequests, averageResolutionHours and attention to this property only', async () => {
+      const { accessToken } = await registerTestUser(app);
+      const { propertyId, spaceId } = await setupPropertyWithSpace(accessToken);
+      const other = await setupPropertyWithSpace(accessToken);
+
+      // This property: one open urgent request (aged past 24h -> CRITICAL),
+      // one resolved request with a known resolution time.
+      const urgentRes = await request(app)
+        .post('/api/v1/maintenance-requests')
+        .set(authHeader(accessToken))
+        .send({
+          title: 'Lift stuck',
+          description: 'Lift stuck between floors.',
+          category: 'COMMON_AREA',
+          priority: 'URGENT',
+          propertyId,
+          spaceId,
+        });
+      await testPrisma.maintenanceRequest.update({
+        where: { id: urgentRes.body.id },
+        data: { reportedAt: new Date(Date.now() - 25 * 3_600_000) },
+      });
+
+      const resolvedRes = await request(app)
+        .post('/api/v1/maintenance-requests')
+        .set(authHeader(accessToken))
+        .send({
+          title: 'Leaking tap',
+          description: 'Kitchen tap leaking.',
+          category: 'PLUMBING',
+          priority: 'LOW',
+          propertyId,
+          spaceId,
+        });
+      const now = Date.now();
+      await testPrisma.maintenanceRequest.update({
+        where: { id: resolvedRes.body.id },
+        data: {
+          reportedAt: new Date(now - 10 * 3_600_000),
+          status: 'RESOLVED',
+          resolvedAt: new Date(now),
+        },
+      });
+
+      // A different property in the same org: must never leak into this property's insights.
+      await request(app).post('/api/v1/maintenance-requests').set(authHeader(accessToken)).send({
+        title: 'Other property urgent issue',
+        description: 'Should not appear.',
+        category: 'SECURITY',
+        priority: 'URGENT',
+        propertyId: other.propertyId,
+        spaceId: other.spaceId,
+      });
+      await testPrisma.maintenanceRequest.updateMany({
+        where: { propertyId: other.propertyId },
+        data: { reportedAt: new Date(Date.now() - 30 * 3_600_000) },
+      });
+
+      const res = await request(app)
+        .get(`/api/v1/properties/${propertyId}/insights`)
+        .set(authHeader(accessToken));
+
+      expect(res.status).toBe(200);
+      expect(res.body.metrics.openRequests).toBe(1); // only the urgent one — resolved excluded
+      expect(res.body.metrics.averageResolutionHours).toBe(10);
+      expect(res.body.attention.items).toHaveLength(1);
+      expect(res.body.attention.items[0].type).toBe('URGENT_REQUEST_OPEN');
+      expect(res.body.attention.items[0].propertyId).toBe(propertyId);
+    });
+
+    it('returns null averageResolutionHours when nothing has been resolved', async () => {
+      const { accessToken } = await registerTestUser(app);
+      const { propertyId } = await setupPropertyWithSpace(accessToken);
+
+      const res = await request(app)
+        .get(`/api/v1/properties/${propertyId}/insights`)
+        .set(authHeader(accessToken));
+
+      expect(res.status).toBe(200);
+      expect(res.body.metrics.openRequests).toBe(0);
+      expect(res.body.metrics.averageResolutionHours).toBeNull();
+      expect(res.body.attention.items).toEqual([]);
+    });
   });
 });
