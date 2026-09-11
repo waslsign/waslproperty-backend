@@ -3,6 +3,7 @@ import { recordActivity } from '../activity/activity.js';
 import { ConflictError, ForbiddenError, NotFoundError } from '../../errors/AppError.js';
 import type { PaginatedResult } from '../../lib/pagination.js';
 import type { AuthContext } from '../../middlewares/auth.middleware.js';
+import { notifyOrgStaff, notifyUser } from '../notifications/notifications.js';
 import { residentWorkOrderStatusLabel } from '../work-orders/work-orders.service.js';
 import type {
   CreateMaintenanceRequestInput,
@@ -139,6 +140,18 @@ export class MaintenanceService {
         description: `${formatStatusLabel(request.category)} · ${formatStatusLabel(request.priority)} priority · ${property.name}`,
       });
 
+      await notifyOrgStaff(
+        tx,
+        organisationId,
+        {
+          title: `New request: ${request.title}`,
+          body: `${property.name} · ${formatStatusLabel(request.priority)} priority`,
+          entityType: 'MaintenanceRequest',
+          entityId: request.id,
+        },
+        { excludeUserId: auth.userId },
+      );
+
       return request;
     });
   }
@@ -257,6 +270,16 @@ export class MaintenanceService {
         title: `Maintenance request moved to ${formatStatusLabel(nextStatus)}`,
         description: request.title,
       });
+
+      if (request.reportedByUserId && request.reportedByUserId !== actorUserId) {
+        await notifyUser(tx, {
+          organisationId,
+          userId: request.reportedByUserId,
+          title: `Your request '${request.title}' moved to ${formatStatusLabel(nextStatus)}`,
+          entityType: 'MaintenanceRequest',
+          entityId: request.id,
+        });
+      }
 
       return updated;
     });

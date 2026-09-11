@@ -3,6 +3,7 @@ import { recordActivity } from '../activity/activity.js';
 import { ConflictError, NotFoundError } from '../../errors/AppError.js';
 import type { PaginatedResult } from '../../lib/pagination.js';
 import { ContractorsService } from '../contractors/contractors.service.js';
+import { notifyUser } from '../notifications/notifications.js';
 import { canReleaseWorkOrder, deriveWorkflowResult } from '../quotes/workflow-result.js';
 import type {
   AssignContractorInput,
@@ -129,6 +130,16 @@ export class WorkOrdersService {
         description: `${formatStatusLabel(input.priority)} priority`,
       });
 
+      if (request.reportedByUserId) {
+        await notifyUser(tx, {
+          organisationId,
+          userId: request.reportedByUserId,
+          title: `Work has started on your request '${request.title}'`,
+          entityType: 'MaintenanceRequest',
+          entityId: request.id,
+        });
+      }
+
       return workOrder;
     });
   }
@@ -233,6 +244,23 @@ export class WorkOrdersService {
           ? workOrder.title
           : `${workOrder.title} · released automatically once its workflow completed`,
       });
+
+      if (workOrder.maintenanceRequestId) {
+        const request = await tx.maintenanceRequest.findUnique({
+          where: { id: workOrder.maintenanceRequestId },
+          select: { id: true, title: true, reportedByUserId: true },
+        });
+        const residentLabel = residentWorkOrderStatusLabel[input.status];
+        if (request?.reportedByUserId && residentLabel) {
+          await notifyUser(tx, {
+            organisationId,
+            userId: request.reportedByUserId,
+            title: `Your request '${request.title}': ${residentLabel.toLowerCase()}`,
+            entityType: 'MaintenanceRequest',
+            entityId: request.id,
+          });
+        }
+      }
 
       return updated;
     });

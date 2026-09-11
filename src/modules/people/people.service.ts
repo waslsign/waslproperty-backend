@@ -1,8 +1,14 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { recordActivity } from '../activity/activity.js';
 import { ConflictError, NotFoundError } from '../../errors/AppError.js';
+import { notifyUser } from '../notifications/notifications.js';
 import type { PaginatedResult, PaginationQuery } from '../../lib/pagination.js';
-import type { AddPersonInput, PeopleDirectoryQuery } from './people.schemas.js';
+import type {
+  AddPersonInput,
+  AssignExistingPersonInput,
+  PeopleDirectoryQuery,
+  UpdateMembershipInput,
+} from './people.schemas.js';
 
 const membershipInclude = {
   contact: {
@@ -158,6 +164,227 @@ export class PeopleService {
       });
 
       return membership;
+    });
+  }
+
+  /** Attaches a contact that already exists in the organisation's directory
+   * to this property/space — the counterpart to addPerson, which always
+   * creates a brand-new contact. Never lets a manager recreate a person
+   * just to associate them elsewhere. */
+  async assignExistingPerson(
+    organisationId: string,
+    actorUserId: string,
+    propertyId: string,
+    input: AssignExistingPersonInput,
+  ) {
+    const property = await this.assertPropertyInOrg(organisationId, propertyId);
+    const contact = await this.prisma.propertyContact.findFirst({
+      where: { id: input.contactId, organisationId },
+    });
+    if (!contact) {
+      throw new NotFoundError('Person not found');
+    }
+
+    const space = input.spaceId
+      ? await this.assertSpaceInProperty(organisationId, propertyId, input.spaceId)
+      : null;
+
+    return this.prisma.$transaction(async (tx) => {
+      const existingActive = await tx.propertyMembership.findFirst({
+        where: {
+          contactId: contact.id,
+          propertyId,
+          spaceId: input.spaceId ?? null,
+          role: input.role,
+          status: 'ACTIVE',
+        },
+      });
+      if (existingActive) {
+        throw new ConflictError('This person already has this role for this property or space');
+      }
+
+      const membership = await tx.propertyMembership.create({
+        data: {
+          organisationId,
+          propertyId,
+          spaceId: input.spaceId ?? null,
+          contactId: contact.id,
+          role: input.role,
+          status: 'ACTIVE',
+          startDate: new Date(),
+        },
+        include: membershipInclude,
+      });
+
+      const fullName = `${contact.firstName} ${contact.lastName}`;
+      const title = space
+        ? `${fullName} added to ${space.name}`
+        : `${fullName} added as ${formatRoleLabel(input.role)} to ${property.name}`;
+
+      await recordActivity(tx, {
+        organisationId,
+        propertyId,
+        spaceId: input.spaceId ?? null,
+        actorUserId,
+        eventType: 'PERSON_ADDED',
+        entityType: 'PropertyMembership',
+        entityId: membership.id,
+        title,
+        metadata: { role: input.role, contactId: contact.id },
+      });
+
+      if (contact.userId) {
+        await notifyUser(tx, {
+          organisationId,
+          userId: contact.userId,
+          title: `You've been added to ${property.name}${space ? ` · ${space.name}` : ''}`,
+          entityType: 'Property',
+          entityId: propertyId,
+        });
+      }
+
+      return membership;
+    });
+  }
+
+  /** Free-text search across the organisation's contact directory —
+   * independent of any existing membership, so a person with zero current
+   * memberships is still findable (e.g. to assign them somewhere new). */
+  async searchContacts(organisationId: string, search: string) {
+    return this.prisma.propertyContact.findMany({
+      where: {
+        organisationId,
+        status: 'ACTIVE',
+        OR: [
+          { firstName: { contains: search, mode: 'insensitive' } },
+          { lastName: { contains: search, mode: 'insensitive' } },
+          { email: { contains: search, mode: 'insensitive' } },
+        ],
+      },
+      take: 20,
+      orderBy: { firstName: 'asc' },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        email: true,
+        memberships: {
+          where: { status: 'ACTIVE' },
+          take: 1,
+          orderBy: { createdAt: 'asc' },
+          select: {
+            role: true,
+            property: { select: { id: true, name: true } },
+            space: { select: { id: true, name: true } },
+          },
+        },
+      },
+    });
+  }
+
+  /** Changes a membership's role and/or space assignment. The property and
+   * the person it belongs to never change here — that's a different
+   * membership, not an edit of this one. */
+  async updateMembership(
+    organisationId: string,
+    actorUserId: string,
+    membershipId: string,
+    input: UpdateMembershipInput,
+  ) {
+    const membership = await this.prisma.propertyMembership.findFirst({
+      where: { id: membershipId, organisationId },
+      include: { contact: true },
+    });
+    if (!membership) {
+      throw new NotFoundError('Membership not found');
+    }
+    if (membership.status !== 'ACTIVE') {
+      throw new ConflictError('Cannot change a membership that has already ended');
+    }
+    if (input.spaceId) {
+      await this.assertSpaceInProperty(organisationId, membership.propertyId, input.spaceId);
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.propertyMembership.update({
+        where: { id: membershipId },
+        data: {
+          ...(input.role !== undefined ? { role: input.role } : {}),
+          ...(input.spaceId !== undefined ? { spaceId: input.spaceId } : {}),
+        },
+        include: membershipInclude,
+      });
+
+      const fullName = `${membership.contact.firstName} ${membership.contact.lastName}`;
+      await recordActivity(tx, {
+        organisationId,
+        propertyId: membership.propertyId,
+        spaceId: updated.spaceId,
+        actorUserId,
+        eventType: 'MEMBERSHIP_UPDATED',
+        entityType: 'PropertyMembership',
+        entityId: membershipId,
+        title: `${fullName}'s membership updated`,
+        metadata: { role: updated.role, spaceId: updated.spaceId },
+      });
+
+      return updated;
+    });
+  }
+
+  /** Ends a membership — never a hard delete, so the relationship's history
+   * stays knowable (important later for tenancy/ownership history). Every
+   * resident-facing query already filters to status: 'ACTIVE', so this is
+   * enough on its own to remove the person's access to this specific
+   * property/space — without touching their account or any other,
+   * still-valid membership they may separately hold. */
+  async endMembership(organisationId: string, actorUserId: string, membershipId: string) {
+    const membership = await this.prisma.propertyMembership.findFirst({
+      where: { id: membershipId, organisationId },
+      include: {
+        contact: true,
+        property: { select: { id: true, name: true } },
+        space: { select: { id: true, name: true } },
+      },
+    });
+    if (!membership) {
+      throw new NotFoundError('Membership not found');
+    }
+    if (membership.status === 'ENDED') {
+      throw new ConflictError('This membership has already ended');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.propertyMembership.update({
+        where: { id: membershipId },
+        data: { status: 'ENDED', endDate: new Date() },
+        include: membershipInclude,
+      });
+
+      const fullName = `${membership.contact.firstName} ${membership.contact.lastName}`;
+      await recordActivity(tx, {
+        organisationId,
+        propertyId: membership.propertyId,
+        spaceId: membership.spaceId,
+        actorUserId,
+        eventType: 'MEMBERSHIP_ENDED',
+        entityType: 'PropertyMembership',
+        entityId: membershipId,
+        title: `${fullName}'s membership ended`,
+        metadata: { role: membership.role },
+      });
+
+      if (membership.contact.userId) {
+        await notifyUser(tx, {
+          organisationId,
+          userId: membership.contact.userId,
+          title: `Your access to ${membership.property.name}${membership.space ? ` · ${membership.space.name}` : ''} has ended`,
+          entityType: 'Property',
+          entityId: membership.propertyId,
+        });
+      }
+
+      return updated;
     });
   }
 

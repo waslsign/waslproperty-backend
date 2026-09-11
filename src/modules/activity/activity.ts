@@ -2,7 +2,10 @@ import type { ActivityEventType, Prisma, PrismaClient } from '@prisma/client';
 
 export interface RecordActivityInput {
   organisationId: string;
-  propertyId: string;
+  /** Omit only for organisation-wide events with no single property scope
+   * (e.g. a portfolio-wide announcement). Every other event still always
+   * supplies this. */
+  propertyId?: string | null;
   spaceId?: string | null;
   actorUserId?: string | null;
   eventType: ActivityEventType;

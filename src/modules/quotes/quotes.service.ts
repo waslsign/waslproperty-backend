@@ -5,6 +5,7 @@ import { env } from '../../config/env.js';
 import { logger } from '../../lib/logger.js';
 import { generateQuoteAcceptanceDocument } from '../../lib/quoteAcceptanceDocument.js';
 import { waslSignService, WaslSignServiceError } from '../../lib/waslSign.js';
+import { notifyOrgStaff } from '../notifications/notifications.js';
 import { WorkOrdersService } from '../work-orders/work-orders.service.js';
 import type {
   CreateQuoteInput,
@@ -149,6 +150,18 @@ export class QuotesService {
         description: `${updated.amount} ${updated.currency} · ${quote.workOrder.title}`,
       });
 
+      await notifyOrgStaff(
+        tx,
+        organisationId,
+        {
+          title: `Quote submitted for ${quote.workOrder.title}`,
+          body: `${quote.contractor.name} · needs review`,
+          entityType: 'WorkOrder',
+          entityId: quote.workOrder.id,
+        },
+        { excludeUserId: actorUserId },
+      );
+
       return updated;
     });
   }
@@ -230,6 +243,18 @@ export class QuotesService {
         description: `${quote.amount} ${quote.currency} · ${quote.contractor.name}`,
       });
 
+      await notifyOrgStaff(
+        tx,
+        organisationId,
+        {
+          title: `Quote approved for ${quote.workOrder.title}`,
+          body: quote.contractor.name,
+          entityType: 'WorkOrder',
+          entityId: quote.workOrder.id,
+        },
+        { excludeUserId: actorUserId },
+      );
+
       return updated;
     });
 
@@ -285,6 +310,18 @@ export class QuotesService {
         title: `Quote rejected: ${quote.workOrder.title}`,
         description: input.reason ?? `${quote.amount} ${quote.currency} · ${quote.contractor.name}`,
       });
+
+      await notifyOrgStaff(
+        tx,
+        organisationId,
+        {
+          title: `Quote rejected for ${quote.workOrder.title}`,
+          body: quote.contractor.name,
+          entityType: 'WorkOrder',
+          entityId: quote.workOrder.id,
+        },
+        { excludeUserId: actorUserId },
+      );
 
       return updated;
     });
@@ -468,6 +505,15 @@ export class QuotesService {
           : `Signature update: ${quote.workOrder.title}`,
         description: `Status: ${signatureStatus}`,
       });
+
+      if (nowCompleting) {
+        await notifyOrgStaff(tx, quote.organisationId, {
+          title: `Signature completed for ${quote.workOrder.title}`,
+          body: quote.contractor.name,
+          entityType: 'WorkOrder',
+          entityId: quote.workOrder.id,
+        });
+      }
     });
 
     if (nowCompleting) {

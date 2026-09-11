@@ -33,6 +33,9 @@ model Organisation {
   workOrders                    WorkOrder[]
   contractors                   Contractor[]
   contractorQuotes              ContractorQuote[]
+  communications                Communication[]
+  savedAudiences                SavedAudience[]
+  notifications                 Notification[]
 
   @@map("organisations")
 }
@@ -61,6 +64,9 @@ model User {
   sentContactInvites            ContactInvite[]
   createdWorkOrders             WorkOrder[]                    @relation("WorkOrderCreatedBy")
   approvedContractorQuotes      ContractorQuote[]              @relation("ContractorQuoteApprovedBy")
+  createdCommunications         Communication[]
+  createdSavedAudiences         SavedAudience[]
+  notifications                 Notification[]
 
   @@map("users")
 }
@@ -227,10 +233,11 @@ model PropertyContact {
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
-  organisation Organisation         @relation(fields: [organisationId], references: [id])
-  user         User?                @relation(fields: [userId], references: [id])
-  memberships  PropertyMembership[]
-  invites      ContactInvite[]
+  organisation            Organisation             @relation(fields: [organisationId], references: [id])
+  user                    User?                    @relation(fields: [userId], references: [id])
+  memberships             PropertyMembership[]
+  invites                 ContactInvite[]
+  communicationRecipients CommunicationRecipient[]
 
   @@unique([organisationId, email])
   @@index([organisationId])
@@ -295,7 +302,10 @@ enum MembershipStatus {
 model ActivityEvent {
   id             String            @id @default(cuid())
   organisationId String
-  propertyId     String
+  /// Nullable to represent organisation-wide events (e.g. a portfolio-wide
+  /// announcement) that aren't scoped to a single property. Every other
+  /// event type still always supplies this.
+  propertyId     String?
   spaceId        String?
   actorUserId    String?
   eventType      ActivityEventType
@@ -307,7 +317,7 @@ model ActivityEvent {
   createdAt      DateTime          @default(now())
 
   organisation Organisation @relation(fields: [organisationId], references: [id])
-  property     Property     @relation(fields: [propertyId], references: [id])
+  property     Property?    @relation(fields: [propertyId], references: [id])
   space        Space?       @relation(fields: [spaceId], references: [id])
   actorUser    User?        @relation(fields: [actorUserId], references: [id])
 
@@ -341,6 +351,11 @@ enum ActivityEventType {
   QUOTE_SIGNING_STARTED
   QUOTE_SIGNED
   QUOTE_DECLINED
+  MEMBERSHIP_UPDATED
+  MEMBERSHIP_ENDED
+  ANNOUNCEMENT_CREATED
+  ANNOUNCEMENT_SENT
+  ANNOUNCEMENT_CANCELLED
 }
 
 // --- Resident invitations (Slice 2 / M6.5) ---
@@ -670,4 +685,183 @@ model WaslSignWebhookEvent {
   payload    Json
 
   @@map("waslsign_webhook_events")
+}
+
+// --- Communications & Notifications (M10) ---
+
+enum CommunicationStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  SENT
+  CANCELLED
+  FAILED
+}
+
+/// Extensible on purpose: WHATSAPP exists here so the domain never needs a
+/// redesign when a provider is configured, but only IN_APP and EMAIL are
+/// actually implemented in M10 — WHATSAPP must never be offered as a
+/// selectable channel in the UI until it is genuinely configured.
+enum CommunicationChannel {
+  IN_APP
+  EMAIL
+  WHATSAPP
+}
+
+enum DeliveryStatus {
+  PENDING
+  SENDING
+  SENT
+  DELIVERED
+  FAILED
+}
+
+/// A manager-authored announcement to owners/tenants/residents. Immutable
+/// once SENT — title/body are never edited after sending, only ever
+/// duplicated into a new draft. See CommunicationRecipient and
+/// CommunicationDelivery for the per-recipient, per-channel audit trail
+/// captured at send time.
+model Communication {
+  id             String                 @id @default(cuid())
+  organisationId String
+  title          String
+  body           String
+  status         CommunicationStatus    @default(DRAFT)
+  channels       CommunicationChannel[]
+
+  /// Structured targeting rule, not a frozen recipient list — e.g.
+  /// {"scope":"PROPERTY","propertyIds":[...],"roles":[...],"includeContactIds":[...]}.
+  /// Always re-resolved against current active memberships, including when
+  /// reused via savedAudienceId, so a saved group never goes stale.
+  audienceCriteria Json
+
+  savedAudienceId String?
+
+  createdByUserId String
+  scheduledAt     DateTime?
+  sentAt          DateTime?
+  cancelledAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation  Organisation             @relation(fields: [organisationId], references: [id])
+  createdBy     User                     @relation(fields: [createdByUserId], references: [id])
+  savedAudience SavedAudience?           @relation(fields: [savedAudienceId], references: [id])
+  recipients    CommunicationRecipient[]
+
+  @@index([organisationId, status])
+  @@index([organisationId, scheduledAt])
+  @@map("communications")
+}
+
+/// One row per resolved contact for a communication — the audit snapshot of
+/// who this was actually addressed to at send time. Per-channel delivery
+/// state hangs off this (CommunicationDelivery), not off Communication
+/// directly, so a recipient can have independent delivery outcomes per
+/// channel.
+model CommunicationRecipient {
+  id              String   @id @default(cuid())
+  communicationId String
+  contactId       String
+  userId          String?
+  propertyId      String?
+  spaceId         String?
+  createdAt       DateTime @default(now())
+
+  communication Communication           @relation(fields: [communicationId], references: [id])
+  contact       PropertyContact         @relation(fields: [contactId], references: [id])
+  deliveries    CommunicationDelivery[]
+
+  @@unique([communicationId, contactId])
+  @@index([communicationId])
+  @@index([contactId])
+  @@index([userId])
+  @@map("communication_recipients")
+}
+
+/// One row per (recipient, channel) — independently retryable and
+/// idempotent (the unique constraint below means a retried send attempt
+/// updates the same row rather than creating a duplicate). Provider-specific
+/// state lives here so a future WhatsApp/SMS provider slots in without
+/// touching Communication or CommunicationRecipient.
+model CommunicationDelivery {
+  id                       String               @id @default(cuid())
+  communicationRecipientId String
+  channel                  CommunicationChannel
+  status                   DeliveryStatus       @default(PENDING)
+
+  providerMessageId String?
+  attemptedAt       DateTime?
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  failedAt          DateTime?
+  failureReason     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  communicationRecipient CommunicationRecipient @relation(fields: [communicationRecipientId], references: [id])
+
+  @@unique([communicationRecipientId, channel])
+  @@index([status])
+  @@map("communication_deliveries")
+}
+
+/// A reusable audience rule. Stores criteria (the same shape as
+/// Communication.audienceCriteria), not a frozen list of contacts, so it
+/// always resolves against current active memberships when used.
+model SavedAudience {
+  id              String   @id @default(cuid())
+  organisationId  String
+  name            String
+  criteria        Json
+  createdByUserId String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organisation   Organisation    @relation(fields: [organisationId], references: [id])
+  createdBy      User            @relation(fields: [createdByUserId], references: [id])
+  communications Communication[]
+
+  @@unique([organisationId, name])
+  @@index([organisationId])
+  @@map("saved_audiences")
+}
+
+/// The unified in-app inbox row for a user — sourced either from a sent
+/// Communication (manager announcement) or directly from a system event
+/// (maintenance/work-order/quote/membership changes). One table, one
+/// unread-count query, one bell, regardless of origin. sourceCommunicationId
+/// / sourceActivityEventId are plain reference ids (not enforced relations),
+/// same pattern as WaslSignWebhookEvent above — the notification already
+/// carries its own title/body/entityType/entityId, so it never depends on
+/// the source row still existing to render correctly.
+model Notification {
+  id             String @id @default(cuid())
+  organisationId String
+  userId         String
+
+  title String
+  body  String?
+
+  /// Mirrors ActivityEvent's entityType/entityId convention so a
+  /// notification can link through to the real record. Normal API
+  /// authorization always still applies when that link is opened —
+  /// possession of a notification is never itself authorization.
+  entityType String?
+  entityId   String?
+
+  sourceCommunicationId String?
+  sourceActivityEventId String?
+
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@index([organisationId, userId, readAt])
+  @@index([userId, createdAt])
+  @@map("notifications")
 }
