@@ -1,11 +1,15 @@
 import { WorkflowMode } from '@prisma/client';
 import { z } from 'zod';
+import { currencyCodeSchema } from '../../lib/currencies.js';
 
 export const createQuoteSchema = z.object({
   workOrderId: z.string().trim().min(1),
   contractorId: z.string().trim().min(1),
   amount: z.coerce.number().positive(),
-  currency: z.string().trim().length(3).default('AED'),
+  /** Optional — when omitted, QuotesService.create falls back to the
+   * organisation's own currencyCode. Kept overridable since a contractor
+   * may genuinely quote in a different currency than the org default. */
+  currencyCode: currencyCodeSchema.optional(),
   description: z.string().trim().min(1).max(2000).optional(),
 });
 export type CreateQuoteInput = z.infer<typeof createQuoteSchema>;

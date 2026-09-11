@@ -24,7 +24,7 @@ export interface AuthAccessContext {
 
 export interface AuthResult {
   user: { id: string; email: string; firstName: string; lastName: string };
-  organisation: { id: string; name: string; slug: string };
+  organisation: { id: string; name: string; slug: string; currencyCode?: string };
   orgRole: OrgRole | null;
   accountType: 'staff' | 'resident';
   tokens: AuthTokens;
@@ -73,7 +73,7 @@ export class AuthService {
       }
 
       const organisation = await tx.organisation.create({
-        data: { name: input.organisationName, slug },
+        data: { name: input.organisationName, slug, currencyCode: input.currencyCode },
       });
 
       const user = await tx.user.create({
@@ -100,7 +100,12 @@ export class AuthService {
 
     return {
       user: { id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName },
-      organisation: { id: organisation.id, name: organisation.name, slug: organisation.slug },
+      organisation: {
+        id: organisation.id,
+        name: organisation.name,
+        slug: organisation.slug,
+        currencyCode: organisation.currencyCode,
+      },
       orgRole: membership.role,
       accountType: 'staff',
       tokens,

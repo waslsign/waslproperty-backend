@@ -36,6 +36,33 @@ describe('auth flow', () => {
     expect(res.headers['set-cookie']?.[0]).toMatch(/wasl_property_refresh_token=/);
   });
 
+  it('defaults a new organisation to AUD when no currency is given', async () => {
+    const res = await request(app).post('/api/v1/auth/register').send(validRegisterBody);
+    expect(res.status).toBe(201);
+    const me = await request(app)
+      .get('/api/v1/organisations/me')
+      .set('Authorization', `Bearer ${res.body.accessToken}`);
+    expect(me.body.currencyCode).toBe('AUD');
+  });
+
+  it('respects an explicitly selected currency at registration', async () => {
+    const res = await request(app)
+      .post('/api/v1/auth/register')
+      .send({ ...validRegisterBody, currencyCode: 'GBP' });
+    expect(res.status).toBe(201);
+    const me = await request(app)
+      .get('/api/v1/organisations/me')
+      .set('Authorization', `Bearer ${res.body.accessToken}`);
+    expect(me.body.currencyCode).toBe('GBP');
+  });
+
+  it('rejects an unsupported currency code at registration', async () => {
+    const res = await request(app)
+      .post('/api/v1/auth/register')
+      .send({ ...validRegisterBody, currencyCode: 'ZZZ' });
+    expect(res.status).toBe(422);
+  });
+
   it('rejects registering the same email twice', async () => {
     await request(app).post('/api/v1/auth/register').send(validRegisterBody);
     const res = await request(app).post('/api/v1/auth/register').send(validRegisterBody);
@@ -140,6 +167,100 @@ describe('GET /organisations/me', () => {
       .set('Authorization', 'Bearer not-a-real-token');
 
     expect(res.status).toBe(401);
+  });
+});
+
+describe('PATCH /organisations/me — currency', () => {
+  beforeEach(async () => {
+    await resetDb();
+  });
+
+  afterAll(async () => {
+    await resetDb();
+    await testPrisma.$disconnect();
+  });
+
+  it('lets an OWNER change the organisation currency', async () => {
+    const registerRes = await request(app).post('/api/v1/auth/register').send(validRegisterBody);
+    const res = await request(app)
+      .patch('/api/v1/organisations/me')
+      .set('Authorization', `Bearer ${registerRes.body.accessToken}`)
+      .send({ currencyCode: 'USD' });
+    expect(res.status).toBe(200);
+    expect(res.body.currencyCode).toBe('USD');
+  });
+
+  it('rejects an unsupported currency code', async () => {
+    const registerRes = await request(app).post('/api/v1/auth/register').send(validRegisterBody);
+    const res = await request(app)
+      .patch('/api/v1/organisations/me')
+      .set('Authorization', `Bearer ${registerRes.body.accessToken}`)
+      .send({ currencyCode: 'NOTREAL' });
+    expect(res.status).toBe(422);
+  });
+
+  it('rejects a MEMBER changing the organisation currency (OWNER/ADMIN only)', async () => {
+    const registerRes = await request(app).post('/api/v1/auth/register').send(validRegisterBody);
+    const organisationId = registerRes.body.organisation.id as string;
+
+    const memberEmail = `member+${Date.now()}@example.com`;
+    const { userId: memberUserId } = await createPlainUser({ email: memberEmail });
+    await testPrisma.organisationMembership.create({
+      data: { organisationId, userId: memberUserId, role: 'MEMBER' },
+    });
+    const memberLogin = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: memberEmail, password: 'resident-secret-1' });
+    expect(memberLogin.body.accessToken).toBeTypeOf('string');
+
+    const res = await request(app)
+      .patch('/api/v1/organisations/me')
+      .set('Authorization', `Bearer ${memberLogin.body.accessToken}`)
+      .send({ currencyCode: 'USD' });
+    expect(res.status).toBe(403);
+  });
+
+  it('changing the organisation currency never mutates an already-created financial record', async () => {
+    const registerRes = await request(app).post('/api/v1/auth/register').send(validRegisterBody);
+    const token = registerRes.body.accessToken as string;
+    const organisationId = registerRes.body.organisation.id as string;
+
+    const property = await testPrisma.property.create({
+      data: {
+        organisationId,
+        name: 'Currency Test Property',
+        code: `CUR-${Date.now()}`,
+        addressLine1: '1 St',
+        city: 'Sydney',
+        country: 'Australia',
+        propertyType: 'RESIDENTIAL',
+      },
+    });
+    const request_ = await testPrisma.maintenanceRequest.create({
+      data: {
+        organisationId,
+        propertyId: property.id,
+        title: 'Leak',
+        description: 'test',
+        category: 'PLUMBING',
+        priority: 'LOW',
+      },
+    });
+    const workOrderRes = await request(app)
+      .post('/api/v1/work-orders')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ maintenanceRequestId: request_.id, title: 'Fix leak', description: 'test', priority: 'LOW' });
+    expect(workOrderRes.status).toBe(201);
+    expect(workOrderRes.body.currencyCode).toBe('AUD');
+
+    const patchRes = await request(app)
+      .patch('/api/v1/organisations/me')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ currencyCode: 'EUR' });
+    expect(patchRes.status).toBe(200);
+
+    const workOrderAfter = await testPrisma.workOrder.findUniqueOrThrow({ where: { id: workOrderRes.body.id } });
+    expect(workOrderAfter.currencyCode).toBe('AUD');
   });
 });
 

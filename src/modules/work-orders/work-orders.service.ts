@@ -95,6 +95,13 @@ export class WorkOrdersService {
       throw new NotFoundError('Maintenance request not found');
     }
 
+    // Copied at creation, never re-derived later — see WorkOrder.currencyCode
+    // doc comment in schema.prisma.
+    const organisation = await this.prisma.organisation.findUniqueOrThrow({
+      where: { id: organisationId },
+      select: { currencyCode: true },
+    });
+
     const existing = await this.prisma.workOrder.findFirst({
       where: { maintenanceRequestId: input.maintenanceRequestId, status: { not: 'CANCELLED' } },
     });
@@ -114,6 +121,7 @@ export class WorkOrdersService {
           priority: input.priority,
           status: 'DRAFT',
           createdByUserId: actorUserId,
+          currencyCode: organisation.currencyCode,
         },
         include: workOrderInclude,
       });

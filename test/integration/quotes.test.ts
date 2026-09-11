@@ -541,6 +541,125 @@ describe('contractor quotes + workflow modes', () => {
       expect(res.status).toBe(401);
     });
   });
+
+  describe('currency', () => {
+    it('a work order and a quote both inherit the organisation currency (AUD by default)', async () => {
+      const { accessToken } = await registerTestUser(app);
+      const { workOrderId, quoteId } = await setupWorkOrderWithContractor(accessToken, 1000);
+
+      const workOrder = await testPrisma.workOrder.findUniqueOrThrow({ where: { id: workOrderId } });
+      const quote = await testPrisma.contractorQuote.findUniqueOrThrow({ where: { id: quoteId } });
+      expect(workOrder.currencyCode).toBe('AUD');
+      expect(quote.currencyCode).toBe('AUD');
+    });
+
+    it('inherits a non-default organisation currency', async () => {
+      const { accessToken, organisationId } = await registerTestUser(app);
+      await testPrisma.organisation.update({ where: { id: organisationId }, data: { currencyCode: 'GBP' } });
+
+      const { workOrderId, quoteId } = await setupWorkOrderWithContractor(accessToken, 1000);
+      const workOrder = await testPrisma.workOrder.findUniqueOrThrow({ where: { id: workOrderId } });
+      const quote = await testPrisma.contractorQuote.findUniqueOrThrow({ where: { id: quoteId } });
+      expect(workOrder.currencyCode).toBe('GBP');
+      expect(quote.currencyCode).toBe('GBP');
+    });
+
+    it('respects an explicit per-quote currency override, independent of the organisation default', async () => {
+      const { accessToken } = await registerTestUser(app);
+      const propertyRes = await request(app)
+        .post('/api/v1/properties')
+        .set(authHeader(accessToken))
+        .send(validProperty);
+      const requestRes = await request(app)
+        .post('/api/v1/maintenance-requests')
+        .set(authHeader(accessToken))
+        .send({ ...validRequestPayload, propertyId: propertyRes.body.id });
+      const workOrderRes = await request(app)
+        .post('/api/v1/work-orders')
+        .set(authHeader(accessToken))
+        .send({ maintenanceRequestId: requestRes.body.id, title: 'Repair', description: 'test', priority: 'LOW' });
+      const contractorRes = await request(app)
+        .post('/api/v1/contractors')
+        .set(authHeader(accessToken))
+        .send({ name: 'Overseas Contractor', email: `overseas+${Date.now()}@example.com`, tradeTypes: ['HVAC'] });
+
+      const quoteRes = await request(app)
+        .post('/api/v1/quotes')
+        .set(authHeader(accessToken))
+        .send({
+          workOrderId: workOrderRes.body.id,
+          contractorId: contractorRes.body.id,
+          amount: 500,
+          currencyCode: 'usd',
+          description: 'test',
+        });
+      expect(quoteRes.status).toBe(201);
+      expect(quoteRes.body.currencyCode).toBe('USD');
+    });
+
+    it('rejects an unsupported currency code on quote creation', async () => {
+      const { accessToken } = await registerTestUser(app);
+      const propertyRes = await request(app)
+        .post('/api/v1/properties')
+        .set(authHeader(accessToken))
+        .send(validProperty);
+      const requestRes = await request(app)
+        .post('/api/v1/maintenance-requests')
+        .set(authHeader(accessToken))
+        .send({ ...validRequestPayload, propertyId: propertyRes.body.id });
+      const workOrderRes = await request(app)
+        .post('/api/v1/work-orders')
+        .set(authHeader(accessToken))
+        .send({ maintenanceRequestId: requestRes.body.id, title: 'Repair', description: 'test', priority: 'LOW' });
+      const contractorRes = await request(app)
+        .post('/api/v1/contractors')
+        .set(authHeader(accessToken))
+        .send({ name: 'Bad Currency Co', email: `badcurrency+${Date.now()}@example.com`, tradeTypes: ['HVAC'] });
+
+      const res = await request(app)
+        .post('/api/v1/quotes')
+        .set(authHeader(accessToken))
+        .send({
+          workOrderId: workOrderRes.body.id,
+          contractorId: contractorRes.body.id,
+          amount: 500,
+          currencyCode: 'NOTREAL',
+          description: 'test',
+        });
+      expect(res.status).toBe(422);
+    });
+
+    it('changing the organisation currency after the fact never mutates an existing quote or work order', async () => {
+      const { accessToken } = await registerTestUser(app);
+      const { workOrderId, quoteId } = await setupWorkOrderWithContractor(accessToken, 1000);
+
+      await request(app)
+        .patch('/api/v1/organisations/me')
+        .set(authHeader(accessToken))
+        .send({ currencyCode: 'EUR' });
+
+      const workOrder = await testPrisma.workOrder.findUniqueOrThrow({ where: { id: workOrderId } });
+      const quote = await testPrisma.contractorQuote.findUniqueOrThrow({ where: { id: quoteId } });
+      expect(workOrder.currencyCode).toBe('AUD');
+      expect(quote.currencyCode).toBe('AUD');
+
+      // A quote created AFTER the change picks up the new default.
+      const contractorRes = await request(app)
+        .post('/api/v1/contractors')
+        .set(authHeader(accessToken))
+        .send({ name: 'Post-Change Co', email: `postchange+${Date.now()}@example.com`, tradeTypes: ['HVAC'] });
+      const newQuoteRes = await request(app)
+        .post('/api/v1/quotes')
+        .set(authHeader(accessToken))
+        .send({
+          workOrderId,
+          contractorId: contractorRes.body.id,
+          amount: 200,
+          description: 'test',
+        });
+      expect(newQuoteRes.body.currencyCode).toBe('EUR');
+    });
+  });
 });
 
 function signedCallbackFor(waslSignAgreementId: string, quoteId: string) {

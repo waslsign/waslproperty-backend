@@ -15,6 +15,14 @@ model Organisation {
   slug   String    @unique
   status OrgStatus @default(ACTIVE)
 
+  /// ISO 4217 code (see src/lib/currencies.ts for the supported allowlist).
+  /// The default currency for newly created financial records in this
+  /// organisation — never a global hard-coded value. Configurable by
+  /// OWNER/ADMIN via PATCH /organisations/me. Changing this later never
+  /// mutates any existing WorkOrder/ContractorQuote's own currencyCode —
+  /// each financial record stores its own, copied from this at creation.
+  currencyCode String @default("AUD")
+
   /// Set once this organisation is provisioned as a 1:1 mapped Organization in WaslSign.
   /// Nullable — provisioning happens lazily, on first need for a signed document, not at signup.
   waslSignOrganisationId String? @unique
@@ -615,6 +623,9 @@ model WorkOrder {
 
   estimatedCost Decimal? @db.Decimal(10, 2)
   actualCost    Decimal? @db.Decimal(10, 2)
+  /// Copied from Organisation.currencyCode at creation — never re-derived
+  /// from the (possibly since-changed) organisation setting.
+  currencyCode  String   @default("AUD")
 
   contractorId    String?
   createdByUserId String
@@ -691,9 +702,13 @@ model ContractorQuote {
   workOrderId    String
   contractorId   String
 
-  amount      Decimal @db.Decimal(10, 2)
-  currency    String  @default("AED")
-  description String?
+  amount       Decimal @db.Decimal(10, 2)
+  /// Copied from Organisation.currencyCode at creation (or an explicit
+  /// override — a contractor may quote in a different currency) — never
+  /// re-derived from the organisation setting, so changing the org default
+  /// later never mutates an existing quote's own currency.
+  currencyCode String  @default("AUD")
+  description  String?
 
   status ContractorQuoteStatus @default(REQUESTED)
 

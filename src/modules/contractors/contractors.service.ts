@@ -64,7 +64,7 @@ export class ContractorsService {
             id: true,
             workOrderId: true,
             amount: true,
-            currency: true,
+            currencyCode: true,
             status: true,
             createdAt: true,
           },

@@ -94,13 +94,26 @@ export class QuotesService {
       throw new NotFoundError('Contractor not found');
     }
 
+    // Copied at creation, never re-derived later — see
+    // ContractorQuote.currencyCode doc comment in schema.prisma. An
+    // explicit input.currencyCode (a contractor quoting in a different
+    // currency than the org default) always wins over the organisation's.
+    const currencyCode =
+      input.currencyCode ??
+      (
+        await this.prisma.organisation.findUniqueOrThrow({
+          where: { id: organisationId },
+          select: { currencyCode: true },
+        })
+      ).currencyCode;
+
     return this.prisma.contractorQuote.create({
       data: {
         organisationId,
         workOrderId: input.workOrderId,
         contractorId: input.contractorId,
         amount: input.amount,
-        currency: input.currency,
+        currencyCode,
         description: input.description,
         status: 'REQUESTED',
         workflowMode: this.defaultWorkflowMode(input.amount),
@@ -147,7 +160,7 @@ export class QuotesService {
         entityType: 'WorkOrder',
         entityId: quote.workOrder.id,
         title: `Quote submitted by ${quote.contractor.name}`,
-        description: `${updated.amount} ${updated.currency} · ${quote.workOrder.title}`,
+        description: `${updated.amount} ${updated.currencyCode} · ${quote.workOrder.title}`,
       });
 
       await notifyOrgStaff(
@@ -240,7 +253,7 @@ export class QuotesService {
         entityType: 'WorkOrder',
         entityId: quote.workOrder.id,
         title: `Quote approved: ${quote.workOrder.title}`,
-        description: `${quote.amount} ${quote.currency} · ${quote.contractor.name}`,
+        description: `${quote.amount} ${quote.currencyCode} · ${quote.contractor.name}`,
       });
 
       await notifyOrgStaff(
@@ -308,7 +321,7 @@ export class QuotesService {
         entityType: 'WorkOrder',
         entityId: quote.workOrder.id,
         title: `Quote rejected: ${quote.workOrder.title}`,
-        description: input.reason ?? `${quote.amount} ${quote.currency} · ${quote.contractor.name}`,
+        description: input.reason ?? `${quote.amount} ${quote.currencyCode} · ${quote.contractor.name}`,
       });
 
       await notifyOrgStaff(
@@ -370,7 +383,7 @@ export class QuotesService {
         contractorName: quote.contractor.name,
         scopeOfWork: quote.description ?? quote.workOrder.title,
         amount: quote.amount.toString(),
-        currency: quote.currency,
+        currencyCode: quote.currencyCode,
       });
 
       const result = await waslSignService.createAgreementWorkflow({
@@ -418,7 +431,7 @@ export class QuotesService {
           entityType: 'WorkOrder',
           entityId: quote.workOrder.id,
           title: `Signing started: ${quote.workOrder.title}`,
-          description: `${quote.amount} ${quote.currency} · ${quote.contractor.name}`,
+          description: `${quote.amount} ${quote.currencyCode} · ${quote.contractor.name}`,
         });
 
         return updated;

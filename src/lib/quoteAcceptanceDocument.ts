@@ -10,7 +10,7 @@ export interface QuoteAcceptanceDocumentInput {
   contractorName: string;
   scopeOfWork: string;
   amount: string;
-  currency: string;
+  currencyCode: string;
   scheduledAt?: string | null;
 }
 
@@ -113,7 +113,7 @@ export async function generateQuoteAcceptanceDocument(
   drawLabelValue('Work Order', `${input.workOrderTitle} (${input.workOrderId})`);
   if (input.maintenanceRequestId) drawLabelValue('Originating request', input.maintenanceRequestId);
   drawLabelValue('Contractor', input.contractorName);
-  drawLabelValue('Amount', `${input.amount} ${input.currency}`);
+  drawLabelValue('Amount', `${input.amount} ${input.currencyCode}`);
   if (input.scheduledAt) drawLabelValue('Scheduled', input.scheduledAt);
 
   y -= 12;
