@@ -264,6 +264,122 @@ describe('backoffice operational modules', () => {
       expect(audit?.reason).toBe('new support hire');
     });
 
+    it('creates a brand-new platform-only account with no email, returning a one-time generated password that actually logs in', async () => {
+      const { username: adminUsername, password: adminPassword } = await createPlatformUser();
+      const token = await platformLogin(adminUsername, adminPassword);
+      const newUsername = `csagent.${Date.now()}`;
+
+      const res = await request(app)
+        .post('/api/v1/backoffice/platform-users')
+        .set(authHeader(token))
+        .send({
+          firstName: 'CS',
+          lastName: 'Agent',
+          username: newUsername,
+          role: 'PLATFORM_SUPPORT',
+          reason: 'new CS agent, no existing WaslProperty account',
+        });
+      expect(res.status).toBe(201);
+      expect(res.body.role).toBe('PLATFORM_SUPPORT');
+      expect(typeof res.body.temporaryPassword).toBe('string');
+      expect(res.body.temporaryPassword.length).toBeGreaterThanOrEqual(12);
+
+      const loginRes = await request(app)
+        .post('/api/v1/backoffice/auth/login')
+        .send({ username: newUsername, password: res.body.temporaryPassword });
+      expect(loginRes.status).toBe(200);
+      expect(loginRes.body.platformRole).toBe('PLATFORM_SUPPORT');
+
+      const audit = await testPrisma.platformAuditEvent.findFirst({
+        where: { action: 'platformUser.granted', entityId: res.body.id },
+      });
+      expect(audit?.reason).toBe('new CS agent, no existing WaslProperty account');
+      const after = audit?.after as Record<string, unknown>;
+      expect(after.createdNewUser).toBe(true);
+      expect(JSON.stringify(after)).not.toContain(res.body.temporaryPassword);
+    });
+
+    it('rejects creating a new account without email, firstName, or lastName', async () => {
+      const { username: adminUsername, password: adminPassword } = await createPlatformUser();
+      const token = await platformLogin(adminUsername, adminPassword);
+
+      const res = await request(app)
+        .post('/api/v1/backoffice/platform-users')
+        .set(authHeader(token))
+        .send({ username: `noname.${Date.now()}`, role: 'PLATFORM_SUPPORT', reason: 'test' });
+      expect(res.status).toBe(422);
+    });
+
+    it('rejects a duplicate username when creating a new account', async () => {
+      const { username: adminUsername, password: adminPassword } = await createPlatformUser();
+      const token = await platformLogin(adminUsername, adminPassword);
+      const dupeUsername = `dupe.${Date.now()}`;
+
+      const first = await request(app)
+        .post('/api/v1/backoffice/platform-users')
+        .set(authHeader(token))
+        .send({ firstName: 'A', lastName: 'One', username: dupeUsername, role: 'PLATFORM_SUPPORT', reason: 'test' });
+      expect(first.status).toBe(201);
+
+      const second = await request(app)
+        .post('/api/v1/backoffice/platform-users')
+        .set(authHeader(token))
+        .send({ firstName: 'B', lastName: 'Two', username: dupeUsername, role: 'PLATFORM_SUPPORT', reason: 'test' });
+      expect(second.status).toBe(409);
+    });
+
+    it('lets a Super Admin reset another platform user\'s password to a new generated one that actually logs in', async () => {
+      const { username: adminUsername, password: adminPassword } = await createPlatformUser();
+      const token = await platformLogin(adminUsername, adminPassword);
+      const { username: granteeUsername, password: originalPassword, platformUserId } =
+        await createPlatformUser({ role: 'PLATFORM_SUPPORT' });
+
+      const res = await request(app)
+        .post(`/api/v1/backoffice/platform-users/${platformUserId}/reset-password`)
+        .set(authHeader(token))
+        .send({ reason: 'employee forgot their password' });
+      expect(res.status).toBe(200);
+      expect(typeof res.body.temporaryPassword).toBe('string');
+
+      const oldLogin = await request(app)
+        .post('/api/v1/backoffice/auth/login')
+        .send({ username: granteeUsername, password: originalPassword });
+      expect(oldLogin.status).toBe(401);
+
+      const newLogin = await request(app)
+        .post('/api/v1/backoffice/auth/login')
+        .send({ username: granteeUsername, password: res.body.temporaryPassword });
+      expect(newLogin.status).toBe(200);
+
+      const audit = await testPrisma.platformAuditEvent.findFirst({
+        where: { action: 'platformUser.passwordReset', entityId: platformUserId },
+      });
+      expect(audit?.reason).toBe('employee forgot their password');
+      expect(JSON.stringify(audit)).not.toContain(res.body.temporaryPassword);
+    });
+
+    it('requires a reason to reset a password, and rejects a non-Super-Admin caller', async () => {
+      const { username: adminUsername, password: adminPassword } = await createPlatformUser();
+      const token = await platformLogin(adminUsername, adminPassword);
+      const { platformUserId } = await createPlatformUser({ role: 'PLATFORM_SUPPORT' });
+
+      const noReasonRes = await request(app)
+        .post(`/api/v1/backoffice/platform-users/${platformUserId}/reset-password`)
+        .set(authHeader(token))
+        .send({});
+      expect(noReasonRes.status).toBe(422);
+
+      const { username: supportUsername, password: supportPassword } = await createPlatformUser({
+        role: 'PLATFORM_SUPPORT',
+      });
+      const supportToken = await platformLogin(supportUsername, supportPassword);
+      const forbiddenRes = await request(app)
+        .post(`/api/v1/backoffice/platform-users/${platformUserId}/reset-password`)
+        .set(authHeader(supportToken))
+        .send({ reason: 'trying anyway' });
+      expect(forbiddenRes.status).toBe(403);
+    });
+
     it('refuses to deactivate the last active PLATFORM_SUPER_ADMIN', async () => {
       const { username, password, platformUserId } = await createPlatformUser();
       const token = await platformLogin(username, password);

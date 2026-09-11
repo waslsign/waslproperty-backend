@@ -57,6 +57,75 @@ describe('backoffice platform auth', () => {
     });
   });
 
+  describe('self-service change password', () => {
+    it('changes the password and the new one works on the next login, the old one no longer does', async () => {
+      const { username, password } = await createPlatformUser();
+      const loginRes = await platformLogin(username, password);
+      const token = loginRes.body.accessToken as string;
+
+      const res = await request(app)
+        .post('/api/v1/backoffice/auth/change-password')
+        .set(authHeader(token))
+        .send({ currentPassword: password, newPassword: 'a-brand-new-password-123' });
+      expect(res.status).toBe(204);
+
+      const oldLogin = await platformLogin(username, password);
+      expect(oldLogin.status).toBe(401);
+
+      const newLogin = await platformLogin(username, 'a-brand-new-password-123');
+      expect(newLogin.status).toBe(200);
+    });
+
+    it('rejects an incorrect current password', async () => {
+      const { username, password } = await createPlatformUser();
+      const loginRes = await platformLogin(username, password);
+      const token = loginRes.body.accessToken as string;
+
+      const res = await request(app)
+        .post('/api/v1/backoffice/auth/change-password')
+        .set(authHeader(token))
+        .send({ currentPassword: 'totally-wrong', newPassword: 'a-brand-new-password-123' });
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects a new password shorter than 8 characters', async () => {
+      const { username, password } = await createPlatformUser();
+      const loginRes = await platformLogin(username, password);
+      const token = loginRes.body.accessToken as string;
+
+      const res = await request(app)
+        .post('/api/v1/backoffice/auth/change-password')
+        .set(authHeader(token))
+        .send({ currentPassword: password, newPassword: 'short' });
+      expect(res.status).toBe(422);
+    });
+
+    it('requires authentication', async () => {
+      const res = await request(app)
+        .post('/api/v1/backoffice/auth/change-password')
+        .send({ currentPassword: 'x', newPassword: 'a-brand-new-password-123' });
+      expect(res.status).toBe(401);
+    });
+
+    it('records an audit event without leaking either password', async () => {
+      const { username, password } = await createPlatformUser();
+      const loginRes = await platformLogin(username, password);
+      const token = loginRes.body.accessToken as string;
+
+      await request(app)
+        .post('/api/v1/backoffice/auth/change-password')
+        .set(authHeader(token))
+        .send({ currentPassword: password, newPassword: 'a-brand-new-password-123' });
+
+      const audit = await testPrisma.platformAuditEvent.findFirst({
+        where: { action: 'platformUser.passwordChanged' },
+      });
+      expect(audit).toBeTruthy();
+      expect(JSON.stringify(audit)).not.toContain(password);
+      expect(JSON.stringify(audit)).not.toContain('a-brand-new-password-123');
+    });
+  });
+
   describe('platform session lifecycle', () => {
     it('refreshes a platform session and rotates the cookie', async () => {
       const { username, password } = await createPlatformUser();

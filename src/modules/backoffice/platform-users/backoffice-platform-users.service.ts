@@ -1,7 +1,18 @@
 import type { PlatformRole, PrismaClient } from '@prisma/client';
 import { ConflictError, NotFoundError } from '../../../errors/AppError.js';
+import { generateTemporaryPassword, hashPassword } from '../../../lib/password.js';
 import { recordPlatformActivity } from '../../../platform/audit.js';
-import type { GrantPlatformAccessInput, UpdatePlatformUserInput } from './backoffice-platform-users.schemas.js';
+import type {
+  GrantPlatformAccessInput,
+  ResetPlatformUserPasswordInput,
+  UpdatePlatformUserInput,
+} from './backoffice-platform-users.schemas.js';
+
+/** Every platform-only account created without an existing WaslProperty
+ * user gets a placeholder email in this namespace — User.email is NOT
+ * NULL + unique in the schema, so something must occupy it, but it's
+ * never used to sign in (username is) or to send mail. */
+const PLATFORM_ONLY_EMAIL_DOMAIN = 'platform.waslproperty.internal';
 
 export class BackofficePlatformUsersService {
   constructor(private readonly prisma: PrismaClient) {}
@@ -42,16 +53,38 @@ export class BackofficePlatformUsersService {
     input: GrantPlatformAccessInput,
     actor: { userId: string; platformRole: PlatformRole },
   ) {
-    const user = await this.prisma.user.findUnique({ where: { email: input.email } });
-    if (!user) throw new NotFoundError('No WaslProperty user exists for that email yet');
-
-    const usernameTaken = await this.prisma.platformUser.findFirst({
-      where: { username: input.username, userId: { not: user.id } },
-    });
+    const usernameTaken = await this.prisma.platformUser.findFirst({ where: { username: input.username } });
     if (usernameTaken) throw new ConflictError('That username is already taken');
 
-    return this.prisma.$transaction(async (tx) => {
-      const platformUser = await tx.platformUser.upsert({
+    let user: { id: string };
+    let temporaryPassword: string | undefined;
+    let createdNewUser = false;
+
+    if (input.email) {
+      const existing = await this.prisma.user.findUnique({ where: { email: input.email } });
+      if (!existing) throw new NotFoundError('No WaslProperty user exists for that email yet');
+      user = existing;
+    } else {
+      // No existing account to attach to — create a brand-new
+      // platform-only User with a generated password, returned once.
+      const placeholderEmail = `${input.username}@${PLATFORM_ONLY_EMAIL_DOMAIN}`;
+      const collision = await this.prisma.user.findUnique({ where: { email: placeholderEmail } });
+      if (collision) throw new ConflictError('A platform account for that username already exists');
+
+      temporaryPassword = generateTemporaryPassword();
+      user = await this.prisma.user.create({
+        data: {
+          email: placeholderEmail,
+          passwordHash: await hashPassword(temporaryPassword),
+          firstName: input.firstName as string,
+          lastName: input.lastName as string,
+        },
+      });
+      createdNewUser = true;
+    }
+
+    const platformUser = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.platformUser.upsert({
         where: { userId: user.id },
         create: {
           userId: user.id,
@@ -68,13 +101,17 @@ export class BackofficePlatformUsersService {
         platformRole: actor.platformRole,
         action: 'platformUser.granted',
         entityType: 'PlatformUser',
-        entityId: platformUser.id,
+        entityId: created.id,
         reason: input.reason,
-        after: { userId: user.id, username: input.username, role: input.role },
+        // Deliberately never includes temporaryPassword — the audit log
+        // must never hold a live credential, even hashed elsewhere.
+        after: { userId: user.id, username: input.username, role: input.role, createdNewUser },
       });
 
-      return platformUser;
+      return created;
     });
+
+    return { ...platformUser, temporaryPassword };
   }
 
   async update(
@@ -125,5 +162,39 @@ export class BackofficePlatformUsersService {
 
       return updated;
     });
+  }
+
+  /** A Super Admin forcing a reset — distinct from the self-service
+   * changePassword on PlatformAuthService, which requires knowing the
+   * current password. Returns the new password once; it is never stored
+   * in plaintext or written to the audit log. */
+  async resetPassword(
+    id: string,
+    input: ResetPlatformUserPasswordInput,
+    actor: { userId: string; platformRole: PlatformRole },
+  ) {
+    const platformUser = await this.prisma.platformUser.findUnique({ where: { id } });
+    if (!platformUser) throw new NotFoundError('Platform user not found');
+
+    const temporaryPassword = generateTemporaryPassword();
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: platformUser.userId },
+        data: { passwordHash: await hashPassword(temporaryPassword) },
+      });
+
+      await recordPlatformActivity(tx, {
+        actorUserId: actor.userId,
+        platformRole: actor.platformRole,
+        action: 'platformUser.passwordReset',
+        entityType: 'PlatformUser',
+        entityId: id,
+        reason: input.reason,
+        after: { username: platformUser.username },
+      });
+    });
+
+    return { username: platformUser.username, temporaryPassword };
   }
 }

@@ -8,7 +8,7 @@ import {
 } from '../../../lib/cookies.js';
 import { UnauthorizedError } from '../../../errors/AppError.js';
 import { PlatformAuthService, type PlatformAuthResult } from './platform-auth.service.js';
-import { platformLoginSchema } from './platform-auth.schemas.js';
+import { platformChangePasswordSchema, platformLoginSchema } from './platform-auth.schemas.js';
 
 const platformAuthService = new PlatformAuthService(getPrismaClient());
 
@@ -55,6 +55,20 @@ export async function platformLogout(req: Request, res: Response) {
     await platformAuthService.logout(token);
   }
   clearPlatformRefreshCookie(res);
+  res.status(204).send();
+}
+
+export async function changePlatformPassword(req: Request, res: Response) {
+  if (!req.platformAuth) throw new UnauthorizedError();
+  const input = platformChangePasswordSchema.parse(req.body);
+  await platformAuthService.changePassword(
+    {
+      userId: req.platformAuth.userId,
+      platformUserId: req.platformAuth.platformUserId,
+      platformRole: req.platformAuth.platformRole,
+    },
+    input,
+  );
   res.status(204).send();
 }
 

@@ -4,6 +4,7 @@ import { authenticatePlatform, requirePlatformCapability } from '../../../middle
 import {
   grantBackofficePlatformAccess,
   listBackofficePlatformUsers,
+  resetBackofficePlatformUserPassword,
   searchBackofficeUserByEmail,
   updateBackofficePlatformUser,
 } from './backoffice-platform-users.controller.js';
@@ -15,3 +16,4 @@ backofficePlatformUsersRouter.get('/', asyncHandler(listBackofficePlatformUsers)
 backofficePlatformUsersRouter.get('/search-user', asyncHandler(searchBackofficeUserByEmail));
 backofficePlatformUsersRouter.post('/', asyncHandler(grantBackofficePlatformAccess));
 backofficePlatformUsersRouter.patch('/:id', asyncHandler(updateBackofficePlatformUser));
+backofficePlatformUsersRouter.post('/:id/reset-password', asyncHandler(resetBackofficePlatformUserPassword));

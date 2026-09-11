@@ -4,6 +4,7 @@ import { UnauthorizedError } from '../../../errors/AppError.js';
 import { BackofficePlatformUsersService } from './backoffice-platform-users.service.js';
 import {
   grantPlatformAccessSchema,
+  resetPlatformUserPasswordSchema,
   searchUserQuerySchema,
   updatePlatformUserSchema,
 } from './backoffice-platform-users.schemas.js';
@@ -33,6 +34,16 @@ export async function updateBackofficePlatformUser(req: Request, res: Response) 
   if (!req.platformAuth) throw new UnauthorizedError();
   const input = updatePlatformUserSchema.parse(req.body);
   const result = await service.update(req.params.id as string, input, {
+    userId: req.platformAuth.userId,
+    platformRole: req.platformAuth.platformRole,
+  });
+  res.json(result);
+}
+
+export async function resetBackofficePlatformUserPassword(req: Request, res: Response) {
+  if (!req.platformAuth) throw new UnauthorizedError();
+  const input = resetPlatformUserPasswordSchema.parse(req.body);
+  const result = await service.resetPassword(req.params.id as string, input, {
     userId: req.platformAuth.userId,
     platformRole: req.platformAuth.platformRole,
   });

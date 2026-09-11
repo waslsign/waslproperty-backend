@@ -1,14 +1,15 @@
 import type { PlatformRole, PlatformUser, PrismaClient, User } from '@prisma/client';
 import { UnauthorizedError } from '../../../errors/AppError.js';
-import { verifyPassword } from '../../../lib/password.js';
+import { hashPassword, verifyPassword } from '../../../lib/password.js';
 import {
   generateRefreshToken,
   hashRefreshToken,
   refreshTokenExpiresAt,
   signPlatformAccessToken,
 } from '../../../lib/tokens.js';
+import { recordPlatformActivity } from '../../../platform/audit.js';
 import { resolvePlatformCapabilities } from '../../../platform/capabilities.js';
-import type { PlatformLoginInput } from './platform-auth.schemas.js';
+import type { PlatformChangePasswordInput, PlatformLoginInput } from './platform-auth.schemas.js';
 
 export interface PlatformAuthTokens {
   accessToken: string;
@@ -88,6 +89,34 @@ export class PlatformAuthService {
     await this.prisma.session.updateMany({
       where: { refreshTokenHash: tokenHash, revokedAt: null, sessionType: 'PLATFORM' },
       data: { revokedAt: new Date() },
+    });
+  }
+
+  /** Self-service — requires knowing the current password, unlike
+   * BackofficePlatformUsersService.resetPassword (a Super Admin forcing a
+   * reset on someone else's account, no current password needed). */
+  async changePassword(
+    actor: { userId: string; platformUserId: string; platformRole: PlatformRole },
+    input: PlatformChangePasswordInput,
+  ): Promise<void> {
+    const user = await this.prisma.user.findUniqueOrThrow({ where: { id: actor.userId } });
+    const valid = await verifyPassword(user.passwordHash, input.currentPassword);
+    if (!valid) throw new UnauthorizedError('Current password is incorrect');
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: actor.userId },
+        data: { passwordHash: await hashPassword(input.newPassword) },
+      });
+
+      await recordPlatformActivity(tx, {
+        actorUserId: actor.userId,
+        platformRole: actor.platformRole,
+        action: 'platformUser.passwordChanged',
+        entityType: 'PlatformUser',
+        entityId: actor.platformUserId,
+        reason: 'Self-service password change',
+      });
     });
   }
 
