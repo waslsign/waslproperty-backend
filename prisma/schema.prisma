@@ -1,0 +1,978 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- Tenancy & Auth (Slice 1 / M2) ---
+
+model Organisation {
+  id     String    @id @default(cuid())
+  name   String
+  slug   String    @unique
+  status OrgStatus @default(ACTIVE)
+
+  /// ISO 4217 code (see src/lib/currencies.ts for the supported allowlist).
+  /// The default currency for newly created financial records in this
+  /// organisation — never a global hard-coded value. Configurable by
+  /// OWNER/ADMIN via PATCH /organisations/me. Changing this later never
+  /// mutates any existing WorkOrder/ContractorQuote's own currencyCode —
+  /// each financial record stores its own, copied from this at creation.
+  currencyCode String @default("AUD")
+
+  /// Set once this organisation is provisioned as a 1:1 mapped Organization in WaslSign.
+  /// Nullable — provisioning happens lazily, on first need for a signed document, not at signup.
+  waslSignOrganisationId String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships                   OrganisationMembership[]
+  properties                    Property[]
+  activityEvents                ActivityEvent[]
+  maintenanceRequests           MaintenanceRequest[]
+  maintenanceRequestAttachments MaintenanceRequestAttachment[]
+  contacts                      PropertyContact[]
+  contactInvites                ContactInvite[]
+  sessions                      Session[]
+  workOrders                    WorkOrder[]
+  contractors                   Contractor[]
+  contractorQuotes              ContractorQuote[]
+  communications                Communication[]
+  savedAudiences                SavedAudience[]
+  notifications                 Notification[]
+
+  @@map("organisations")
+}
+
+enum OrgStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+model User {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  organisationMemberships       OrganisationMembership[]
+  sessions                      Session[]
+  propertyContact               PropertyContact?
+  activityEvents                ActivityEvent[]
+  maintenanceRequests           MaintenanceRequest[]
+  maintenanceRequestAttachments MaintenanceRequestAttachment[]
+  sentContactInvites            ContactInvite[]
+  createdWorkOrders             WorkOrder[]                    @relation("WorkOrderCreatedBy")
+  approvedContractorQuotes      ContractorQuote[]              @relation("ContractorQuoteApprovedBy")
+  createdCommunications         Communication[]
+  createdSavedAudiences         SavedAudience[]
+  notifications                 Notification[]
+
+  @@map("users")
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+model OrganisationMembership {
+  id             String       @id @default(cuid())
+  organisationId String
+  userId         String
+  role           OrgRole
+  status         MemberStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@unique([organisationId, userId])
+  @@index([organisationId])
+  @@index([userId])
+  @@map("organisation_memberships")
+}
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum MemberStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+/// Customer sessions only — pinned to exactly one organisation for their
+/// whole lifetime — the same organisationId resolved at login/token-issue
+/// time; refreshing never re-resolves a different organisation, even if the
+/// user has since gained (or lost) access elsewhere — see
+/// AuthService.refresh. Platform/Backoffice sessions live entirely in
+/// EmployeeSession instead (see Employee below) — Session no longer serves
+/// them; sessionType/PLATFORM is kept only so existing rows/migrations
+/// don't need a destructive rewrite, but no new PLATFORM row is ever
+/// created here.
+model Session {
+  id               String      @id @default(cuid())
+  userId           String
+  organisationId   String?
+  sessionType      SessionType @default(CUSTOMER)
+  refreshTokenHash String
+  expiresAt        DateTime
+  createdAt        DateTime    @default(now())
+  revokedAt        DateTime?
+
+  user         User          @relation(fields: [userId], references: [id])
+  organisation Organisation? @relation(fields: [organisationId], references: [id])
+
+  @@index([userId])
+  @@index([organisationId])
+  @@map("sessions")
+}
+
+enum SessionType {
+  CUSTOMER
+  PLATFORM
+}
+
+// --- Backoffice / Platform Operations (M10.5) ---
+
+enum PlatformRole {
+  PLATFORM_SUPER_ADMIN
+  PLATFORM_ADMIN
+  PLATFORM_SUPPORT
+  PLATFORM_DEVELOPER
+}
+
+/// A WaslProperty employee — deliberately a completely separate identity
+/// from User, not an extension of it: an employee has no email at all and
+/// is never a customer organisation member. Employees sign in with
+/// `username` only. isActive lets access be revoked without deleting the
+/// grant history, and grantedByEmployeeId gives the internal-users screen
+/// something real to show.
+model Employee {
+  id           String       @id @default(cuid())
+  username     String       @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  role         PlatformRole
+  isActive     Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  grantedByEmployeeId String?
+  grantedByEmployee   Employee?  @relation("EmployeeGrantedBy", fields: [grantedByEmployeeId], references: [id])
+  grantedEmployees    Employee[] @relation("EmployeeGrantedBy")
+
+  sessions    EmployeeSession[]
+  auditEvents PlatformAuditEvent[]
+
+  @@map("employees")
+}
+
+/// The Employee-only counterpart to Session — kept as a fully separate
+/// table (not a nullable-employeeId column bolted onto Session) so the two
+/// identity spaces can never be conflated even at the schema level.
+model EmployeeSession {
+  id               String    @id @default(cuid())
+  employeeId       String
+  refreshTokenHash String
+  expiresAt        DateTime
+  createdAt        DateTime  @default(now())
+  revokedAt        DateTime?
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  @@index([employeeId])
+  @@map("employee_sessions")
+}
+
+/// Internal audit trail for Backoffice actions — deliberately separate from
+/// the customer-visible ActivityEvent model (see M10.5 design notes: reusing
+/// ActivityEvent for internal platform actions would leak internal
+/// operations into customer-facing timelines). Append-only from the
+/// application's perspective: no update/delete endpoint is ever built for
+/// this model. organisationId is nullable because many platform actions
+/// (granting platform access, inspecting the Users directory) aren't scoped
+/// to a single customer organisation.
+model PlatformAuditEvent {
+  id              String       @id @default(cuid())
+  actorEmployeeId String
+  platformRole    PlatformRole
+  action          String
+  entityType      String
+  entityId        String?
+  organisationId  String?
+  reason          String?
+  before          Json?
+  after           Json?
+  environment     String
+  correlationId   String?
+  createdAt       DateTime     @default(now())
+
+  actorEmployee Employee @relation(fields: [actorEmployeeId], references: [id])
+
+  @@index([actorEmployeeId])
+  @@index([entityType, entityId])
+  @@index([organisationId])
+  @@index([createdAt])
+  @@map("platform_audit_events")
+}
+
+// --- Property Foundation (Slice 1 / M3-M4) ---
+
+model Property {
+  id             String         @id @default(cuid())
+  organisationId String
+  name           String
+  code           String
+  addressLine1   String
+  addressLine2   String?
+  city           String
+  state          String?
+  country        String
+  postalCode     String?
+  propertyType   PropertyType
+  status         PropertyStatus @default(ACTIVE)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  organisation        Organisation         @relation(fields: [organisationId], references: [id])
+  spaces              Space[]
+  propertyMemberships PropertyMembership[]
+  activityEvents      ActivityEvent[]
+  maintenanceRequests MaintenanceRequest[]
+  workOrders          WorkOrder[]
+
+  @@unique([organisationId, code])
+  @@index([organisationId])
+  @@map("properties")
+}
+
+enum PropertyType {
+  RESIDENTIAL
+  COMMERCIAL
+  MIXED_USE
+}
+
+enum PropertyStatus {
+  ACTIVE
+  INACTIVE
+  ARCHIVED
+}
+
+/// A generic leasable/occupiable unit within a property. Deliberately not
+/// named "Unit" so the domain stays generic across residential, commercial,
+/// retail, mixed-use, villas, parking, storage and common areas. The UI may
+/// still label these "Units" for residential properties.
+model Space {
+  id             String      @id @default(cuid())
+  organisationId String
+  propertyId     String
+  name           String
+  code           String
+  spaceType      SpaceType
+  floor          String?
+  sizeSqft       Int?
+  status         SpaceStatus @default(VACANT)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  property            Property             @relation(fields: [propertyId], references: [id])
+  memberships         PropertyMembership[]
+  activityEvents      ActivityEvent[]
+  maintenanceRequests MaintenanceRequest[]
+  workOrders          WorkOrder[]
+
+  @@unique([propertyId, code])
+  @@index([organisationId])
+  @@index([propertyId])
+  @@map("spaces")
+}
+
+enum SpaceType {
+  APARTMENT
+  VILLA
+  OFFICE
+  RETAIL
+  WAREHOUSE
+  PARKING
+  STORAGE
+  COMMON_AREA
+  OTHER
+}
+
+enum SpaceStatus {
+  VACANT
+  OCCUPIED
+  UNDER_MAINTENANCE
+  RESERVED
+}
+
+/// A business/person record: an owner, tenant or resident on file for an
+/// organisation. Independent of login — userId is set only once this contact
+/// activates portal access (Slice 2), and stays nullable forever otherwise.
+model PropertyContact {
+  id             String        @id @default(cuid())
+  organisationId String
+  userId         String?       @unique
+  firstName      String
+  lastName       String
+  email          String
+  phone          String?
+  status         ContactStatus @default(ACTIVE)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organisation            Organisation             @relation(fields: [organisationId], references: [id])
+  user                    User?                    @relation(fields: [userId], references: [id])
+  memberships             PropertyMembership[]
+  invites                 ContactInvite[]
+  communicationRecipients CommunicationRecipient[]
+
+  @@unique([organisationId, email])
+  @@index([organisationId])
+  @@map("property_contacts")
+}
+
+enum ContactStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+/// The relationship between a contact and a property or a specific space
+/// within it (spaceId is nullable so property-level roles like Property
+/// Manager / Facility Manager are representable alongside space-level roles
+/// like Owner / Tenant / Resident).
+model PropertyMembership {
+  id             String           @id @default(cuid())
+  organisationId String
+  propertyId     String
+  spaceId        String?
+  contactId      String
+  role           PropertyRole
+  startDate      DateTime
+  endDate        DateTime?
+  status         MembershipStatus @default(ACTIVE)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  property Property        @relation(fields: [propertyId], references: [id])
+  space    Space?          @relation(fields: [spaceId], references: [id])
+  contact  PropertyContact @relation(fields: [contactId], references: [id])
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([spaceId])
+  @@index([contactId])
+  @@map("property_memberships")
+}
+
+enum PropertyRole {
+  OWNER
+  TENANT
+  RESIDENT
+  PROPERTY_MANAGER
+  FACILITY_MANAGER
+  AGENT
+  COMMITTEE_MEMBER
+}
+
+enum MembershipStatus {
+  ACTIVE
+  ENDED
+}
+
+// --- Activity (Slice 1 / M5) ---
+
+/// Wasl Property's own operational history for a property/space (created,
+/// updated, people added, ...). This is deliberately separate from
+/// WaslSign's agreement/signature audit trail, which WaslSign continues to
+/// own — this log never records signing events.
+model ActivityEvent {
+  id             String            @id @default(cuid())
+  organisationId String
+  /// Nullable to represent organisation-wide events (e.g. a portfolio-wide
+  /// announcement) that aren't scoped to a single property. Every other
+  /// event type still always supplies this.
+  propertyId     String?
+  spaceId        String?
+  actorUserId    String?
+  eventType      ActivityEventType
+  entityType     String?
+  entityId       String?
+  title          String
+  description    String?
+  metadata       Json?
+  createdAt      DateTime          @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+  property     Property?    @relation(fields: [propertyId], references: [id])
+  space        Space?       @relation(fields: [spaceId], references: [id])
+  actorUser    User?        @relation(fields: [actorUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([organisationId, createdAt])
+  @@index([propertyId, createdAt])
+  @@index([spaceId, createdAt])
+  @@map("activity_events")
+}
+
+/// Only event types for actions that already exist. Extend this enum when
+/// a new module actually ships (e.g. maintenance, work orders) rather than
+/// pre-declaring values nothing can emit yet.
+enum ActivityEventType {
+  PROPERTY_CREATED
+  PROPERTY_UPDATED
+  SPACE_CREATED
+  SPACE_UPDATED
+  PERSON_ADDED
+  MAINTENANCE_REQUEST_CREATED
+  MAINTENANCE_REQUEST_STATUS_CHANGED
+  MAINTENANCE_REQUEST_UPDATED
+  MAINTENANCE_REQUEST_ATTACHMENTS_ADDED
+  WORK_ORDER_CREATED
+  WORK_ORDER_STATUS_CHANGED
+  CONTRACTOR_ASSIGNED
+  QUOTE_SUBMITTED
+  QUOTE_WORKFLOW_REQUESTED
+  QUOTE_APPROVED
+  QUOTE_REJECTED
+  QUOTE_SIGNING_STARTED
+  QUOTE_SIGNED
+  QUOTE_DECLINED
+  MEMBERSHIP_UPDATED
+  MEMBERSHIP_ENDED
+  ANNOUNCEMENT_CREATED
+  ANNOUNCEMENT_SENT
+  ANNOUNCEMENT_CANCELLED
+}
+
+// --- Resident invitations (Slice 2 / M6.5) ---
+
+/// A single-use, expiring invitation for a PropertyContact to activate
+/// resident portal access. Only the sha256 hash of the raw token is ever
+/// stored — the raw token exists only in the emailed activation link.
+model ContactInvite {
+  id                String @id @default(cuid())
+  organisationId    String
+  propertyContactId String
+  invitedByUserId   String
+
+  tokenHash String              @unique
+  expiresAt DateTime
+  status    ContactInviteStatus @default(PENDING)
+
+  createdAt  DateTime  @default(now())
+  acceptedAt DateTime?
+  revokedAt  DateTime?
+
+  organisation    Organisation    @relation(fields: [organisationId], references: [id])
+  propertyContact PropertyContact @relation(fields: [propertyContactId], references: [id])
+  invitedBy       User            @relation(fields: [invitedByUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([propertyContactId])
+  @@map("contact_invites")
+}
+
+enum ContactInviteStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  REVOKED
+}
+
+// --- Maintenance (Slice 2 / M6) ---
+
+/// The first operational object in Wasl Property. Deliberately separate
+/// from any future WorkOrder concept — a request is what was reported;
+/// a work order (later) is the work actually dispatched to resolve it.
+model MaintenanceRequest {
+  id               String  @id @default(cuid())
+  organisationId   String
+  propertyId       String
+  spaceId          String?
+  reportedByUserId String?
+
+  title       String
+  description String
+
+  category MaintenanceCategory
+  priority MaintenancePriority
+  status   MaintenanceRequestStatus @default(NEW)
+
+  reportedAt DateTime  @default(now())
+  resolvedAt DateTime?
+  closedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+  property     Property     @relation(fields: [propertyId], references: [id])
+  space        Space?       @relation(fields: [spaceId], references: [id])
+  reportedBy   User?        @relation(fields: [reportedByUserId], references: [id])
+
+  attachments MaintenanceRequestAttachment[]
+  workOrders  WorkOrder[]
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([spaceId])
+  @@index([reportedByUserId])
+  @@map("maintenance_requests")
+}
+
+enum MaintenanceCategory {
+  PLUMBING
+  ELECTRICAL
+  HVAC
+  APPLIANCE
+  STRUCTURAL
+  COMMON_AREA
+  SECURITY
+  CLEANING
+  PEST_CONTROL
+  OTHER
+}
+
+enum MaintenancePriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum MaintenanceRequestStatus {
+  NEW
+  UNDER_REVIEW
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+  CANCELLED
+}
+
+/// Photo evidence attached to a maintenance request. Deliberately not a
+/// generic document-management model — this exists only for maintenance
+/// request photos. Bytes live in S3; only metadata + the storage key live
+/// here. Never expose storageKey to the frontend — always mediate access
+/// through a freshly-issued presigned GET URL.
+model MaintenanceRequestAttachment {
+  id                   String  @id @default(cuid())
+  organisationId       String
+  maintenanceRequestId String
+  uploadedByUserId     String?
+
+  storageKey  String
+  fileName    String
+  contentType String
+  fileSize    Int
+
+  width  Int?
+  height Int?
+
+  createdAt DateTime @default(now())
+
+  organisation       Organisation       @relation(fields: [organisationId], references: [id])
+  maintenanceRequest MaintenanceRequest @relation(fields: [maintenanceRequestId], references: [id])
+  uploadedBy         User?              @relation(fields: [uploadedByUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([maintenanceRequestId])
+  @@map("maintenance_request_attachments")
+}
+
+// --- Work Orders (M7) ---
+
+/// The work actually dispatched to resolve an issue — deliberately separate
+/// from MaintenanceRequest (see that model's doc comment): a request is what
+/// was reported, a work order is what a manager decided to do about it.
+/// maintenanceRequestId is nullable because a manager can also open a work
+/// order directly (e.g. planned/preventive work with no originating report).
+model WorkOrder {
+  id                   String  @id @default(cuid())
+  organisationId       String
+  propertyId           String
+  spaceId              String?
+  maintenanceRequestId String?
+
+  title       String
+  description String
+
+  status   WorkOrderStatus     @default(DRAFT)
+  priority MaintenancePriority
+
+  scheduledAt DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  estimatedCost Decimal? @db.Decimal(10, 2)
+  actualCost    Decimal? @db.Decimal(10, 2)
+  /// Copied from Organisation.currencyCode at creation — never re-derived
+  /// from the (possibly since-changed) organisation setting.
+  currencyCode  String   @default("AUD")
+
+  contractorId    String?
+  createdByUserId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation       Organisation        @relation(fields: [organisationId], references: [id])
+  property           Property            @relation(fields: [propertyId], references: [id])
+  space              Space?              @relation(fields: [spaceId], references: [id])
+  maintenanceRequest MaintenanceRequest? @relation(fields: [maintenanceRequestId], references: [id])
+  contractor         Contractor?         @relation(fields: [contractorId], references: [id])
+  createdBy          User                @relation("WorkOrderCreatedBy", fields: [createdByUserId], references: [id])
+
+  quotes ContractorQuote[]
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([spaceId])
+  @@index([maintenanceRequestId])
+  @@index([contractorId])
+  @@map("work_orders")
+}
+
+enum WorkOrderStatus {
+  DRAFT
+  READY
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+// --- Contractors (M8) ---
+
+model Contractor {
+  id             String           @id @default(cuid())
+  organisationId String
+  name           String
+  companyName    String?
+  email          String
+  phone          String?
+  status         ContractorStatus @default(ACTIVE)
+  tradeTypes     String[]
+  notes          String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organisation Organisation      @relation(fields: [organisationId], references: [id])
+  workOrders   WorkOrder[]
+  quotes       ContractorQuote[]
+
+  @@unique([organisationId, email])
+  @@index([organisationId])
+  @@map("contractors")
+}
+
+enum ContractorStatus {
+  ACTIVE
+  INACTIVE
+}
+
+// --- Contractor quotes + configurable WaslSign workflow (M8 / M9-A) ---
+
+/// Approval and signature are tracked as two separate, independently
+/// nullable statuses — never collapsed into one "approved" flag. Which of
+/// them apply (if either) is entirely determined by `workflowMode`. See
+/// docs on WorkflowMode below; the overall pass/fail result for a quote is
+/// *derived* from (workflowMode, approvalStatus, signatureStatus) in
+/// application code rather than stored redundantly here.
+model ContractorQuote {
+  id             String @id @default(cuid())
+  organisationId String
+  workOrderId    String
+  contractorId   String
+
+  amount       Decimal @db.Decimal(10, 2)
+  /// Copied from Organisation.currencyCode at creation (or an explicit
+  /// override — a contractor may quote in a different currency) — never
+  /// re-derived from the organisation setting, so changing the org default
+  /// later never mutates an existing quote's own currency.
+  currencyCode String  @default("AUD")
+  description  String?
+
+  status ContractorQuoteStatus @default(REQUESTED)
+
+  submittedAt DateTime?
+  approvedAt  DateTime?
+  rejectedAt  DateTime?
+
+  /// What Wasl Property asked WaslSign (or nothing) to execute for this
+  /// quote. Null until a manager makes that choice.
+  workflowMode WorkflowMode?
+
+  /// Native to Wasl Property — WaslSign has no approval primitive today
+  /// (see docs/waslsign-integration.md). Populated only when workflowMode
+  /// is APPROVAL_ONLY or APPROVAL_THEN_SIGNATURE.
+  approvalStatus   ApprovalStatus?
+  approvedByUserId String?
+
+  /// Backed by a real WaslSign agreement. Populated only when workflowMode
+  /// is SIGNATURE_ONLY or APPROVAL_THEN_SIGNATURE (and, for the latter,
+  /// only once approval has actually passed).
+  signatureStatus     SignatureStatus?
+  signedAt            DateTime?
+  waslSignAgreementId String?
+  waslSignStatus      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation   Organisation @relation(fields: [organisationId], references: [id])
+  workOrder      WorkOrder    @relation(fields: [workOrderId], references: [id])
+  contractor     Contractor   @relation(fields: [contractorId], references: [id])
+  approvedByUser User?        @relation("ContractorQuoteApprovedBy", fields: [approvedByUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([workOrderId])
+  @@index([contractorId])
+  @@index([waslSignAgreementId])
+  @@map("contractor_quotes")
+}
+
+enum ContractorQuoteStatus {
+  REQUESTED
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+/// What Wasl Property asks WaslSign to execute for one quote/work order.
+/// Deliberately never forces both approval and signature — a business
+/// process picks exactly the shape it needs.
+enum WorkflowMode {
+  NONE
+  APPROVAL_ONLY
+  SIGNATURE_ONLY
+  APPROVAL_THEN_SIGNATURE
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum SignatureStatus {
+  PENDING
+  PARTIALLY_SIGNED
+  SIGNED
+  DECLINED
+  EXPIRED
+  CANCELLED
+}
+
+/// Idempotency ledger for inbound WaslSign webhook callbacks — a duplicate
+/// delivery of the same eventId is a guaranteed no-op. Deliberately holds no
+/// organisationId: the callback payload's sourceEntityId is what gets
+/// cross-checked against the target ContractorQuote's own organisationId at
+/// handling time (see waslsign.service.ts), not this ledger.
+model WaslSignWebhookEvent {
+  id         String   @id @default(cuid())
+  eventId    String   @unique
+  receivedAt DateTime @default(now())
+  payload    Json
+
+  @@map("waslsign_webhook_events")
+}
+
+// --- Communications & Notifications (M10) ---
+
+enum CommunicationStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  SENT
+  CANCELLED
+  FAILED
+}
+
+/// Extensible on purpose: WHATSAPP exists here so the domain never needs a
+/// redesign when a provider is configured, but only IN_APP and EMAIL are
+/// actually implemented in M10 — WHATSAPP must never be offered as a
+/// selectable channel in the UI until it is genuinely configured.
+enum CommunicationChannel {
+  IN_APP
+  EMAIL
+  WHATSAPP
+}
+
+enum DeliveryStatus {
+  PENDING
+  SENDING
+  SENT
+  DELIVERED
+  FAILED
+}
+
+/// A manager-authored announcement to owners/tenants/residents. Immutable
+/// once SENT — title/body are never edited after sending, only ever
+/// duplicated into a new draft. See CommunicationRecipient and
+/// CommunicationDelivery for the per-recipient, per-channel audit trail
+/// captured at send time.
+model Communication {
+  id             String                 @id @default(cuid())
+  organisationId String
+  title          String
+  body           String
+  status         CommunicationStatus    @default(DRAFT)
+  channels       CommunicationChannel[]
+
+  /// Structured targeting rule, not a frozen recipient list — e.g.
+  /// {"scope":"PROPERTY","propertyIds":[...],"roles":[...],"includeContactIds":[...]}.
+  /// Always re-resolved against current active memberships, including when
+  /// reused via savedAudienceId, so a saved group never goes stale.
+  audienceCriteria Json
+
+  savedAudienceId String?
+
+  createdByUserId String
+  scheduledAt     DateTime?
+  sentAt          DateTime?
+  cancelledAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation  Organisation             @relation(fields: [organisationId], references: [id])
+  createdBy     User                     @relation(fields: [createdByUserId], references: [id])
+  savedAudience SavedAudience?           @relation(fields: [savedAudienceId], references: [id])
+  recipients    CommunicationRecipient[]
+
+  @@index([organisationId, status])
+  @@index([organisationId, scheduledAt])
+  @@map("communications")
+}
+
+/// One row per resolved contact for a communication — the audit snapshot of
+/// who this was actually addressed to at send time. Per-channel delivery
+/// state hangs off this (CommunicationDelivery), not off Communication
+/// directly, so a recipient can have independent delivery outcomes per
+/// channel.
+model CommunicationRecipient {
+  id              String   @id @default(cuid())
+  communicationId String
+  contactId       String
+  userId          String?
+  propertyId      String?
+  spaceId         String?
+  createdAt       DateTime @default(now())
+
+  communication Communication           @relation(fields: [communicationId], references: [id])
+  contact       PropertyContact         @relation(fields: [contactId], references: [id])
+  deliveries    CommunicationDelivery[]
+
+  @@unique([communicationId, contactId])
+  @@index([communicationId])
+  @@index([contactId])
+  @@index([userId])
+  @@map("communication_recipients")
+}
+
+/// One row per (recipient, channel) — independently retryable and
+/// idempotent (the unique constraint below means a retried send attempt
+/// updates the same row rather than creating a duplicate). Provider-specific
+/// state lives here so a future WhatsApp/SMS provider slots in without
+/// touching Communication or CommunicationRecipient.
+model CommunicationDelivery {
+  id                       String               @id @default(cuid())
+  communicationRecipientId String
+  channel                  CommunicationChannel
+  status                   DeliveryStatus       @default(PENDING)
+
+  providerMessageId String?
+  attemptedAt       DateTime?
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  failedAt          DateTime?
+  failureReason     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  communicationRecipient CommunicationRecipient @relation(fields: [communicationRecipientId], references: [id])
+
+  @@unique([communicationRecipientId, channel])
+  @@index([status])
+  @@map("communication_deliveries")
+}
+
+/// A reusable audience rule. Stores criteria (the same shape as
+/// Communication.audienceCriteria), not a frozen list of contacts, so it
+/// always resolves against current active memberships when used.
+model SavedAudience {
+  id              String   @id @default(cuid())
+  organisationId  String
+  name            String
+  criteria        Json
+  createdByUserId String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organisation   Organisation    @relation(fields: [organisationId], references: [id])
+  createdBy      User            @relation(fields: [createdByUserId], references: [id])
+  communications Communication[]
+
+  @@unique([organisationId, name])
+  @@index([organisationId])
+  @@map("saved_audiences")
+}
+
+/// The unified in-app inbox row for a user — sourced either from a sent
+/// Communication (manager announcement) or directly from a system event
+/// (maintenance/work-order/quote/membership changes). One table, one
+/// unread-count query, one bell, regardless of origin. sourceCommunicationId
+/// / sourceActivityEventId are plain reference ids (not enforced relations),
+/// same pattern as WaslSignWebhookEvent above — the notification already
+/// carries its own title/body/entityType/entityId, so it never depends on
+/// the source row still existing to render correctly.
+model Notification {
+  id             String @id @default(cuid())
+  organisationId String
+  userId         String
+
+  title String
+  body  String?
+
+  /// Mirrors ActivityEvent's entityType/entityId convention so a
+  /// notification can link through to the real record. Normal API
+  /// authorization always still applies when that link is opened —
+  /// possession of a notification is never itself authorization.
+  entityType String?
+  entityId   String?
+
+  sourceCommunicationId String?
+  sourceActivityEventId String?
+
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@index([organisationId, userId, readAt])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
