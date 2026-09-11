@@ -2,7 +2,11 @@ import type { Request, Response } from 'express';
 import { getPrismaClient } from '../../../lib/prisma.js';
 import { UnauthorizedError } from '../../../errors/AppError.js';
 import { BackofficeDataExplorerService } from './backoffice-data-explorer.service.js';
-import { dataExplorerListQuerySchema, dataExplorerUpdateSchema } from './backoffice-data-explorer.schemas.js';
+import {
+  dataExplorerDeleteSchema,
+  dataExplorerListQuerySchema,
+  dataExplorerUpdateSchema,
+} from './backoffice-data-explorer.schemas.js';
 
 const service = new BackofficeDataExplorerService(getPrismaClient());
 
@@ -34,8 +38,18 @@ export async function updateDataExplorerRecord(req: Request, res: Response) {
     req.params.model as string,
     req.params.id as string,
     input,
-    { userId: req.platformAuth.userId, platformRole: req.platformAuth.platformRole },
+    { employeeId: req.platformAuth.employeeId, platformRole: req.platformAuth.platformRole },
     req.platformAuth.platformCapabilities,
   );
   res.json(updated);
+}
+
+export async function deleteDataExplorerRecord(req: Request, res: Response) {
+  if (!req.platformAuth) throw new UnauthorizedError();
+  const input = dataExplorerDeleteSchema.parse(req.body);
+  await service.deleteRecord(req.params.model as string, req.params.id as string, input, {
+    employeeId: req.platformAuth.employeeId,
+    platformRole: req.platformAuth.platformRole,
+  });
+  res.status(204).send();
 }

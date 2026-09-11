@@ -10,7 +10,11 @@ import {
   type DataExplorerModelMeta,
 } from '../../../platform/data-explorer-metadata.js';
 import { canViewUnmaskedPii, maskPiiFields, SECRET_FIELDS } from '../../../platform/privacy-policy.js';
-import type { DataExplorerListQuery, DataExplorerUpdateInput } from './backoffice-data-explorer.schemas.js';
+import type {
+  DataExplorerDeleteInput,
+  DataExplorerListQuery,
+  DataExplorerUpdateInput,
+} from './backoffice-data-explorer.schemas.js';
 
 type Row = Record<string, unknown>;
 
@@ -19,6 +23,7 @@ interface GenericDelegate {
   count(args: Record<string, unknown>): Promise<number>;
   findUnique(args: Record<string, unknown>): Promise<Row | null>;
   update(args: Record<string, unknown>): Promise<Row>;
+  delete(args: Record<string, unknown>): Promise<Row>;
 }
 
 function getDelegate(client: PrismaClient | Prisma.TransactionClient, delegateName: string): GenericDelegate {
@@ -196,6 +201,7 @@ export class BackofficeDataExplorerService {
       searchableFields: meta.searchableFields,
       fields: meta.fields,
       relations: meta.relations,
+      deletable: meta.deletable,
     }));
   }
 
@@ -253,7 +259,7 @@ export class BackofficeDataExplorerService {
     modelKey: string,
     id: string,
     input: DataExplorerUpdateInput,
-    actor: { userId: string; platformRole: PlatformRole },
+    actor: { employeeId: string; platformRole: PlatformRole },
     capabilities: readonly string[],
   ) {
     const meta = requireModelMeta(modelKey);
@@ -281,7 +287,7 @@ export class BackofficeDataExplorerService {
         const result = await txDelegate.update({ where: { id }, data, select: buildSelect(meta, false) });
 
         await recordPlatformActivity(tx, {
-          actorUserId: actor.userId,
+          actorEmployeeId: actor.employeeId,
           platformRole: actor.platformRole,
           action: 'dataExplorer.recordUpdated',
           entityType: meta.model,
@@ -302,6 +308,56 @@ export class BackofficeDataExplorerService {
     } catch (err) {
       if (isPrismaCode(err, 'P2002')) throw new ConflictError('A record with that value already exists');
       if (isPrismaCode(err, 'P2025')) throw new NotFoundError(`${meta.label} not found`);
+      throw err;
+    }
+  }
+
+  /** PLATFORM_SUPER_ADMIN only, enforced at the route level
+   * (requirePlatformSuperAdmin) — not repeated here, since this service has
+   * no access to the actor's role/capabilities beyond what's passed in.
+   * Blocked entirely for the audit/log-shaped models (deletable: false)
+   * regardless of who's asking. Postgres's own foreign-key constraints are
+   * the only referential-integrity guard — a row other records still point
+   * to fails with a clear P2003, not a silent orphan. */
+  async deleteRecord(
+    modelKey: string,
+    id: string,
+    input: DataExplorerDeleteInput,
+    actor: { employeeId: string; platformRole: PlatformRole },
+  ) {
+    const meta = requireModelMeta(modelKey);
+    if (!meta.deletable) {
+      throw new ForbiddenError(`${meta.model} records cannot be deleted via Data Explorer`);
+    }
+
+    const delegate = getDelegate(this.prisma, meta.delegate);
+    const existing = await delegate.findUnique({ where: { id }, select: buildSelect(meta, false) });
+    if (!existing) throw new NotFoundError(`${meta.label} not found`);
+
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const txDelegate = getDelegate(tx, meta.delegate);
+        await txDelegate.delete({ where: { id } });
+
+        await recordPlatformActivity(tx, {
+          actorEmployeeId: actor.employeeId,
+          platformRole: actor.platformRole,
+          action: 'dataExplorer.recordDeleted',
+          entityType: meta.model,
+          entityId: id,
+          reason: input.reason,
+          before: Object.fromEntries(
+            Object.entries(existing).map(([k, v]) => [k, toAuditValue(v)]),
+          ) as Prisma.InputJsonValue,
+        });
+      });
+    } catch (err) {
+      if (isPrismaCode(err, 'P2025')) throw new NotFoundError(`${meta.label} not found`);
+      if (isPrismaCode(err, 'P2003')) {
+        throw new ConflictError(
+          `Cannot delete this ${meta.label}: other records still reference it.`,
+        );
+      }
       throw err;
     }
   }

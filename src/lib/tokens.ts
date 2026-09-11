@@ -14,16 +14,17 @@ export interface AccessTokenPayload {
 }
 
 /**
- * A Backoffice session for a WaslProperty employee — never carries an
- * organisationId or orgRole. Capabilities are resolved once, at issue time,
- * from the central role->capability map (see src/platform/capabilities.ts)
- * and embedded here so the backend never has to re-derive them ad hoc per
+ * A Backoffice session for a WaslProperty Employee — never carries an
+ * organisationId or orgRole, and `sub` is an Employee.id, never a User.id
+ * (Employee is a fully separate identity, not a User extension — see the
+ * Employee model). Capabilities are resolved once, at issue time, from the
+ * central role->capability map (see src/platform/capabilities.ts) and
+ * embedded here so the backend never has to re-derive them ad hoc per
  * request, while still checking them on every request.
  */
 export interface PlatformAccessTokenPayload {
   sub: string;
   sessionType: 'PLATFORM';
-  platformUserId: string;
   username: string;
   platformRole: PlatformRole;
   platformCapabilities: string[];

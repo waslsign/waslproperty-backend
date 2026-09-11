@@ -23,7 +23,7 @@ describe('backoffice platform auth', () => {
   });
 
   describe('platform login', () => {
-    it('signs in an active PlatformUser and returns resolved capabilities', async () => {
+    it('signs in an active Employee and returns resolved capabilities', async () => {
       const { username, password } = await createPlatformUser({ role: 'PLATFORM_ADMIN' });
 
       const res = await platformLogin(username, password);
@@ -34,8 +34,8 @@ describe('backoffice platform auth', () => {
       expect(res.headers['set-cookie']?.[0]).toMatch(/wasl_property_platform_refresh_token=/);
     });
 
-    it('rejects login for a username that has no PlatformUser grant at all', async () => {
-      // A customer account has no username/PlatformUser at all — the two
+    it('rejects login for a username with no Employee at all', async () => {
+      // A customer User has no username/Employee row at all — the two
       // identity spaces are completely disjoint now, so this is the
       // faithful "no Backoffice access" case rather than trying to log a
       // customer in by (nonexistent) username.
@@ -44,7 +44,7 @@ describe('backoffice platform auth', () => {
       expect(res.status).toBe(401);
     });
 
-    it('rejects a deactivated PlatformUser even with the correct password', async () => {
+    it('rejects a deactivated Employee even with the correct password', async () => {
       const { username, password } = await createPlatformUser({ isActive: false });
       const res = await platformLogin(username, password);
       expect(res.status).toBe(401);
@@ -118,7 +118,7 @@ describe('backoffice platform auth', () => {
         .send({ currentPassword: password, newPassword: 'a-brand-new-password-123' });
 
       const audit = await testPrisma.platformAuditEvent.findFirst({
-        where: { action: 'platformUser.passwordChanged' },
+        where: { action: 'employee.passwordChanged' },
       });
       expect(audit).toBeTruthy();
       expect(JSON.stringify(audit)).not.toContain(password);
@@ -167,13 +167,13 @@ describe('backoffice platform auth', () => {
       expect(res.status).toBe(401);
     });
 
-    it('rejects a refresh once the PlatformUser has been deactivated mid-session', async () => {
-      const { username, password, platformUserId } = await createPlatformUser();
+    it('rejects a refresh once the Employee has been deactivated mid-session', async () => {
+      const { username, password, employeeId } = await createPlatformUser();
       const loginRes = await platformLogin(username, password);
       const cookie = loginRes.headers['set-cookie'][0];
 
-      await testPrisma.platformUser.update({
-        where: { id: platformUserId },
+      await testPrisma.employee.update({
+        where: { id: employeeId },
         data: { isActive: false },
       });
 
@@ -184,15 +184,15 @@ describe('backoffice platform auth', () => {
     });
 
     it('rejects an expired platform session', async () => {
-      const { username, password, userId } = await createPlatformUser();
+      const { username, password, employeeId } = await createPlatformUser();
       const loginRes = await platformLogin(username, password);
       const cookie = loginRes.headers['set-cookie'][0];
       const rawToken = /wasl_property_platform_refresh_token=([^;]+)/.exec(cookie)?.[1] as string;
 
       const { createHash } = await import('node:crypto');
       const tokenHash = createHash('sha256').update(rawToken).digest('hex');
-      await testPrisma.session.updateMany({
-        where: { userId, sessionType: 'PLATFORM', refreshTokenHash: tokenHash },
+      await testPrisma.employeeSession.updateMany({
+        where: { employeeId, refreshTokenHash: tokenHash },
         data: { expiresAt: new Date(Date.now() - 1000) },
       });
 
@@ -224,9 +224,9 @@ describe('backoffice platform auth', () => {
     });
 
     it('rejects a hand-crafted customer-shaped token on Backoffice routes even with a real platform user id', async () => {
-      const { userId } = await createPlatformUser();
+      const { employeeId } = await createPlatformUser();
       const forgedCustomerToken = signAccessToken({
-        sub: userId,
+        sub: employeeId,
         sessionType: 'CUSTOMER',
         organisationId: 'org_does_not_matter',
         orgRole: 'OWNER',
@@ -242,7 +242,6 @@ describe('backoffice platform auth', () => {
       const forgedPlatformToken = signPlatformAccessToken({
         sub: userId,
         sessionType: 'PLATFORM',
-        platformUserId: 'does_not_matter',
         username: 'does_not_matter',
         platformRole: 'PLATFORM_SUPER_ADMIN',
         platformCapabilities: resolvePlatformCapabilities('PLATFORM_SUPER_ADMIN'),

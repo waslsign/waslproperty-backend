@@ -60,11 +60,12 @@ export async function createPlainUser(
   return { userId: user.id, email, password };
 }
 
-/** Creates a User with an active (by default) PlatformUser grant — the
- * precondition for signing in through the Backoffice login. */
+/** Creates an active (by default) Employee directly — a WaslProperty
+ * employee is a fully separate identity from User, with no email at all,
+ * so this is the precondition for signing in through the Backoffice login,
+ * not a wrapper around createPlainUser. */
 export async function createPlatformUser(
   overrides: Partial<{
-    email: string;
     username: string;
     firstName: string;
     lastName: string;
@@ -73,24 +74,26 @@ export async function createPlatformUser(
     isActive: boolean;
   }> = {},
 ) {
-  const { userId, email, password } = await createPlainUser(overrides);
   const username =
     overrides.username ?? `platform.user.${Date.now()}.${Math.random().toString(36).slice(2, 6)}`;
-  const platformUser = await testPrisma.platformUser.create({
+  const password = overrides.password ?? 'platform-secret-1';
+
+  const employee = await testPrisma.employee.create({
     data: {
-      userId,
       username,
+      passwordHash: await hashPassword(password),
+      firstName: overrides.firstName ?? 'Platform',
+      lastName: overrides.lastName ?? 'User',
       role: overrides.role ?? 'PLATFORM_SUPER_ADMIN',
       isActive: overrides.isActive ?? true,
     },
   });
+
   return {
-    userId,
-    email,
+    employeeId: employee.id,
     username,
     password,
-    platformUserId: platformUser.id,
-    role: platformUser.role,
+    role: employee.role,
   };
 }
 

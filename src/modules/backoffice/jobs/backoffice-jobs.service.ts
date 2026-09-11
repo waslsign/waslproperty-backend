@@ -75,7 +75,7 @@ export class BackofficeJobsService {
    * separate "retry" code path. */
   async retryDelivery(
     deliveryId: string,
-    actor: { userId: string; platformRole: PlatformRole },
+    actor: { employeeId: string; platformRole: PlatformRole },
   ) {
     const delivery = await this.prisma.communicationDelivery.findUnique({
       where: { id: deliveryId },
@@ -93,7 +93,7 @@ export class BackofficeJobsService {
       });
 
       await recordPlatformActivity(tx, {
-        actorUserId: actor.userId,
+        actorEmployeeId: actor.employeeId,
         platformRole: actor.platformRole,
         action: 'delivery.retried',
         entityType: 'CommunicationDelivery',

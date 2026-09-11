@@ -7,10 +7,8 @@
  * the schema.
  *
  * Deliberately excluded models (never add these, even read-only):
- * - Session: holds refreshTokenHash (SECRET_FIELDS) and is a live
- *   authentication artifact, not a debugging target.
- * - PlatformUser: Backoffice staff credentials/security config. Managed
- *   exclusively through the dedicated Internal Users screen.
+ * - Session / EmployeeSession: hold refreshTokenHash (SECRET_FIELDS) and are
+ *   live authentication artifacts, not a debugging target.
  * - PlatformAuditEvent: append-only by design (see platform/audit.ts) —
  *   exposing it here, even read-only, would invite someone to eventually
  *   wire up editing. Already has its own read-only Audit Log screen.
@@ -20,6 +18,17 @@
  *   Wasl Property operational domain.
  * - MaintenanceRequestAttachment: holds storageKey, which application code
  *   elsewhere is explicit must never reach the frontend un-mediated.
+ *
+ * Employee is deliberately INCLUDED but field-edits are entirely blocked
+ * (every field editable: false) — mutating an employee's role/username/
+ * active-status/password stays exclusively on the dedicated Internal Users
+ * screen, which has its own last-Super-Admin and password-reset safeguards
+ * this generic explorer doesn't replicate. passwordHash is never listed in
+ * its fields at all (structurally unselectable, not just masked), the same
+ * pattern used for User.passwordHash. Row *deletion* IS allowed
+ * (PLATFORM_SUPER_ADMIN-only) — including a Super Admin deleting their own
+ * account or the last active Super Admin, which is a real, known,
+ * deliberately-unblocked risk — see the Employee entry's own comment below.
  */
 import type { PlatformCapability } from './capabilities.js';
 
@@ -61,6 +70,16 @@ export interface DataExplorerModelMeta {
   readonly fields: readonly DataExplorerFieldMeta[];
   readonly relations: readonly DataExplorerRelationMeta[];
   readonly defaultOrderBy: string;
+  /** Whether a whole row may be deleted via the explorer (PLATFORM_SUPER_ADMIN
+   * only regardless — see requirePlatformSuperAdmin on the delete route).
+   * True for every model, including the otherwise field-view-only ones
+   * (Employee, Communication, ActivityEvent, ...) — an explicit product
+   * decision that Super Admin gets real, unrestricted delete power here,
+   * matching the trust model already given to raw SQL DELETE in the SQL
+   * Console. Kept as a per-model flag (not just always-true) so a future
+   * model can still opt out deliberately and visibly, the same allowlist
+   * philosophy as every other field in this file. */
+  readonly deletable: boolean;
 }
 
 const f = (
@@ -77,6 +96,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'Organisation',
     searchableFields: ['name', 'slug'],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('name', 'string', true),
@@ -95,6 +115,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'User',
     searchableFields: ['email', 'firstName', 'lastName'],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('email', 'string', false, { piiSensitive: true }),
@@ -113,6 +134,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'Organisation Membership',
     searchableFields: [],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('organisationId', 'string', false),
@@ -134,6 +156,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'Property',
     searchableFields: ['name', 'code', 'city'],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('organisationId', 'string', false),
@@ -159,6 +182,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'Space',
     searchableFields: ['name', 'code'],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('organisationId', 'string', false),
@@ -186,6 +210,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'Property Contact',
     searchableFields: ['firstName', 'lastName', 'email'],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('organisationId', 'string', false),
@@ -210,6 +235,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'Property Membership',
     searchableFields: [],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('organisationId', 'string', false),
@@ -241,6 +267,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'Maintenance Request',
     searchableFields: ['title'],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('organisationId', 'string', false),
@@ -278,6 +305,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'Work Order',
     searchableFields: ['title'],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('organisationId', 'string', false),
@@ -315,6 +343,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'Contractor',
     searchableFields: ['name', 'companyName', 'email'],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('organisationId', 'string', false),
@@ -342,6 +371,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'Contractor Quote',
     searchableFields: [],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('organisationId', 'string', false),
@@ -388,6 +418,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'Communication',
     searchableFields: ['title'],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('organisationId', 'string', false),
@@ -419,6 +450,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'Communication Recipient',
     searchableFields: [],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('communicationId', 'string', false),
@@ -443,6 +475,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'Communication Delivery',
     searchableFields: [],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('communicationRecipientId', 'string', false),
@@ -468,6 +501,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'Notification',
     searchableFields: ['title'],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('organisationId', 'string', false),
@@ -493,6 +527,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'Saved Audience',
     searchableFields: ['name'],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('organisationId', 'string', false),
@@ -514,6 +549,7 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
     label: 'Activity Event',
     searchableFields: ['title'],
     defaultOrderBy: 'createdAt',
+    deletable: true,
     fields: [
       f('id', 'string', false),
       f('organisationId', 'string', false),
@@ -533,6 +569,41 @@ export const DATA_EXPLORER_MODELS: Record<string, DataExplorerModelMeta> = {
       { field: 'space', label: 'Space', targetModel: 'Space' },
       { field: 'actorUser', label: 'Actor', targetModel: 'User' },
     ],
+  },
+
+  /** Field-level edits are entirely blocked — see the module doc comment
+   * above for why (role/username/active-status mutation stays on the
+   * dedicated Internal Users screen, which has its own last-Super-Admin
+   * safeguard this generic explorer does not replicate). Row deletion IS
+   * allowed, PLATFORM_SUPER_ADMIN-only exactly like every other Data
+   * Explorer delete — deliberately, per explicit product decision, the
+   * same trust model already given to raw SQL DELETE in the SQL Console.
+   * This means a Super Admin can delete their own account, or the last
+   * active Super Admin, via this path — recoverable only via
+   * prisma/create-platform-user.ts or direct DB access, a real and known
+   * operational risk that is not blocked here on purpose. passwordHash is
+   * not merely masked, it is never listed here at all. */
+  Employee: {
+    model: 'Employee',
+    delegate: 'employee',
+    label: 'Employee',
+    searchableFields: ['username', 'firstName', 'lastName'],
+    defaultOrderBy: 'createdAt',
+    deletable: true,
+    fields: [
+      f('id', 'string', false),
+      f('username', 'string', false),
+      f('firstName', 'string', false),
+      f('lastName', 'string', false),
+      f('role', 'enum', false, {
+        enumValues: ['PLATFORM_SUPER_ADMIN', 'PLATFORM_ADMIN', 'PLATFORM_SUPPORT', 'PLATFORM_DEVELOPER'],
+      }),
+      f('isActive', 'boolean', false),
+      f('grantedByEmployeeId', 'string', false),
+      f('createdAt', 'datetime', false),
+      f('updatedAt', 'datetime', false),
+    ],
+    relations: [{ field: 'grantedByEmployee', label: 'Granted By', targetModel: 'Employee' }],
   },
 };
 
@@ -555,6 +626,7 @@ export const RELATION_DISPLAY_SELECT: Record<string, readonly string[]> = {
   SavedAudience: ['name'],
   CommunicationRecipient: [],
   ContractorQuote: [],
+  Employee: ['firstName', 'lastName'],
 };
 
 export function formatRelationDisplay(
@@ -563,7 +635,7 @@ export function formatRelationDisplay(
 ): string | null {
   if (!related) return null;
   const { firstName, lastName, name, code, title } = related as Record<string, unknown>;
-  if (targetModel === 'User' || targetModel === 'PropertyContact') {
+  if (targetModel === 'User' || targetModel === 'PropertyContact' || targetModel === 'Employee') {
     const full = [firstName, lastName].filter(Boolean).join(' ').trim();
     return full || null;
   }

@@ -89,7 +89,7 @@ export class BackofficeSqlConsoleService {
 
   async execute(
     input: { sql: string; reason?: string; confirmationPhrase?: string },
-    actor: { userId: string; platformRole: PlatformRole },
+    actor: { employeeId: string; platformRole: PlatformRole },
     capabilities: readonly string[],
   ): Promise<ExecuteSqlResult> {
     if (!env.BACKOFFICE_RAW_SQL_ENABLED) {
@@ -165,7 +165,7 @@ export class BackofficeSqlConsoleService {
     }
 
     await recordPlatformActivity(this.prisma, {
-      actorUserId: actor.userId,
+      actorEmployeeId: actor.employeeId,
       platformRole: actor.platformRole,
       action: 'sqlConsole.executed',
       entityType: 'RawSqlExecution',
@@ -207,7 +207,7 @@ export class BackofficeSqlConsoleService {
         orderBy: { createdAt: 'desc' },
         skip: (query.page - 1) * query.pageSize,
         take: query.pageSize,
-        include: { actorUser: { select: { firstName: true, lastName: true } } },
+        include: { actorEmployee: { select: { firstName: true, lastName: true } } },
       }),
       this.prisma.platformAuditEvent.count({ where }),
     ]);
@@ -215,7 +215,7 @@ export class BackofficeSqlConsoleService {
     return {
       items: items.map((e) => ({
         id: e.id,
-        actor: `${e.actorUser.firstName} ${e.actorUser.lastName}`,
+        actor: `${e.actorEmployee.firstName} ${e.actorEmployee.lastName}`,
         platformRole: e.platformRole,
         reason: e.reason,
         environment: e.environment,

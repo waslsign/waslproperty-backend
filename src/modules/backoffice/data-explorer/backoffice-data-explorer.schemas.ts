@@ -15,3 +15,8 @@ export const dataExplorerUpdateSchema = z.object({
   reason: z.string().trim().min(1).max(500),
 });
 export type DataExplorerUpdateInput = z.infer<typeof dataExplorerUpdateSchema>;
+
+export const dataExplorerDeleteSchema = z.object({
+  reason: z.string().trim().min(1).max(500),
+});
+export type DataExplorerDeleteInput = z.infer<typeof dataExplorerDeleteSchema>;

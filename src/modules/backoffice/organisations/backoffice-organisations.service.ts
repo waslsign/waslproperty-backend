@@ -114,7 +114,7 @@ export class BackofficeOrganisationsService {
   async update(
     id: string,
     input: UpdateOrganisationInput,
-    actor: { userId: string; platformRole: import('@prisma/client').PlatformRole },
+    actor: { employeeId: string; platformRole: import('@prisma/client').PlatformRole },
   ) {
     const existing = await this.prisma.organisation.findUnique({ where: { id } });
     if (!existing) throw new NotFoundError('Organisation not found');
@@ -126,7 +126,7 @@ export class BackofficeOrganisationsService {
       const updated = await tx.organisation.update({ where: { id }, data: changes });
 
       await recordPlatformActivity(tx, {
-        actorUserId: actor.userId,
+        actorEmployeeId: actor.employeeId,
         platformRole: actor.platformRole,
         action: 'organisation.updated',
         entityType: 'Organisation',

@@ -22,7 +22,7 @@ export async function updateBackofficeOrganisation(req: Request, res: Response) 
   if (!req.platformAuth) throw new UnauthorizedError();
   const input = updateOrganisationSchema.parse(req.body);
   const updated = await service.update(req.params.id as string, input, {
-    userId: req.platformAuth.userId,
+    employeeId: req.platformAuth.employeeId,
     platformRole: req.platformAuth.platformRole,
   });
   res.json(updated);

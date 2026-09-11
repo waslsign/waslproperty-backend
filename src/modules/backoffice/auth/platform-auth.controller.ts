@@ -63,8 +63,7 @@ export async function changePlatformPassword(req: Request, res: Response) {
   const input = platformChangePasswordSchema.parse(req.body);
   await platformAuthService.changePassword(
     {
-      userId: req.platformAuth.userId,
-      platformUserId: req.platformAuth.platformUserId,
+      employeeId: req.platformAuth.employeeId,
       platformRole: req.platformAuth.platformRole,
     },
     input,
@@ -76,12 +75,12 @@ export async function getCurrentPlatformUser(req: Request, res: Response) {
   if (!req.platformAuth) {
     throw new UnauthorizedError();
   }
-  const user = await getPrismaClient().user.findUniqueOrThrow({
-    where: { id: req.platformAuth.userId },
-    select: { id: true, email: true, firstName: true, lastName: true },
+  const employee = await getPrismaClient().employee.findUniqueOrThrow({
+    where: { id: req.platformAuth.employeeId },
+    select: { id: true, firstName: true, lastName: true },
   });
   res.json({
-    user,
+    user: employee,
     username: req.platformAuth.username,
     platformRole: req.platformAuth.platformRole,
     platformCapabilities: req.platformAuth.platformCapabilities,

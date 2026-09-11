@@ -30,7 +30,7 @@ export async function listBackofficeDeliveries(req: Request, res: Response) {
 export async function retryBackofficeDelivery(req: Request, res: Response) {
   if (!req.platformAuth) throw new UnauthorizedError();
   const updated = await service.retryDelivery(req.params.id as string, {
-    userId: req.platformAuth.userId,
+    employeeId: req.platformAuth.employeeId,
     platformRole: req.platformAuth.platformRole,
   });
   res.json(updated);

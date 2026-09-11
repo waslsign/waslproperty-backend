@@ -28,7 +28,7 @@ describe('backoffice data explorer', () => {
   });
 
   describe('models list', () => {
-    it('returns only the explicitly allowlisted models, never Session/PlatformUser/PlatformAuditEvent/ContactInvite', async () => {
+    it('returns only the explicitly allowlisted models, never Session/EmployeeSession/PlatformAuditEvent/ContactInvite', async () => {
       const { username, password } = await createPlatformUser();
       const token = await platformLogin(username, password);
 
@@ -37,9 +37,12 @@ describe('backoffice data explorer', () => {
       const names = res.body.items.map((m: { model: string }) => m.model);
       expect(names).toContain('Organisation');
       expect(names).toContain('PropertyMembership');
+      // Employee IS visible (view-only) — see the "Employee model" describe
+      // block below — but never the raw session/audit tables.
+      expect(names).toContain('Employee');
       for (const forbidden of [
         'Session',
-        'PlatformUser',
+        'EmployeeSession',
         'PlatformAuditEvent',
         'ContactInvite',
         'WaslSignWebhookEvent',
@@ -66,7 +69,7 @@ describe('backoffice data explorer', () => {
       const { username, password } = await createPlatformUser();
       const token = await platformLogin(username, password);
 
-      for (const blocked of ['Session', 'PlatformUser', 'PlatformAuditEvent', 'NotARealModel']) {
+      for (const blocked of ['Session', 'EmployeeSession', 'PlatformAuditEvent', 'NotARealModel']) {
         const res = await request(app)
           .get(`/api/v1/backoffice/data-explorer/${blocked}/records`)
           .set(authHeader(token));
@@ -319,10 +322,129 @@ describe('backoffice data explorer', () => {
           'PropertyContact',
           contact.id,
           { changes: { phone: '0499999999' }, reason: 'test' },
-          { userId: 'irrelevant', platformRole: 'PLATFORM_SUPER_ADMIN' },
+          { employeeId: 'irrelevant', platformRole: 'PLATFORM_SUPER_ADMIN' },
           ['database.edit'], // deliberately no pii.view
         ),
       ).rejects.toMatchObject({ statusCode: 403 });
+    });
+  });
+
+  describe('deleting records', () => {
+    it('requires PLATFORM_SUPER_ADMIN — PLATFORM_ADMIN (has database.edit) is rejected', async () => {
+      const { username, password } = await createPlatformUser({ role: 'PLATFORM_ADMIN' });
+      const token = await platformLogin(username, password);
+      const { organisationId } = await registerTestUser(app, { organisationName: 'Delete Reject Org' });
+
+      const res = await request(app)
+        .delete(`/api/v1/backoffice/data-explorer/Organisation/records/${organisationId}`)
+        .set(authHeader(token))
+        .send({ reason: 'test' });
+      expect(res.status).toBe(403);
+    });
+
+    it('requires a reason', async () => {
+      const { username, password } = await createPlatformUser({ role: 'PLATFORM_SUPER_ADMIN' });
+      const token = await platformLogin(username, password);
+      const { organisationId } = await registerTestUser(app, { organisationName: 'Delete No Reason Org' });
+
+      const res = await request(app)
+        .delete(`/api/v1/backoffice/data-explorer/Organisation/records/${organisationId}`)
+        .set(authHeader(token))
+        .send({});
+      expect(res.status).toBe(422);
+    });
+
+    it('allows deleting a row from a field-view-only/log-shaped model too — deletion is universal, only field-editing is restricted', async () => {
+      const { username, password } = await createPlatformUser({ role: 'PLATFORM_SUPER_ADMIN' });
+      const token = await platformLogin(username, password);
+      const { organisationId } = await registerTestUser(app, { organisationName: 'Delete Log Org' });
+      const event = await testPrisma.activityEvent.create({
+        data: { organisationId, eventType: 'PROPERTY_CREATED', title: 'test event' },
+      });
+
+      const res = await request(app)
+        .delete(`/api/v1/backoffice/data-explorer/ActivityEvent/records/${event.id}`)
+        .set(authHeader(token))
+        .send({ reason: 'test' });
+      expect(res.status).toBe(204);
+      expect(await testPrisma.activityEvent.findUnique({ where: { id: event.id } })).toBeNull();
+    });
+
+    it('deletes an allowed record as PLATFORM_SUPER_ADMIN, persists it, and audits it with a before snapshot', async () => {
+      const { username, password } = await createPlatformUser({ role: 'PLATFORM_SUPER_ADMIN' });
+      const token = await platformLogin(username, password);
+      // A bare Organisation with no memberships/properties — registerTestUser
+      // creates dependent rows that would trip the FK-conflict case tested
+      // separately below.
+      const { id: organisationId } = await testPrisma.organisation.create({
+        data: { name: 'Delete Target Org', slug: `delete-target-${Date.now()}` },
+      });
+
+      const res = await request(app)
+        .delete(`/api/v1/backoffice/data-explorer/Organisation/records/${organisationId}`)
+        .set(authHeader(token))
+        .send({ reason: 'cleaning up test data' });
+      expect(res.status).toBe(204);
+
+      const gone = await testPrisma.organisation.findUnique({ where: { id: organisationId } });
+      expect(gone).toBeNull();
+
+      const audit = await testPrisma.platformAuditEvent.findFirst({
+        where: { action: 'dataExplorer.recordDeleted', entityType: 'Organisation', entityId: organisationId },
+      });
+      expect(audit?.reason).toBe('cleaning up test data');
+      expect((audit?.before as Record<string, unknown> | null)?.name).toBe('Delete Target Org');
+    });
+
+    it('404s deleting a record that does not exist', async () => {
+      const { username, password } = await createPlatformUser({ role: 'PLATFORM_SUPER_ADMIN' });
+      const token = await platformLogin(username, password);
+
+      const res = await request(app)
+        .delete('/api/v1/backoffice/data-explorer/Organisation/records/does-not-exist')
+        .set(authHeader(token))
+        .send({ reason: 'test' });
+      expect(res.status).toBe(404);
+    });
+
+    it('returns a clear conflict, not a 500, when other records still reference the row', async () => {
+      const { username, password } = await createPlatformUser({ role: 'PLATFORM_SUPER_ADMIN' });
+      const token = await platformLogin(username, password);
+      const { organisationId } = await registerTestUser(app, { organisationName: 'Delete FK Guard Org' });
+      // The organisation now has a Property (created via registerTestUser's
+      // implicit staff org) — actually create one explicitly to be sure.
+      await testPrisma.property.create({
+        data: {
+          organisationId,
+          name: 'Blocking Property',
+          code: `BLOCK-${Date.now()}`,
+          addressLine1: '1 St',
+          city: 'Sydney',
+          country: 'Australia',
+          propertyType: 'RESIDENTIAL',
+        },
+      });
+
+      const res = await request(app)
+        .delete(`/api/v1/backoffice/data-explorer/Organisation/records/${organisationId}`)
+        .set(authHeader(token))
+        .send({ reason: 'test' });
+      expect(res.status).toBe(409);
+    });
+
+    it('allows deleting an Employee row too (Super Admin real power, matching the SQL Console trust model)', async () => {
+      const { username, password } = await createPlatformUser({ role: 'PLATFORM_SUPER_ADMIN' });
+      const token = await platformLogin(username, password);
+      const { employeeId: targetId } = await createPlatformUser({ role: 'PLATFORM_SUPPORT' });
+
+      const res = await request(app)
+        .delete(`/api/v1/backoffice/data-explorer/Employee/records/${targetId}`)
+        .set(authHeader(token))
+        .send({ reason: 'test cleanup' });
+      expect(res.status).toBe(204);
+
+      const gone = await testPrisma.employee.findUnique({ where: { id: targetId } });
+      expect(gone).toBeNull();
     });
   });
 });

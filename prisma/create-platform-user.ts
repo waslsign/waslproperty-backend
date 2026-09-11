@@ -1,25 +1,18 @@
 /**
- * Grants (or creates and grants) Backoffice access to a WaslProperty
- * employee — the only way to create the first PLATFORM_SUPER_ADMIN, since
- * every UI path into the Internal Users screen itself requires
- * platformUsers.manage, which only a PLATFORM_SUPER_ADMIN already holds.
+ * Creates (or updates) a WaslProperty Employee — the only way to create the
+ * first PLATFORM_SUPER_ADMIN, since every UI path into the Internal Users
+ * screen itself requires platformUsers.manage, which only a
+ * PLATFORM_SUPER_ADMIN already holds.
  *
- * Deliberately does NOT reuse AuthService.register — that creates a
- * customer Organisation + OrganisationMembership, exactly the "platform
- * employees are not customer organisation members" mixing this milestone
- * was told to avoid. This creates a bare User (if one doesn't already
- * exist for the given email) with no organisation relationship at all.
+ * Employee is a fully separate identity from User: no email, no customer
+ * organisation relationship, sign-in by username only.
  *
  * Usage:
  *   npx tsx prisma/create-platform-user.ts \
- *     --email hamza@waslproperty.internal \
- *     --username admin.hamza \
+ *     --username admin.hamza.tariq \
  *     --password "temporary-strong-password" \
  *     --firstName Hamza --lastName Tariq \
  *     --role PLATFORM_SUPER_ADMIN
- *
- * --email identifies/creates the underlying User account; --username is
- * the separate identifier they actually sign in to the Backoffice with.
  */
 import { PrismaClient, type PlatformRole } from '@prisma/client';
 import { hashPassword } from '../src/lib/password.js';
@@ -43,15 +36,14 @@ const VALID_ROLES: PlatformRole[] = [
 ];
 
 async function main() {
-  const email = readArg('email')?.trim().toLowerCase();
   const username = readArg('username')?.trim().toLowerCase();
   const password = readArg('password');
   const firstName = readArg('firstName') ?? 'Platform';
   const lastName = readArg('lastName') ?? 'User';
   const role = readArg('role') as PlatformRole | undefined;
 
-  if (!email || !username || !role) {
-    console.error('Usage: --email <email> --username <username> --password <password> --role <PlatformRole>');
+  if (!username || !password || !role) {
+    console.error('Usage: --username <username> --password <password> --role <PlatformRole>');
     console.error(`Valid roles: ${VALID_ROLES.join(', ')}`);
     process.exit(1);
   }
@@ -60,28 +52,13 @@ async function main() {
     process.exit(1);
   }
 
-  let user = await prisma.user.findUnique({ where: { email } });
-
-  if (!user) {
-    if (!password) {
-      console.error(`No user exists for ${email} yet — pass --password to create one.`);
-      process.exit(1);
-    }
-    user = await prisma.user.create({
-      data: { email, passwordHash: await hashPassword(password), firstName, lastName },
-    });
-    console.log(`Created User ${user.id} (${email}).`);
-  } else {
-    console.log(`Found existing User ${user.id} (${email}).`);
-  }
-
-  const platformUser = await prisma.platformUser.upsert({
-    where: { userId: user.id },
-    update: { username, role, isActive: true },
-    create: { userId: user.id, username, role, isActive: true },
+  const employee = await prisma.employee.upsert({
+    where: { username },
+    update: { passwordHash: await hashPassword(password), firstName, lastName, role, isActive: true },
+    create: { username, passwordHash: await hashPassword(password), firstName, lastName, role, isActive: true },
   });
 
-  console.log(`Granted ${role} to username "${username}" (${email}, PlatformUser ${platformUser.id}).`);
+  console.log(`Employee "${username}" (${employee.id}) is now ${role}.`);
 }
 
 main()

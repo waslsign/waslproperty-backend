@@ -17,7 +17,9 @@ export const PII_FIELDS: Record<string, readonly string[]> = {
  * environment — not masked, simply never serialized. */
 export const SECRET_FIELDS: Record<string, readonly string[]> = {
   User: ['passwordHash'],
+  Employee: ['passwordHash'],
   Session: ['refreshTokenHash'],
+  EmployeeSession: ['refreshTokenHash'],
   ContactInvite: ['tokenHash'],
 };
 

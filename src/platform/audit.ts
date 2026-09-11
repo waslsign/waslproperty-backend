@@ -2,7 +2,7 @@ import type { Prisma, PlatformRole, PrismaClient } from '@prisma/client';
 import { env } from '../config/env.js';
 
 export interface RecordPlatformActivityInput {
-  actorUserId: string;
+  actorEmployeeId: string;
   platformRole: PlatformRole;
   action: string;
   entityType: string;

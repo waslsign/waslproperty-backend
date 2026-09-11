@@ -27,7 +27,7 @@ export async function executeSqlStatement(req: Request, res: Response) {
   const input = executeSqlSchema.parse(req.body);
   const result = await service.execute(
     input,
-    { userId: req.platformAuth.userId, platformRole: req.platformAuth.platformRole },
+    { employeeId: req.platformAuth.employeeId, platformRole: req.platformAuth.platformRole },
     req.platformAuth.platformCapabilities,
   );
   res.json(result);

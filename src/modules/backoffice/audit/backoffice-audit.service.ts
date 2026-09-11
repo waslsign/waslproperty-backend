@@ -12,7 +12,7 @@ export class BackofficeAuditService {
         orderBy: { createdAt: 'desc' },
         skip: (query.page - 1) * query.pageSize,
         take: query.pageSize,
-        include: { actorUser: { select: { firstName: true, lastName: true, email: true } } },
+        include: { actorEmployee: { select: { firstName: true, lastName: true } } },
       }),
       this.prisma.platformAuditEvent.count(),
     ]);
@@ -27,8 +27,7 @@ export class BackofficeAuditService {
         reason: e.reason,
         environment: e.environment,
         platformRole: e.platformRole,
-        actor: `${e.actorUser.firstName} ${e.actorUser.lastName}`,
-        actorEmail: e.actorUser.email,
+        actor: `${e.actorEmployee.firstName} ${e.actorEmployee.lastName}`,
         before: e.before,
         after: e.after,
         createdAt: e.createdAt,

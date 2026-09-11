@@ -12,13 +12,14 @@ export interface AuthContext {
   propertyContactId?: string | null;
 }
 
-/** A WaslProperty employee's Backoffice session — never has an
- * organisationId. Populated only by authenticatePlatform, on
- * `/backoffice/*` routes only; every existing customer route continues to
- * read req.auth exactly as before and never sees this. */
+/** A WaslProperty Employee's Backoffice session — never has an
+ * organisationId, and employeeId is never a User.id (Employee is a fully
+ * separate identity — see the Employee model). Populated only by
+ * authenticatePlatform, on `/backoffice/*` routes only; every existing
+ * customer route continues to read req.auth exactly as before and never
+ * sees this. */
 export interface PlatformAuthContext {
-  userId: string;
-  platformUserId: string;
+  employeeId: string;
   username: string;
   platformRole: PlatformRole;
   platformCapabilities: string[];
@@ -79,8 +80,7 @@ export function authenticatePlatform(req: Request, _res: Response, next: NextFun
   try {
     const payload = verifyPlatformAccessToken(token);
     req.platformAuth = {
-      userId: payload.sub,
-      platformUserId: payload.platformUserId,
+      employeeId: payload.sub,
       username: payload.username,
       platformRole: payload.platformRole,
       platformCapabilities: payload.platformCapabilities,

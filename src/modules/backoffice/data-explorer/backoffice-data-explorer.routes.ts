@@ -1,7 +1,12 @@
 import { Router } from 'express';
 import { asyncHandler } from '../../../middlewares/asyncHandler.js';
-import { authenticatePlatform, requirePlatformCapability } from '../../../middlewares/auth.middleware.js';
 import {
+  authenticatePlatform,
+  requirePlatformCapability,
+  requirePlatformSuperAdmin,
+} from '../../../middlewares/auth.middleware.js';
+import {
+  deleteDataExplorerRecord,
   getDataExplorerRecord,
   listDataExplorerModels,
   listDataExplorerRecords,
@@ -31,4 +36,13 @@ backofficeDataExplorerRouter.patch(
   '/:model/records/:id',
   requirePlatformCapability('database.edit'),
   asyncHandler(updateDataExplorerRecord),
+);
+// Delete is PLATFORM_SUPER_ADMIN-exclusive, on top of database.edit — a
+// stronger, deliberately narrower gate than the general edit capability,
+// matching the SQL Console's precedent for irreversible operations.
+backofficeDataExplorerRouter.delete(
+  '/:model/records/:id',
+  requirePlatformCapability('database.edit'),
+  requirePlatformSuperAdmin,
+  asyncHandler(deleteDataExplorerRecord),
 );

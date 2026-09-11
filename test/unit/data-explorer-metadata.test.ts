@@ -4,7 +4,7 @@ import { PII_FIELDS, SECRET_FIELDS } from '../../src/platform/privacy-policy.js'
 
 const FORBIDDEN_MODELS = [
   'Session',
-  'PlatformUser',
+  'EmployeeSession',
   'PlatformAuditEvent',
   'ContactInvite',
   'WaslSignWebhookEvent',
@@ -56,6 +56,16 @@ describe('Data Explorer model metadata — security invariants', () => {
         }
       }
     }
+  });
+
+  it('Employee is visible, every field view-only, row deletion allowed (Super-Admin-only), passwordHash never listed', () => {
+    const meta = DATA_EXPLORER_MODELS.Employee;
+    expect(meta).toBeTruthy();
+    expect(meta.deletable).toBe(true);
+    for (const field of meta.fields) {
+      expect(field.editable, `Employee.${field.name} must not be editable`).toBe(false);
+    }
+    expect(meta.fields.map((f) => f.name)).not.toContain('passwordHash');
   });
 
   it('an enum field always carries at least one enumValues entry', () => {

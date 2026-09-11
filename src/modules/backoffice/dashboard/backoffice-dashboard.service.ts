@@ -28,7 +28,7 @@ export class BackofficeDashboardService {
     ] = await Promise.all([
       this.prisma.organisation.count(),
       this.prisma.organisation.count({ where: { createdAt: { gte: sevenDaysAgo } } }),
-      this.prisma.platformUser.count({ where: { isActive: true } }),
+      this.prisma.employee.count({ where: { isActive: true } }),
       this.prisma.property.count(),
       this.prisma.space.count(),
       this.prisma.propertyMembership.count({ where: { status: 'ACTIVE' } }),

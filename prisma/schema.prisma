@@ -68,12 +68,6 @@ model User {
   createdSavedAudiences         SavedAudience[]
   notifications                 Notification[]
 
-  /// A WaslProperty employee's platform-level access — entirely independent
-  /// of any customer OrganisationMembership. Most Users never have one.
-  platformUser         PlatformUser?        @relation("PlatformUserAccount")
-  grantedPlatformUsers PlatformUser[]       @relation("PlatformUserGrantedBy")
-  platformAuditEvents  PlatformAuditEvent[]
-
   @@map("users")
 }
 
@@ -113,15 +107,15 @@ enum MemberStatus {
   SUSPENDED
 }
 
-/// CUSTOMER sessions are pinned to exactly one organisation for their whole
-/// lifetime — the same organisationId resolved at login/token-issue time;
-/// refreshing never re-resolves a different organisation, even if the user
-/// has since gained (or lost) access elsewhere — see AuthService.refresh.
-/// PLATFORM sessions belong to a WaslProperty employee inspecting the
-/// Backoffice and carry no organisation context at all — organisationId is
-/// null for them, enforced by both the app layer and a DB CHECK constraint
-/// (added via raw SQL in the migration, since Prisma has no conditional-
-/// nullability syntax).
+/// Customer sessions only — pinned to exactly one organisation for their
+/// whole lifetime — the same organisationId resolved at login/token-issue
+/// time; refreshing never re-resolves a different organisation, even if the
+/// user has since gained (or lost) access elsewhere — see
+/// AuthService.refresh. Platform/Backoffice sessions live entirely in
+/// EmployeeSession instead (see Employee below) — Session no longer serves
+/// them; sessionType/PLATFORM is kept only so existing rows/migrations
+/// don't need a destructive rewrite, but no new PLATFORM row is ever
+/// created here.
 model Session {
   id               String      @id @default(cuid())
   userId           String
@@ -154,30 +148,48 @@ enum PlatformRole {
   PLATFORM_DEVELOPER
 }
 
-/// A WaslProperty employee's Backoffice access. Deliberately not a bare
-/// field on User: isActive lets access be revoked without deleting the
-/// grant history, and grantedByUserId/grantedAt give the internal-users
-/// screen something real to show. Never implies any customer
-/// OrganisationMembership — the two are completely independent domains.
-model PlatformUser {
-  id        String       @id @default(cuid())
-  userId    String       @unique
-  /// The Backoffice login identifier — deliberately separate from
-  /// User.email. Platform employees sign in with this, never their email;
-  /// User.email still exists (every User needs one) but is never used to
-  /// authenticate into the Backoffice.
-  username  String       @unique
-  role      PlatformRole
-  isActive  Boolean      @default(true)
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
+/// A WaslProperty employee — deliberately a completely separate identity
+/// from User, not an extension of it: an employee has no email at all and
+/// is never a customer organisation member. Employees sign in with
+/// `username` only. isActive lets access be revoked without deleting the
+/// grant history, and grantedByEmployeeId gives the internal-users screen
+/// something real to show.
+model Employee {
+  id           String       @id @default(cuid())
+  username     String       @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  role         PlatformRole
+  isActive     Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
 
-  grantedByUserId String?
+  grantedByEmployeeId String?
+  grantedByEmployee   Employee?  @relation("EmployeeGrantedBy", fields: [grantedByEmployeeId], references: [id])
+  grantedEmployees    Employee[] @relation("EmployeeGrantedBy")
 
-  user          User  @relation("PlatformUserAccount", fields: [userId], references: [id])
-  grantedByUser User? @relation("PlatformUserGrantedBy", fields: [grantedByUserId], references: [id])
+  sessions    EmployeeSession[]
+  auditEvents PlatformAuditEvent[]
 
-  @@map("platform_users")
+  @@map("employees")
+}
+
+/// The Employee-only counterpart to Session — kept as a fully separate
+/// table (not a nullable-employeeId column bolted onto Session) so the two
+/// identity spaces can never be conflated even at the schema level.
+model EmployeeSession {
+  id               String    @id @default(cuid())
+  employeeId       String
+  refreshTokenHash String
+  expiresAt        DateTime
+  createdAt        DateTime  @default(now())
+  revokedAt        DateTime?
+
+  employee Employee @relation(fields: [employeeId], references: [id])
+
+  @@index([employeeId])
+  @@map("employee_sessions")
 }
 
 /// Internal audit trail for Backoffice actions — deliberately separate from
@@ -189,23 +201,23 @@ model PlatformUser {
 /// (granting platform access, inspecting the Users directory) aren't scoped
 /// to a single customer organisation.
 model PlatformAuditEvent {
-  id             String       @id @default(cuid())
-  actorUserId    String
-  platformRole   PlatformRole
-  action         String
-  entityType     String
-  entityId       String?
-  organisationId String?
-  reason         String?
-  before         Json?
-  after          Json?
-  environment    String
-  correlationId  String?
-  createdAt      DateTime     @default(now())
+  id              String       @id @default(cuid())
+  actorEmployeeId String
+  platformRole    PlatformRole
+  action          String
+  entityType      String
+  entityId        String?
+  organisationId  String?
+  reason          String?
+  before          Json?
+  after           Json?
+  environment     String
+  correlationId   String?
+  createdAt       DateTime     @default(now())
 
-  actorUser User @relation(fields: [actorUserId], references: [id])
+  actorEmployee Employee @relation(fields: [actorEmployeeId], references: [id])
 
-  @@index([actorUserId])
+  @@index([actorEmployeeId])
   @@index([entityType, entityId])
   @@index([organisationId])
   @@index([createdAt])
