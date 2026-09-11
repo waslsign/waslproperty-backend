@@ -37,6 +37,7 @@ jobs:
       LOG_LEVEL: silent
       AWS_REGION: me-central-1
       S3_BUCKET_NAME: wasl-property-uploads-ci
+      WASLSIGN_WEBHOOK_SECRET: test-webhook-secret
 
     steps:
       - uses: actions/checkout@v4
