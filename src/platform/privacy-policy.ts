@@ -10,6 +10,7 @@ import { env } from '../config/env.js';
 export const PII_FIELDS: Record<string, readonly string[]> = {
   User: ['email'],
   PropertyContact: ['email', 'phone'],
+  Contractor: ['email', 'phone'],
 };
 
 /** Fields that must never be returned to the Backoffice under any role or

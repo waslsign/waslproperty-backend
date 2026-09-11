@@ -107,6 +107,17 @@ describe('platform privacy policy', () => {
       expect(masked.phone).toMatch(/\*{3}/);
     });
 
+    it('masks Contractor.email and .phone, following the same central classification as other contact records', () => {
+      env.NODE_ENV = 'production';
+      env.BACKOFFICE_PII_MODE = undefined;
+      const record = { email: 'ops@acmeplumbing.example', phone: '+61491234567', name: 'Acme Plumbing' };
+      const masked = maskPiiFields('Contractor', record, []);
+      expect(masked.email).toBe('o***@acmeplumbing.example');
+      expect(masked.phone).not.toBe(record.phone);
+      expect(masked.phone).toMatch(/\*{3}/);
+      expect(masked.name).toBe('Acme Plumbing');
+    });
+
     it('returns the record unmasked when the actor holds pii.view and policy allows it', () => {
       env.NODE_ENV = 'development';
       env.BACKOFFICE_PII_MODE = undefined; // defaults to full in dev
