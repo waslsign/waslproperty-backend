@@ -51,7 +51,7 @@ describe('saved audiences', () => {
 
   it('rejects a MEMBER creating one (RBAC)', async () => {
     const { organisationId, userId } = await registerTestUser(app);
-    const memberToken = signAccessToken({ sub: userId, organisationId, orgRole: 'MEMBER' });
+    const memberToken = signAccessToken({ sub: userId, sessionType: 'CUSTOMER', organisationId, orgRole: 'MEMBER' });
 
     const res = await request(app)
       .post('/api/v1/saved-audiences')

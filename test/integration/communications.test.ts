@@ -62,7 +62,7 @@ describe('communications', () => {
 
   it('rejects a MEMBER creating a communication but the endpoint stays staff-only (RBAC)', async () => {
     const { organisationId, userId } = await registerTestUser(app);
-    const memberToken = signAccessToken({ sub: userId, organisationId, orgRole: 'MEMBER' });
+    const memberToken = signAccessToken({ sub: userId, sessionType: 'CUSTOMER', organisationId, orgRole: 'MEMBER' });
 
     const res = await request(app)
       .post('/api/v1/communications')

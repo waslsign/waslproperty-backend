@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authRouter } from '../../modules/auth/auth.routes.js';
+import { backofficeRouter } from '../../modules/backoffice/backoffice.routes.js';
 import { communicationsRouter } from '../../modules/communications/communications.routes.js';
 import { contractorsRouter } from '../../modules/contractors/contractors.routes.js';
 import { dashboardRouter } from '../../modules/dashboard/dashboard.routes.js';
@@ -34,3 +35,4 @@ apiV1Router.use('/dashboard', dashboardRouter);
 apiV1Router.use('/communications', communicationsRouter);
 apiV1Router.use('/saved-audiences', savedAudiencesRouter);
 apiV1Router.use('/notifications', notificationsRouter);
+apiV1Router.use('/backoffice', backofficeRouter);

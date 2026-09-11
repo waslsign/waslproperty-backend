@@ -1,6 +1,7 @@
 import type { Communication, PrismaClient } from '@prisma/client';
 import { recordActivity } from '../activity/activity.js';
 import { emailService } from '../../lib/email.js';
+import { getPrismaClient } from '../../lib/prisma.js';
 import { logger } from '../../lib/logger.js';
 import { notifyUser } from '../notifications/notifications.js';
 import { AudienceResolver, type AudienceCriteria, type ResolvedRecipient } from './communications.audience.js';
@@ -228,8 +229,15 @@ export class CommunicationDeliveryService {
  * new DeliveryScheduler and calling the same CommunicationDeliveryService,
  * not touching the domain model or the service itself.
  */
+export interface DeliverySchedulerStatus {
+  running: boolean;
+  intervalMs: number;
+  lastTickAt: Date | null;
+}
+
 export class InProcessDeliveryScheduler implements DeliveryScheduler {
   private timer: ReturnType<typeof setInterval> | undefined;
+  private lastTickAt: Date | null = null;
 
   constructor(
     private readonly deliveryService: CommunicationDeliveryService,
@@ -239,6 +247,7 @@ export class InProcessDeliveryScheduler implements DeliveryScheduler {
   start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => {
+      this.lastTickAt = new Date();
       this.deliveryService.processDue().catch((err) => {
         logger.error({ err }, 'Communication delivery poll failed');
       });
@@ -253,4 +262,22 @@ export class InProcessDeliveryScheduler implements DeliveryScheduler {
       this.timer = undefined;
     }
   }
+
+  /** Real, genuinely-knowable state only — never a fabricated worker-pool
+   * or cluster metric. The Backoffice Jobs screen reads this directly. */
+  getStatus(): DeliverySchedulerStatus {
+    return { running: this.timer !== undefined, intervalMs: this.intervalMs, lastTickAt: this.lastTickAt };
+  }
+}
+
+let scheduler: InProcessDeliveryScheduler | undefined;
+
+/** One scheduler instance per process, shared between main.ts (which
+ * starts it) and the Backoffice Jobs module (which only reads its status
+ * — it never starts a second poller). */
+export function getDeliveryScheduler(): InProcessDeliveryScheduler {
+  if (!scheduler) {
+    scheduler = new InProcessDeliveryScheduler(new CommunicationDeliveryService(getPrismaClient()));
+  }
+  return scheduler;
 }

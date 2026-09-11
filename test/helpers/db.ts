@@ -22,6 +22,8 @@ export async function resetDb() {
     testPrisma.space.deleteMany(),
     testPrisma.property.deleteMany(),
     testPrisma.session.deleteMany(),
+    testPrisma.platformAuditEvent.deleteMany(),
+    testPrisma.platformUser.deleteMany(),
     testPrisma.organisationMembership.deleteMany(),
     testPrisma.user.deleteMany(),
     testPrisma.organisation.deleteMany(),

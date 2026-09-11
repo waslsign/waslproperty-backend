@@ -48,6 +48,30 @@ const envSchema = z.object({
   WORK_ORDER_DEFAULT_WORKFLOW_MODE: z
     .enum(['APPROVAL_ONLY', 'SIGNATURE_ONLY', 'APPROVAL_THEN_SIGNATURE'])
     .default('APPROVAL_ONLY'),
+
+  // --- Backoffice / Platform Operations (M10.5) ---
+  // Every one of these defaults to the safe/disabled state when absent —
+  // production is never accidentally opened up just because a var wasn't
+  // set. See src/platform/privacy-policy.ts for how NODE_ENV interacts
+  // with BACKOFFICE_PII_MODE (the mode itself isn't a plain default here
+  // because "masked in production unless explicitly overridden" depends on
+  // NODE_ENV too, not just this one var in isolation).
+  BACKOFFICE_PII_MODE: z.enum(['masked', 'full']).optional(),
+  BACKOFFICE_RAW_SQL_ENABLED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+  BACKOFFICE_RAW_SQL_WRITE_ENABLED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+  BACKOFFICE_RAW_SQL_UNMASKED_PII_ENABLED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
+  BACKOFFICE_SQL_MAX_UPDATE_ROWS: z.coerce.number().default(500),
+  BACKOFFICE_SQL_RESULT_ROW_LIMIT: z.coerce.number().default(500),
+  BACKOFFICE_SQL_STATEMENT_TIMEOUT_MS: z.coerce.number().default(5000),
 });
 
 const parsed = envSchema.safeParse(process.env);

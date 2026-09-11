@@ -8,7 +8,7 @@ import {
 
 describe('access tokens', () => {
   it('round-trips claims through sign and verify', () => {
-    const token = signAccessToken({ sub: 'user_1', organisationId: 'org_1', orgRole: 'OWNER' });
+    const token = signAccessToken({ sub: 'user_1', sessionType: 'CUSTOMER', organisationId: 'org_1', orgRole: 'OWNER' });
     const payload = verifyAccessToken(token);
     expect(payload.sub).toBe('user_1');
     expect(payload.organisationId).toBe('org_1');
@@ -16,7 +16,7 @@ describe('access tokens', () => {
   });
 
   it('throws on a tampered token', () => {
-    const token = signAccessToken({ sub: 'user_1', organisationId: 'org_1', orgRole: 'OWNER' });
+    const token = signAccessToken({ sub: 'user_1', sessionType: 'CUSTOMER', organisationId: 'org_1', orgRole: 'OWNER' });
     expect(() => verifyAccessToken(`${token}tampered`)).toThrow();
   });
 });

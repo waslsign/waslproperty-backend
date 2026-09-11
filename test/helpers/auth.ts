@@ -60,6 +60,40 @@ export async function createPlainUser(
   return { userId: user.id, email, password };
 }
 
+/** Creates a User with an active (by default) PlatformUser grant — the
+ * precondition for signing in through the Backoffice login. */
+export async function createPlatformUser(
+  overrides: Partial<{
+    email: string;
+    username: string;
+    firstName: string;
+    lastName: string;
+    password: string;
+    role: 'PLATFORM_SUPER_ADMIN' | 'PLATFORM_ADMIN' | 'PLATFORM_SUPPORT' | 'PLATFORM_DEVELOPER';
+    isActive: boolean;
+  }> = {},
+) {
+  const { userId, email, password } = await createPlainUser(overrides);
+  const username =
+    overrides.username ?? `platform.user.${Date.now()}.${Math.random().toString(36).slice(2, 6)}`;
+  const platformUser = await testPrisma.platformUser.create({
+    data: {
+      userId,
+      username,
+      role: overrides.role ?? 'PLATFORM_SUPER_ADMIN',
+      isActive: overrides.isActive ?? true,
+    },
+  });
+  return {
+    userId,
+    email,
+    username,
+    password,
+    platformUserId: platformUser.id,
+    role: platformUser.role,
+  };
+}
+
 /** Signs a resident-shaped access token directly, mirroring how existing
  * tests simulate a MEMBER-role staff token without a full invite flow. */
 export function residentAccessToken(
@@ -67,5 +101,11 @@ export function residentAccessToken(
   organisationId: string,
   propertyContactId: string,
 ) {
-  return signAccessToken({ sub: userId, organisationId, orgRole: null, propertyContactId });
+  return signAccessToken({
+    sub: userId,
+    sessionType: 'CUSTOMER',
+    organisationId,
+    orgRole: null,
+    propertyContactId,
+  });
 }

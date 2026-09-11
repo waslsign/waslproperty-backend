@@ -22,7 +22,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "platform:create-user": "tsx prisma/create-platform-user.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1127.0",

@@ -170,10 +170,10 @@ export class AuthService {
   async refresh(rawRefreshToken: string): Promise<AuthTokens> {
     const tokenHash = hashRefreshToken(rawRefreshToken);
     const session = await this.prisma.session.findFirst({
-      where: { refreshTokenHash: tokenHash, revokedAt: null },
+      where: { refreshTokenHash: tokenHash, revokedAt: null, sessionType: 'CUSTOMER' },
     });
 
-    if (!session || session.expiresAt < new Date()) {
+    if (!session || session.expiresAt < new Date() || !session.organisationId) {
       throw new UnauthorizedError('Session expired, please log in again');
     }
 
@@ -302,6 +302,7 @@ export class AuthService {
   private async issueTokens(userId: string, access: AuthAccessContext): Promise<AuthTokens> {
     const accessToken = signAccessToken({
       sub: userId,
+      sessionType: 'CUSTOMER',
       organisationId: access.organisationId,
       orgRole: access.orgRole,
       propertyContactId: access.propertyContactId,

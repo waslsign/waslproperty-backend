@@ -68,6 +68,12 @@ model User {
   createdSavedAudiences         SavedAudience[]
   notifications                 Notification[]
 
+  /// A WaslProperty employee's platform-level access — entirely independent
+  /// of any customer OrganisationMembership. Most Users never have one.
+  platformUser         PlatformUser?        @relation("PlatformUserAccount")
+  grantedPlatformUsers PlatformUser[]       @relation("PlatformUserGrantedBy")
+  platformAuditEvents  PlatformAuditEvent[]
+
   @@map("users")
 }
 
@@ -107,25 +113,103 @@ enum MemberStatus {
   SUSPENDED
 }
 
-/// A session is pinned to exactly one organisation for its whole lifetime —
-/// the same organisationId that was resolved at login/token-issue time.
-/// Refreshing never re-resolves a different organisation, even if the user
+/// CUSTOMER sessions are pinned to exactly one organisation for their whole
+/// lifetime — the same organisationId resolved at login/token-issue time;
+/// refreshing never re-resolves a different organisation, even if the user
 /// has since gained (or lost) access elsewhere — see AuthService.refresh.
+/// PLATFORM sessions belong to a WaslProperty employee inspecting the
+/// Backoffice and carry no organisation context at all — organisationId is
+/// null for them, enforced by both the app layer and a DB CHECK constraint
+/// (added via raw SQL in the migration, since Prisma has no conditional-
+/// nullability syntax).
 model Session {
-  id               String    @id @default(cuid())
+  id               String      @id @default(cuid())
   userId           String
-  organisationId   String
+  organisationId   String?
+  sessionType      SessionType @default(CUSTOMER)
   refreshTokenHash String
   expiresAt        DateTime
-  createdAt        DateTime  @default(now())
+  createdAt        DateTime    @default(now())
   revokedAt        DateTime?
 
-  user         User         @relation(fields: [userId], references: [id])
-  organisation Organisation @relation(fields: [organisationId], references: [id])
+  user         User          @relation(fields: [userId], references: [id])
+  organisation Organisation? @relation(fields: [organisationId], references: [id])
 
   @@index([userId])
   @@index([organisationId])
   @@map("sessions")
+}
+
+enum SessionType {
+  CUSTOMER
+  PLATFORM
+}
+
+// --- Backoffice / Platform Operations (M10.5) ---
+
+enum PlatformRole {
+  PLATFORM_SUPER_ADMIN
+  PLATFORM_ADMIN
+  PLATFORM_SUPPORT
+  PLATFORM_DEVELOPER
+}
+
+/// A WaslProperty employee's Backoffice access. Deliberately not a bare
+/// field on User: isActive lets access be revoked without deleting the
+/// grant history, and grantedByUserId/grantedAt give the internal-users
+/// screen something real to show. Never implies any customer
+/// OrganisationMembership — the two are completely independent domains.
+model PlatformUser {
+  id        String       @id @default(cuid())
+  userId    String       @unique
+  /// The Backoffice login identifier — deliberately separate from
+  /// User.email. Platform employees sign in with this, never their email;
+  /// User.email still exists (every User needs one) but is never used to
+  /// authenticate into the Backoffice.
+  username  String       @unique
+  role      PlatformRole
+  isActive  Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  grantedByUserId String?
+
+  user          User  @relation("PlatformUserAccount", fields: [userId], references: [id])
+  grantedByUser User? @relation("PlatformUserGrantedBy", fields: [grantedByUserId], references: [id])
+
+  @@map("platform_users")
+}
+
+/// Internal audit trail for Backoffice actions — deliberately separate from
+/// the customer-visible ActivityEvent model (see M10.5 design notes: reusing
+/// ActivityEvent for internal platform actions would leak internal
+/// operations into customer-facing timelines). Append-only from the
+/// application's perspective: no update/delete endpoint is ever built for
+/// this model. organisationId is nullable because many platform actions
+/// (granting platform access, inspecting the Users directory) aren't scoped
+/// to a single customer organisation.
+model PlatformAuditEvent {
+  id             String       @id @default(cuid())
+  actorUserId    String
+  platformRole   PlatformRole
+  action         String
+  entityType     String
+  entityId       String?
+  organisationId String?
+  reason         String?
+  before         Json?
+  after          Json?
+  environment    String
+  correlationId  String?
+  createdAt      DateTime     @default(now())
+
+  actorUser User @relation(fields: [actorUserId], references: [id])
+
+  @@index([actorUserId])
+  @@index([entityType, entityId])
+  @@index([organisationId])
+  @@index([createdAt])
+  @@map("platform_audit_events")
 }
 
 // --- Property Foundation (Slice 1 / M3-M4) ---
