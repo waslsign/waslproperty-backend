@@ -68,7 +68,11 @@ function maskPhone(value: string): string {
   return `${value.slice(0, Math.max(3, value.length - 6))}${'*'.repeat(3)}${value.slice(-3)}`;
 }
 
-function maskField(field: string, value: string): string {
+/** Exported so surfaces without a fixed model context — the Raw SQL
+ * Console's arbitrary result columns, notably — can still reuse the exact
+ * same masking behavior as maskPiiFields, keyed off a bare column name
+ * rather than a registered model.fields entry. */
+export function maskField(field: string, value: string): string {
   if (field.toLowerCase().includes('email')) return maskEmail(value);
   if (field.toLowerCase().includes('phone')) return maskPhone(value);
   return `${value[0] ?? ''}***`;

@@ -12,6 +12,7 @@ import { backofficeIntegrationsRouter } from './integrations/backoffice-integrat
 import { backofficeAuditRouter } from './audit/backoffice-audit.routes.js';
 import { backofficePlatformUsersRouter } from './platform-users/backoffice-platform-users.routes.js';
 import { backofficeDataExplorerRouter } from './data-explorer/backoffice-data-explorer.routes.js';
+import { backofficeSqlConsoleRouter } from './sql-console/backoffice-sql-console.routes.js';
 
 /** Everything under /api/v1/backoffice — a boundary completely separate
  * from customer-facing routes. Every sub-router is guarded by
@@ -31,3 +32,4 @@ backofficeRouter.use('/integrations', backofficeIntegrationsRouter);
 backofficeRouter.use('/audit', backofficeAuditRouter);
 backofficeRouter.use('/platform-users', backofficePlatformUsersRouter);
 backofficeRouter.use('/data-explorer', backofficeDataExplorerRouter);
+backofficeRouter.use('/sql-console', backofficeSqlConsoleRouter);

@@ -102,3 +102,19 @@ export function requirePlatformCapability(capability: string) {
     next();
   };
 }
+
+/** A deliberate, narrow exception to "always check a capability, never a
+ * bare role" (see capabilities.ts's own doc comment): the Raw SQL Console
+ * is specified as PLATFORM_SUPER_ADMIN-exclusive, full stop — not "whoever
+ * happens to hold a database.sql.* capability today." Stacked in front of
+ * the normal capability checks on that router only, so the access boundary
+ * holds even if a future role's capability grant changes. */
+export function requirePlatformSuperAdmin(req: Request, _res: Response, next: NextFunction) {
+  if (!req.platformAuth) {
+    throw new UnauthorizedError();
+  }
+  if (req.platformAuth.platformRole !== 'PLATFORM_SUPER_ADMIN') {
+    throw new ForbiddenError('The Raw SQL Console is restricted to PLATFORM_SUPER_ADMIN');
+  }
+  next();
+}
