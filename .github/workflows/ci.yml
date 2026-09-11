@@ -35,6 +35,8 @@ jobs:
       COOKIE_SECURE: 'false'
       FRONTEND_URL: http://localhost:5174
       LOG_LEVEL: silent
+      AWS_REGION: me-central-1
+      S3_BUCKET_NAME: wasl-property-uploads-ci
 
     steps:
       - uses: actions/checkout@v4
