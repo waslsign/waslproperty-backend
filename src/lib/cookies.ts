@@ -7,8 +7,8 @@ export function setRefreshCookie(res: Response, token: string, expiresAt: Date) 
   res.cookie(REFRESH_COOKIE_NAME, token, {
     httpOnly: true,
     secure: env.COOKIE_SECURE,
-    sameSite: 'lax',
-    domain: env.COOKIE_DOMAIN,
+    sameSite: env.COOKIE_SAME_SITE,
+    domain: env.COOKIE_DOMAIN || undefined,
     expires: expiresAt,
     path: '/api/v1/auth',
   });
@@ -18,8 +18,8 @@ export function clearRefreshCookie(res: Response) {
   res.clearCookie(REFRESH_COOKIE_NAME, {
     httpOnly: true,
     secure: env.COOKIE_SECURE,
-    sameSite: 'lax',
-    domain: env.COOKIE_DOMAIN,
+    sameSite: env.COOKIE_SAME_SITE,
+    domain: env.COOKIE_DOMAIN || undefined,
     path: '/api/v1/auth',
   });
 }
@@ -38,8 +38,8 @@ export function setPlatformRefreshCookie(res: Response, token: string, expiresAt
   res.cookie(PLATFORM_REFRESH_COOKIE_NAME, token, {
     httpOnly: true,
     secure: env.COOKIE_SECURE,
-    sameSite: 'lax',
-    domain: env.COOKIE_DOMAIN,
+    sameSite: env.COOKIE_SAME_SITE,
+    domain: env.COOKIE_DOMAIN || undefined,
     expires: expiresAt,
     path: PLATFORM_REFRESH_COOKIE_PATH,
   });
@@ -49,8 +49,8 @@ export function clearPlatformRefreshCookie(res: Response) {
   res.clearCookie(PLATFORM_REFRESH_COOKIE_NAME, {
     httpOnly: true,
     secure: env.COOKIE_SECURE,
-    sameSite: 'lax',
-    domain: env.COOKIE_DOMAIN,
+    sameSite: env.COOKIE_SAME_SITE,
+    domain: env.COOKIE_DOMAIN || undefined,
     path: PLATFORM_REFRESH_COOKIE_PATH,
   });
 }

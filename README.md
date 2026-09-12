@@ -69,3 +69,20 @@ pnpm test
 ```bash
 pnpm typecheck && pnpm lint && pnpm test
 ```
+
+## Staging (temporary)
+
+A **temporary** staging deployment — replaced by real AWS infrastructure later, not meant to be maintained long-term. Database is Supabase (Postgres hosting only; no app logic runs there), WaslSign runs locally and is reached through a temporary HTTPS tunnel.
+
+- **Render Web Service**: `waslprop-api-staging` (free instance)
+- Build command: `corepack enable && pnpm install --frozen-lockfile && pnpm prisma:generate && pnpm build`
+- Start command: `pnpm prisma:migrate:deploy && pnpm start`
+- Health check path: `/health` (already exists, returns `{"status":"ok"}`)
+- `DATABASE_URL` — Supabase's **direct** (non-pooled, port 5432) connection string, not the pgbouncer/transaction pooler one — avoids needing a separate `DIRECT_URL` for `prisma migrate deploy`
+- `FRONTEND_URL` — comma-separated allowed origins, e.g. `https://waslprop-staging.onrender.com,http://localhost:5174`
+- `COOKIE_SECURE=true`, `COOKIE_SAME_SITE=none`, `COOKIE_DOMAIN=` (empty) — required because the Render frontend and backend are on different registrable domains; see `src/lib/cookies.ts`
+- `BACKEND_PUBLIC_URL` — this service's own Render URL, e.g. `https://waslprop-api-staging.onrender.com` (used as the WaslSign webhook callback target)
+- `WASLSIGN_API_BASE_URL` — the temporary tunnel URL exposing local WaslSign (see `waslsign-backend`'s README)
+- `WASLSIGN_SERVICE_CLIENT_ID` / `WASLSIGN_SERVICE_CLIENT_SECRET` — from WaslSign's `scripts/create-service-client.ts`
+- `WASLSIGN_WEBHOOK_SECRET` — must exactly match the same variable in the local WaslSign `.env`
+- All other required vars (`JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `AWS_REGION`, `S3_BUCKET_NAME`, etc.) as documented in `.env.example`

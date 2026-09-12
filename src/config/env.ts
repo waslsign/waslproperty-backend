@@ -9,11 +9,25 @@ const envSchema = z.object({
   JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_SECRET: z.string().min(1, 'JWT_REFRESH_SECRET is required'),
   JWT_REFRESH_EXPIRES_IN_DAYS: z.coerce.number().default(30),
+  // Empty string means "omit the Domain attribute" (host-only cookie) — see
+  // setRefreshCookie in lib/cookies.ts. Required when the frontend and
+  // backend are on different registrable domains (e.g. two separate
+  // *.onrender.com services), where a shared Domain attribute is neither
+  // valid nor desired.
   COOKIE_DOMAIN: z.string().default('localhost'),
   COOKIE_SECURE: z
     .string()
     .default('false')
     .transform((v) => v === 'true'),
+  // 'none' is required (together with COOKIE_SECURE=true) for the refresh
+  // cookie to be sent on cross-site requests — e.g. a frontend and backend
+  // deployed as separate Render services. Left at the 'lax' default
+  // everywhere frontend and backend share a site (local dev, and any
+  // same-registrable-domain production setup).
+  COOKIE_SAME_SITE: z.enum(['lax', 'none', 'strict']).default('lax'),
+  // Comma-separated for staging/prod, where more than one origin (e.g. a
+  // local dev frontend and a deployed one) may need to call the same
+  // backend. A single value works exactly as before.
   FRONTEND_URL: z.string().default('http://localhost:5174'),
   BACKEND_PUBLIC_URL: z.string().default('http://localhost:4100'),
   LOG_LEVEL: z.string().default('info'),
