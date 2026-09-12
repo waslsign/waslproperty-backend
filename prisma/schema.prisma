@@ -23,6 +23,14 @@ model Organisation {
   /// each financial record stores its own, copied from this at creation.
   currencyCode String @default("AUD")
 
+  /// ISO 3166-1 alpha-2 code (see src/lib/countries.ts for the supported
+  /// allowlist). Nullable — existing organisations are never auto-assigned a
+  /// jurisdiction; unset means no jurisdiction-specific feature set (see
+  /// src/modules/organisations/organisation-features.ts). Independent of
+  /// currencyCode: changing one must never change the other, and jurisdiction
+  /// must never be inferred from currency.
+  countryCode String?
+
   /// Set once this organisation is provisioned as a 1:1 mapped Organization in WaslSign.
   /// Nullable — provisioning happens lazily, on first need for a signed document, not at signup.
   waslSignOrganisationId String? @unique
@@ -247,8 +255,23 @@ model Property {
   postalCode     String?
   propertyType   PropertyType
   status         PropertyStatus @default(ACTIVE)
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+
+  /// Foundational strata metadata (M11-A) — safe to store regardless of
+  /// jurisdiction, but only settable when the owning Organisation has the
+  /// STRATA_MANAGEMENT feature (see organisation-features.ts); enforced in
+  /// PropertiesService, not just hidden in the UI. Never used to calculate
+  /// anything — no levy/fund logic reads these fields.
+  isStrataManaged  Boolean @default(false)
+  /// The scheme/strata plan registration number (e.g. an Australian "SP"
+  /// number) — an identifying reference only, not validated against any
+  /// jurisdiction's registry.
+  strataPlanNumber String?
+  /// Optional display name for the scheme (e.g. "Owners Corporation SP12345"),
+  /// independent of Property.name.
+  strataSchemeName String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   organisation        Organisation         @relation(fields: [organisationId], references: [id])
   spaces              Space[]
@@ -288,8 +311,22 @@ model Space {
   floor          String?
   sizeSqft       Int?
   status         SpaceStatus @default(VACANT)
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+
+  /// Foundational strata lot metadata (M11-A) — see Property.isStrataManaged.
+  /// A space can only be marked a strata lot when its Property is itself
+  /// isStrataManaged (enforced in SpacesService). entitlementValue is stored
+  /// as informational data only — it is never read by any calculation.
+  isStrataLot      Boolean  @default(false)
+  /// The strata lot/unit number, distinct from the generic `code` field
+  /// used across every property type.
+  lotNumber        String?
+  /// Unit entitlement, if known — purely informational until confirmed
+  /// business rules exist for how it should be used (see M11 requirements
+  /// doc). Not used in any calculation.
+  entitlementValue Decimal? @db.Decimal(12, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   property            Property             @relation(fields: [propertyId], references: [id])
   memberships         PropertyMembership[]

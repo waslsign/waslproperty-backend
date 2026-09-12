@@ -3,7 +3,21 @@ import { ConflictError, NotFoundError } from '../../errors/AppError.js';
 import { recordActivity } from '../activity/activity.js';
 import { getAttentionItems, OPEN_REQUEST_STATUSES } from '../../lib/attention-engine.js';
 import type { PaginatedResult, PaginationQuery } from '../../lib/pagination.js';
+import { assertOrganisationFeature } from '../organisations/organisation-features.js';
 import type { CreatePropertyInput, UpdatePropertyInput } from './properties.schemas.js';
+
+/** True when the input is trying to set/change any strata-specific field —
+ * the trigger for the STRATA_MANAGEMENT feature check. A request that only
+ * touches ordinary fields on an already-strata property never re-checks
+ * the feature, matching how PATCH already only validates what it's asked
+ * to change. */
+function touchesStrataFields(input: CreatePropertyInput | UpdatePropertyInput): boolean {
+  return (
+    input.isStrataManaged !== undefined ||
+    input.strataPlanNumber !== undefined ||
+    input.strataSchemeName !== undefined
+  );
+}
 
 export interface PropertySummary {
   spaces: number;
@@ -49,6 +63,10 @@ export class PropertiesService {
   }
 
   async create(organisationId: string, actorUserId: string, input: CreatePropertyInput) {
+    if (touchesStrataFields(input)) {
+      await assertOrganisationFeature(this.prisma, organisationId, 'STRATA_MANAGEMENT');
+    }
+
     const clash = await this.prisma.property.findUnique({
       where: { organisationId_code: { organisationId, code: input.code } },
     });
@@ -191,6 +209,10 @@ export class PropertiesService {
     });
     if (!existing) {
       throw new NotFoundError('Property not found');
+    }
+
+    if (touchesStrataFields(input)) {
+      await assertOrganisationFeature(this.prisma, organisationId, 'STRATA_MANAGEMENT');
     }
 
     if (input.code) {

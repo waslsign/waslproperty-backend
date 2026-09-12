@@ -1,7 +1,13 @@
 import { z } from 'zod';
+import { countryCodeSchema } from '../../lib/countries.js';
 import { currencyCodeSchema } from '../../lib/currencies.js';
 
-export const updateOrganisationCurrencySchema = z.object({
-  currencyCode: currencyCodeSchema,
-});
-export type UpdateOrganisationCurrencyInput = z.infer<typeof updateOrganisationCurrencySchema>;
+export const updateOrganisationSchema = z
+  .object({
+    currencyCode: currencyCodeSchema.optional(),
+    countryCode: countryCodeSchema.optional(),
+  })
+  .refine((value) => value.currencyCode !== undefined || value.countryCode !== undefined, {
+    message: 'Provide at least one field to update',
+  });
+export type UpdateOrganisationInput = z.infer<typeof updateOrganisationSchema>;
