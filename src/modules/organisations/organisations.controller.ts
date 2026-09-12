@@ -1,7 +1,8 @@
 import type { Request, Response } from 'express';
 import { NotFoundError, UnauthorizedError } from '../../errors/AppError.js';
 import { getPrismaClient } from '../../lib/prisma.js';
-import { updateOrganisationCurrencySchema } from './organisations.schemas.js';
+import { resolveOrganisationFeatures } from './organisation-features.js';
+import { updateOrganisationSchema } from './organisations.schemas.js';
 
 const prisma = getPrismaClient();
 
@@ -23,25 +24,33 @@ export async function getCurrentOrganisation(req: Request, res: Response) {
     slug: organisation.slug,
     status: organisation.status,
     currencyCode: organisation.currencyCode,
+    countryCode: organisation.countryCode,
+    features: resolveOrganisationFeatures(organisation.countryCode),
     orgRole: req.auth.orgRole,
     accountType: req.auth.orgRole ? 'staff' : 'resident',
     propertyContactId: req.auth.propertyContactId ?? null,
   });
 }
 
-/** OWNER/ADMIN only (see organisations.routes.ts) — changing this only
- * affects the default new financial records are created with going
- * forward; it never mutates an existing WorkOrder/ContractorQuote's own
- * currencyCode. */
-export async function updateOrganisationCurrency(req: Request, res: Response) {
+/** OWNER/ADMIN only (see organisations.routes.ts).
+ * - currencyCode: only affects the default new financial records are
+ *   created with going forward; never mutates an existing WorkOrder/
+ *   ContractorQuote's own currencyCode.
+ * - countryCode: determines the organisation's resolved feature set (see
+ *   organisation-features.ts). Independent of currencyCode — changing one
+ *   never changes the other. */
+export async function updateOrganisation(req: Request, res: Response) {
   if (!req.auth) {
     throw new UnauthorizedError();
   }
-  const input = updateOrganisationCurrencySchema.parse(req.body);
+  const input = updateOrganisationSchema.parse(req.body);
 
   const organisation = await prisma.organisation.update({
     where: { id: req.auth.organisationId },
-    data: { currencyCode: input.currencyCode },
+    data: {
+      ...(input.currencyCode !== undefined && { currencyCode: input.currencyCode }),
+      ...(input.countryCode !== undefined && { countryCode: input.countryCode }),
+    },
   });
 
   res.json({
@@ -50,5 +59,7 @@ export async function updateOrganisationCurrency(req: Request, res: Response) {
     slug: organisation.slug,
     status: organisation.status,
     currencyCode: organisation.currencyCode,
+    countryCode: organisation.countryCode,
+    features: resolveOrganisationFeatures(organisation.countryCode),
   });
 }

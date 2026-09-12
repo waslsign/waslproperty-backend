@@ -11,6 +11,12 @@ export const createPropertySchema = z.object({
   country: z.string().trim().min(1).max(120),
   postalCode: z.string().trim().max(20).optional(),
   propertyType: z.nativeEnum(PropertyType),
+  /** Foundational strata metadata (M11-A) — only settable when the
+   * organisation has STRATA_MANAGEMENT (enforced in PropertiesService, not
+   * just this schema). */
+  isStrataManaged: z.boolean().optional(),
+  strataPlanNumber: z.string().trim().max(60).optional(),
+  strataSchemeName: z.string().trim().max(160).optional(),
 });
 export type CreatePropertyInput = z.infer<typeof createPropertySchema>;
 

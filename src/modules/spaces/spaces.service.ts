@@ -3,7 +3,18 @@ import { recordActivity } from '../activity/activity.js';
 import { ConflictError, NotFoundError } from '../../errors/AppError.js';
 import { getOccupiedSpaceIds, type Occupancy } from '../../lib/occupancy.js';
 import type { PaginatedResult, PaginationQuery } from '../../lib/pagination.js';
+import { assertOrganisationFeature } from '../organisations/organisation-features.js';
 import type { CreateSpaceInput, UpdateSpaceInput } from './spaces.schemas.js';
+
+/** See PropertiesService's identically-named helper — same trigger
+ * condition, mirrored here since Space has its own strata fields. */
+function touchesStrataFields(input: CreateSpaceInput | UpdateSpaceInput): boolean {
+  return (
+    input.isStrataLot !== undefined ||
+    input.lotNumber !== undefined ||
+    input.entitlementValue !== undefined
+  );
+}
 
 export interface SpaceKeyPerson {
   id: string;
@@ -120,7 +131,16 @@ export class SpacesService {
     propertyId: string,
     input: CreateSpaceInput,
   ) {
-    await this.assertPropertyInOrg(organisationId, propertyId);
+    const property = await this.assertPropertyInOrg(organisationId, propertyId);
+
+    if (touchesStrataFields(input)) {
+      await assertOrganisationFeature(this.prisma, organisationId, 'STRATA_MANAGEMENT');
+      if (input.isStrataLot && !property.isStrataManaged) {
+        throw new ConflictError(
+          'This space cannot be marked a strata lot: its property is not configured as strata-managed',
+        );
+      }
+    }
 
     const clash = await this.prisma.space.findUnique({
       where: { propertyId_code: { propertyId, code: input.code } },
@@ -152,7 +172,9 @@ export class SpacesService {
   async getById(organisationId: string, spaceId: string) {
     const space = await this.prisma.space.findFirst({
       where: { id: spaceId, organisationId },
-      include: { property: { select: { id: true, name: true, code: true } } },
+      include: {
+        property: { select: { id: true, name: true, code: true, isStrataManaged: true } },
+      },
     });
     if (!space) {
       throw new NotFoundError('Space not found');
@@ -190,6 +212,22 @@ export class SpacesService {
     const existing = await this.prisma.space.findFirst({ where: { id: spaceId, organisationId } });
     if (!existing) {
       throw new NotFoundError('Space not found');
+    }
+
+    if (touchesStrataFields(input)) {
+      await assertOrganisationFeature(this.prisma, organisationId, 'STRATA_MANAGEMENT');
+      const wantsStrataLot = input.isStrataLot ?? existing.isStrataLot;
+      if (wantsStrataLot) {
+        const property = await this.prisma.property.findUniqueOrThrow({
+          where: { id: existing.propertyId },
+          select: { isStrataManaged: true },
+        });
+        if (!property.isStrataManaged) {
+          throw new ConflictError(
+            'This space cannot be marked a strata lot: its property is not configured as strata-managed',
+          );
+        }
+      }
     }
 
     if (input.code) {
