@@ -52,6 +52,7 @@ model Organisation {
   communications                Communication[]
   savedAudiences                SavedAudience[]
   notifications                 Notification[]
+  rolePermissions               OrganisationRolePermission[]
 
   @@map("organisations")
 }
@@ -73,7 +74,7 @@ model User {
 
   organisationMemberships       OrganisationMembership[]
   sessions                      Session[]
-  propertyContact               PropertyContact?
+  propertyContacts              PropertyContact[]
   activityEvents                ActivityEvent[]
   maintenanceRequests           MaintenanceRequest[]
   maintenanceRequestAttachments MaintenanceRequestAttachment[]
@@ -376,10 +377,19 @@ enum SpaceStatus {
 /// A business/person record: an owner, tenant or resident on file for an
 /// organisation. Independent of login — userId is set only once this contact
 /// activates portal access (Slice 2), and stays nullable forever otherwise.
+/// userId is deliberately unique only *per organisation*, not globally: a
+/// single User can be the property-scoped portal identity for at most one
+/// contact within any given organisation, but for one contact in each of
+/// several different organisations simultaneously (e.g. a property manager
+/// at Org A who is also a tenant at Org B) — one account, one login, the
+/// existing organisation-picker at login time (AuthService.listAccessOptions)
+/// simply returns one more option. Never let two contacts in the *same*
+/// organisation link to the same user — that would make "which one did they
+/// mean" ambiguous for every property-scoped request in that org.
 model PropertyContact {
   id             String        @id @default(cuid())
   organisationId String
-  userId         String?       @unique
+  userId         String?
   firstName      String
   lastName       String
   email          String
@@ -396,6 +406,7 @@ model PropertyContact {
   sessions                Session[]
 
   @@unique([organisationId, email])
+  @@unique([organisationId, userId])
   @@index([organisationId])
   @@map("property_contacts")
 }
@@ -442,6 +453,34 @@ enum PropertyRole {
   FACILITY_MANAGER
   AGENT
   COMMITTEE_MEMBER
+}
+
+/// Configurable property-scoped Roles & Permissions (property-role
+/// authorization milestone). Stores ONLY deviations from the WaslProp
+/// system-default capability set for a (organisation, PropertyRole) pair —
+/// see src/modules/authorization/capabilities.ts for the defaults and the
+/// full capability catalogue. An organisation with zero rows here behaves
+/// exactly like the system defaults; "restore defaults" for a role is a
+/// bulk delete of that role's rows, not a rewrite. `capability` is a
+/// string, not an enum, deliberately — see that file's own doc comment for
+/// why. `granted=true` adds a capability the default doesn't include;
+/// `granted=false` removes a capability the default does include.
+model OrganisationRolePermission {
+  id             String       @id @default(cuid())
+  organisationId String
+  role           PropertyRole
+  /// Must be one of CAPABILITIES in capabilities.ts — validated at the API
+  /// layer, not by the database.
+  capability     String
+  granted        Boolean
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  organisation Organisation @relation(fields: [organisationId], references: [id])
+
+  @@unique([organisationId, role, capability])
+  @@index([organisationId])
+  @@map("organisation_role_permissions")
 }
 
 enum MembershipStatus {
@@ -512,6 +551,7 @@ enum ActivityEventType {
   ANNOUNCEMENT_CREATED
   ANNOUNCEMENT_SENT
   ANNOUNCEMENT_CANCELLED
+  ROLE_PERMISSIONS_UPDATED
 }
 
 // --- Resident invitations (Slice 2 / M6.5) ---

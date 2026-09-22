@@ -1,5 +1,8 @@
 import type { Prisma, PrismaClient, PropertyRole } from '@prisma/client';
-import { NotFoundError } from '../../errors/AppError.js';
+import { ForbiddenError, NotFoundError } from '../../errors/AppError.js';
+import type { AuthContext } from '../../middlewares/auth.middleware.js';
+import type { AuthorizationService } from '../authorization/authorization.service.js';
+import type { Capability } from '../authorization/capabilities.js';
 
 export type AudienceScope = 'ORGANISATION' | 'PROPERTY' | 'SPACE';
 
@@ -181,6 +184,46 @@ export class AudienceResolver {
     }
 
     return rolePart;
+  }
+}
+
+/**
+ * Shared by CommunicationsService and SavedAudiencesService — a
+ * property-scoped user (portfolio manager, not organisation staff) can
+ * never build/edit/send against an ORGANISATION-wide criteria, and every
+ * PROPERTY/SPACE id named in the criteria must fall within properties they
+ * actually hold `capability` on. Organisation staff (accessible === 'ALL')
+ * are unrestricted, unchanged from pre-existing behaviour.
+ */
+export async function assertAudienceWithinScope(
+  prisma: PrismaClient,
+  authz: AuthorizationService,
+  auth: AuthContext,
+  capability: Capability,
+  criteria: AudienceCriteria,
+): Promise<void> {
+  const accessible = await authz.getAccessiblePropertyIds(auth, capability);
+  if (accessible === 'ALL') return;
+
+  if (criteria.scope === 'ORGANISATION') {
+    throw new ForbiddenError('An organisation-wide announcement requires organisation staff access');
+  }
+  if (criteria.scope === 'PROPERTY') {
+    const outOfScope = (criteria.propertyIds ?? []).some((id) => !accessible.includes(id));
+    if (outOfScope) {
+      throw new ForbiddenError('You do not have access to one or more selected properties');
+    }
+  }
+  if (criteria.scope === 'SPACE') {
+    const spaceIds = criteria.spaceIds ?? [];
+    const spaces = await prisma.space.findMany({
+      where: { id: { in: spaceIds } },
+      select: { propertyId: true },
+    });
+    const outOfScope = spaces.some((s) => !accessible.includes(s.propertyId));
+    if (outOfScope) {
+      throw new ForbiddenError('You do not have access to one or more selected spaces');
+    }
   }
 }
 

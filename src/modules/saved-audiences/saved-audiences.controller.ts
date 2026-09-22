@@ -13,14 +13,14 @@ function requireAuth(req: Request) {
 
 export async function listSavedAudiences(req: Request, res: Response) {
   const auth = requireAuth(req);
-  const items = await savedAudiencesService.list(auth.organisationId);
+  const items = await savedAudiencesService.list(auth.organisationId, auth);
   res.json({ items });
 }
 
 export async function createSavedAudience(req: Request, res: Response) {
   const auth = requireAuth(req);
   const input = createSavedAudienceSchema.parse(req.body);
-  const audience = await savedAudiencesService.create(auth.organisationId, auth.userId, input);
+  const audience = await savedAudiencesService.create(auth.organisationId, auth, auth.userId, input);
   res.status(201).json(audience);
 }
 
@@ -29,6 +29,7 @@ export async function updateSavedAudience(req: Request, res: Response) {
   const input = updateSavedAudienceSchema.parse(req.body);
   const audience = await savedAudiencesService.update(
     auth.organisationId,
+    auth,
     req.params.id as string,
     input,
   );
@@ -37,6 +38,6 @@ export async function updateSavedAudience(req: Request, res: Response) {
 
 export async function deleteSavedAudience(req: Request, res: Response) {
   const auth = requireAuth(req);
-  await savedAudiencesService.delete(auth.organisationId, req.params.id as string);
+  await savedAudiencesService.delete(auth.organisationId, auth, req.params.id as string);
   res.status(204).send();
 }

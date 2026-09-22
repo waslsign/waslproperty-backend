@@ -331,11 +331,17 @@ export class InvitesService {
         );
       }
 
-      const alreadyLinkedElsewhere = await tx.propertyContact.findUnique({
-        where: { userId: authenticatedUserId },
+      // Scoped to this same organisation — a user may already be a
+      // property-scoped identity in other organisations (that's fine, see
+      // PeopleService.findOrCreateContact), but never two contacts within
+      // this one.
+      const alreadyLinkedInThisOrg = await tx.propertyContact.findUnique({
+        where: { organisationId_userId: { organisationId: contact.organisationId, userId: authenticatedUserId } },
       });
-      if (alreadyLinkedElsewhere && alreadyLinkedElsewhere.id !== contact.id) {
-        throw new ConflictError('Your account is already linked to a different property contact');
+      if (alreadyLinkedInThisOrg && alreadyLinkedInThisOrg.id !== contact.id) {
+        throw new ConflictError(
+          'Your account is already linked to a different property contact in this organisation',
+        );
       }
 
       await tx.propertyContact.update({

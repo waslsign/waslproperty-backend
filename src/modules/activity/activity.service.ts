@@ -29,9 +29,19 @@ export class ActivityService {
     return this.paginate({ organisationId, spaceId }, query);
   }
 
-  /** Org-wide feed, crossing property boundaries within the same org — used by the dashboard. */
-  async listForOrganisation(organisationId: string, query: ActivityQuery) {
-    return this.paginate({ organisationId }, query);
+  /**
+   * Org-wide feed, crossing property boundaries within the same org — used
+   * by the dashboard. `propertyIds`, when given, scopes the feed to only
+   * those properties — used for a property-scoped manager's portfolio
+   * dashboard so their "recent activity" never leaks events from
+   * properties they aren't assigned to. `undefined` means unrestricted
+   * (org staff).
+   */
+  async listForOrganisation(organisationId: string, query: ActivityQuery, propertyIds?: string[]) {
+    return this.paginate(
+      { organisationId, ...(propertyIds ? { propertyId: { in: propertyIds } } : {}) },
+      query,
+    );
   }
 
   private async paginate(

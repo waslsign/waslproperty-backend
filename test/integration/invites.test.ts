@@ -345,12 +345,13 @@ describe('resident invites', () => {
     expect(wrongUser.status).toBe(409);
   });
 
-  it('rejects accept-existing when the account is already the portal identity for a different contact', async () => {
+  it('accepts accept-existing even when the account is already a portal identity in a different organisation', async () => {
     const sharedEmail = 'already-a-resident@example.com';
 
-    // This account is already a resident of its own organisation (Org A) —
-    // PropertyContact.userId is globally unique, so it can never also
-    // become the portal identity for a second contact elsewhere.
+    // This account is already a resident of its own organisation (Org A).
+    // PropertyContact.userId is unique per organisation, not globally — the
+    // same account may independently hold a second property-scoped
+    // identity in a different organisation (Org B, below).
     const { accessToken: orgAOwnerToken } = await registerTestUser(app, {
       organisationName: 'Org A',
       email: sharedEmail,
@@ -360,21 +361,44 @@ describe('resident invites', () => {
       .post('/api/v1/properties')
       .set(authHeader(orgAOwnerToken))
       .send(validProperty);
-    await addContact(orgAOwnerToken, orgAPropertyRes.body.id, { email: sharedEmail });
+    const orgAContact = await addContact(orgAOwnerToken, orgAPropertyRes.body.id, {
+      email: sharedEmail,
+    });
+    const orgAContactRow = await testPrisma.propertyContact.findUniqueOrThrow({
+      where: { id: orgAContact.contactId },
+    });
+    expect(orgAContactRow.userId).not.toBeNull();
 
-    // Org B invites the same email as a brand-new, not-yet-linked contact.
-    const { accessToken: orgBOwnerToken } = await registerTestUser(app, {
+    // Org B's contact for this same email must be created *before* Org A's
+    // link exists in the underlying User row it resolves against — but
+    // since the account already exists by the time Org B adds them, the
+    // add-person auto-link mechanism would link it immediately (see
+    // PeopleService.findOrCreateContact) rather than leaving it pending for
+    // an invite. To exercise the invite/accept-existing path specifically,
+    // this seeds Org B's contact directly (unlinked), mirroring a contact
+    // created via CSV import or before this person's account existed.
+    const { accessToken: orgBOwnerToken, organisationId: orgBId } = await registerTestUser(app, {
       organisationName: 'Org B',
     });
     const orgBPropertyRes = await request(app)
       .post('/api/v1/properties')
       .set(authHeader(orgBOwnerToken))
       .send(validProperty);
-    const { contactId: orgBContactId } = await addContact(orgBOwnerToken, orgBPropertyRes.body.id, {
-      email: sharedEmail,
+    const orgBContact = await testPrisma.propertyContact.create({
+      data: { organisationId: orgBId, email: sharedEmail, firstName: 'Shared', lastName: 'Person' },
+    });
+    await testPrisma.propertyMembership.create({
+      data: {
+        organisationId: orgBId,
+        propertyId: orgBPropertyRes.body.id,
+        contactId: orgBContact.id,
+        role: 'RESIDENT',
+        status: 'ACTIVE',
+        startDate: new Date(),
+      },
     });
     await request(app)
-      .post(`/api/v1/people/${orgBContactId}/invite`)
+      .post(`/api/v1/people/${orgBContact.id}/invite`)
       .set(authHeader(orgBOwnerToken));
     const token = activationLinkToken();
 
@@ -400,11 +424,22 @@ describe('resident invites', () => {
     const acceptExisting = await request(app)
       .post(`/api/v1/invites/${token}/accept-existing`)
       .set(authHeader(login.body.accessToken as string));
-    expect(acceptExisting.status).toBe(409);
+    expect(acceptExisting.status).toBe(204);
 
-    const orgBContact = await testPrisma.propertyContact.findUniqueOrThrow({
-      where: { id: orgBContactId },
+    const linkedOrgBContact = await testPrisma.propertyContact.findUniqueOrThrow({
+      where: { id: orgBContact.id },
     });
-    expect(orgBContact.userId).toBeNull();
+    // Same physical account, two independent property-scoped identities —
+    // never merged, never sharing a row.
+    expect(linkedOrgBContact.userId).toBe(orgAContactRow.userId);
+    expect(linkedOrgBContact.id).not.toBe(orgAContactRow.id);
+
+    // The organisation-picker now offers all three real relationships.
+    const finalLookup = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: sharedEmail, password: 'shared-secret-1' });
+    expect(finalLookup.status).toBe(200);
+    expect(finalLookup.body.requiresOrganisationSelection).toBe(true);
+    expect(finalLookup.body.organisations).toHaveLength(3);
   });
 });

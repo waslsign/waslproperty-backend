@@ -27,7 +27,7 @@ export async function createWorkOrder(req: Request, res: Response) {
 export async function listWorkOrders(req: Request, res: Response) {
   const auth = requireAuth(req);
   const query = workOrderQuerySchema.parse(req.query);
-  const result = await workOrdersService.list(auth.organisationId, query);
+  const result = await workOrdersService.list(auth.organisationId, auth, query);
   res.json(result);
 }
 

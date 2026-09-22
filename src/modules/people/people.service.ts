@@ -1,8 +1,10 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { recordActivity } from '../activity/activity.js';
-import { ConflictError, NotFoundError } from '../../errors/AppError.js';
+import { ConflictError, ForbiddenError, NotFoundError } from '../../errors/AppError.js';
 import { notifyUser } from '../notifications/notifications.js';
+import type { AuthContext } from '../../middlewares/auth.middleware.js';
 import type { PaginatedResult, PaginationQuery } from '../../lib/pagination.js';
+import { AuthorizationService } from '../authorization/authorization.service.js';
 import type {
   AddPersonInput,
   AssignExistingPersonInput,
@@ -40,7 +42,11 @@ function formatRoleLabel(role: string): string {
 }
 
 export class PeopleService {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly authz: AuthorizationService;
+
+  constructor(private readonly prisma: PrismaClient) {
+    this.authz = new AuthorizationService(prisma);
+  }
 
   private async assertPropertyInOrg(organisationId: string, propertyId: string) {
     const property = await this.prisma.property.findFirst({
@@ -78,15 +84,19 @@ export class PeopleService {
 
     const matchingUser = await tx.user.findUnique({ where: { email } });
 
-    // PropertyContact.userId is globally unique — a User can be the portal
-    // identity for at most one contact, system-wide (they may still be
-    // staff in any number of other organisations; see AuthService). If
-    // this email's account is already claimed by a contact elsewhere,
-    // adding this person must still succeed — it just can't also grant
-    // portal access here, so the auto-link is skipped rather than hitting
-    // that unique constraint.
-    const alreadyLinkedElsewhere =
-      matchingUser && (await tx.propertyContact.findUnique({ where: { userId: matchingUser.id } }));
+    // PropertyContact.userId is unique per organisation, not globally — a
+    // User may be the portal identity for at most one contact *within this
+    // organisation*, but may separately hold that same kind of identity in
+    // any number of other organisations (see AuthService.listAccessOptions,
+    // which already returns one login option per such contact). The only
+    // thing that must never happen is two contacts in the *same*
+    // organisation both claiming to be this user — that would make "which
+    // one did they mean" ambiguous for every property-scoped request here.
+    const alreadyLinkedInThisOrg =
+      matchingUser &&
+      (await tx.propertyContact.findUnique({
+        where: { organisationId_userId: { organisationId, userId: matchingUser.id } },
+      }));
 
     return tx.propertyContact.create({
       data: {
@@ -94,7 +104,7 @@ export class PeopleService {
         email,
         firstName,
         lastName,
-        userId: alreadyLinkedElsewhere ? undefined : matchingUser?.id,
+        userId: alreadyLinkedInThisOrg ? undefined : matchingUser?.id,
       },
     });
   }
@@ -420,14 +430,26 @@ export class PeopleService {
     });
   }
 
-  async listDirectory(organisationId: string, query: PeopleDirectoryQuery) {
+  async listDirectory(organisationId: string, auth: AuthContext, query: PeopleDirectoryQuery) {
     if (query.propertyId) {
       await this.assertPropertyInOrg(organisationId, query.propertyId);
     }
 
+    const accessible = await this.authz.getAccessiblePropertyIds(auth, 'people.view');
+    if (accessible !== 'ALL' && accessible.length === 0) {
+      return { items: [], page: query.page, pageSize: query.pageSize, total: 0 };
+    }
+    if (query.propertyId && accessible !== 'ALL' && !accessible.includes(query.propertyId)) {
+      throw new ForbiddenError('You do not have access to this property');
+    }
+
     const where: Prisma.PropertyMembershipWhereInput = {
       organisationId,
-      ...(query.propertyId ? { propertyId: query.propertyId } : {}),
+      ...(query.propertyId
+        ? { propertyId: query.propertyId }
+        : accessible !== 'ALL'
+          ? { propertyId: { in: accessible } }
+          : {}),
       ...(query.role ? { role: query.role } : {}),
       ...(query.search
         ? {

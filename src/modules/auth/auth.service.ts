@@ -1,4 +1,4 @@
-import type { OrgRole, PrismaClient } from '@prisma/client';
+import type { OrgRole, PrismaClient, PropertyRole } from '@prisma/client';
 import { ConflictError, UnauthorizedError } from '../../errors/AppError.js';
 import { slugify, withRandomSuffix } from '../../lib/slug.js';
 import { hashPassword, verifyPassword } from '../../lib/password.js';
@@ -44,6 +44,13 @@ export interface OrganisationAccessOption {
   orgRole: OrgRole | null;
   propertyContactId: string | null;
   accountType: 'staff' | 'resident';
+  /** Distinct ACTIVE PropertyRole(s) this contact holds anywhere in this
+   * organisation — e.g. ['PROPERTY_MANAGER'], or ['TENANT', 'PROPERTY_MANAGER']
+   * for someone who is both. accountType is a login-mechanism distinction
+   * (OrganisationMembership vs PropertyContact), not a role — this is what
+   * the organisation-picker actually shows, so a property-scoped operational
+   * manager is never mislabelled "resident". Always empty for staff options. */
+  propertyRoles: PropertyRole[];
 }
 
 export type LoginOutcome =
@@ -295,7 +302,10 @@ export class AuthService {
       }),
       this.prisma.propertyContact.findMany({
         where: { userId, status: 'ACTIVE' },
-        include: { organisation: { select: { id: true, name: true, slug: true } } },
+        include: {
+          organisation: { select: { id: true, name: true, slug: true } },
+          memberships: { where: { status: 'ACTIVE' }, select: { role: true } },
+        },
         orderBy: { createdAt: 'asc' },
       }),
     ]);
@@ -307,6 +317,7 @@ export class AuthService {
       orgRole: m.role,
       propertyContactId: null,
       accountType: 'staff',
+      propertyRoles: [],
     }));
 
     const residentOptions: OrganisationAccessOption[] = contacts.map((c) => ({
@@ -316,6 +327,7 @@ export class AuthService {
       orgRole: null,
       propertyContactId: c.id,
       accountType: 'resident',
+      propertyRoles: [...new Set(c.memberships.map((m) => m.role))],
     }));
 
     return [...staffOptions, ...residentOptions];

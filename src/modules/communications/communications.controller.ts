@@ -20,14 +20,19 @@ function requireAuth(req: Request) {
 export async function listCommunications(req: Request, res: Response) {
   const auth = requireAuth(req);
   const query = communicationsQuerySchema.parse(req.query);
-  const result = await communicationsService.list(auth.organisationId, query);
+  const result = await communicationsService.list(auth.organisationId, auth, query);
   res.json(result);
 }
 
 export async function createCommunication(req: Request, res: Response) {
   const auth = requireAuth(req);
   const input = createCommunicationSchema.parse(req.body);
-  const communication = await communicationsService.create(auth.organisationId, auth.userId, input);
+  const communication = await communicationsService.create(
+    auth.organisationId,
+    auth,
+    auth.userId,
+    input,
+  );
   res.status(201).json(communication);
 }
 
@@ -35,6 +40,7 @@ export async function getCommunication(req: Request, res: Response) {
   const auth = requireAuth(req);
   const communication = await communicationsService.getById(
     auth.organisationId,
+    auth,
     req.params.id as string,
   );
   res.json(communication);
@@ -45,6 +51,7 @@ export async function updateCommunication(req: Request, res: Response) {
   const input = updateCommunicationSchema.parse(req.body);
   const communication = await communicationsService.update(
     auth.organisationId,
+    auth,
     req.params.id as string,
     input,
   );
@@ -56,6 +63,7 @@ export async function sendCommunication(req: Request, res: Response) {
   const input = sendCommunicationSchema.parse(req.body);
   const communication = await communicationsService.send(
     auth.organisationId,
+    auth,
     auth.userId,
     req.params.id as string,
     input,
@@ -67,6 +75,7 @@ export async function cancelCommunication(req: Request, res: Response) {
   const auth = requireAuth(req);
   const communication = await communicationsService.cancel(
     auth.organisationId,
+    auth,
     auth.userId,
     req.params.id as string,
   );
@@ -77,6 +86,7 @@ export async function duplicateCommunication(req: Request, res: Response) {
   const auth = requireAuth(req);
   const communication = await communicationsService.duplicateAsDraft(
     auth.organisationId,
+    auth,
     auth.userId,
     req.params.id as string,
   );
@@ -88,6 +98,7 @@ export async function previewCommunicationAudience(req: Request, res: Response) 
   const input = previewAudienceSchema.parse(req.body);
   const preview = await communicationsService.previewAudience(
     auth.organisationId,
+    auth,
     input.audienceCriteria,
   );
   res.json(preview);
@@ -97,6 +108,7 @@ export async function getCommunicationDelivery(req: Request, res: Response) {
   const auth = requireAuth(req);
   const summary = await communicationsService.getDeliverySummary(
     auth.organisationId,
+    auth,
     req.params.id as string,
   );
   res.json({ items: summary });

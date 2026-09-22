@@ -105,7 +105,7 @@ export async function listMyMemberships(req: Request, res: Response) {
 export async function listPeopleDirectory(req: Request, res: Response) {
   const auth = requireAuth(req);
   const query = peopleDirectoryQuerySchema.parse(req.query);
-  const result = await peopleService.listDirectory(auth.organisationId, query);
+  const result = await peopleService.listDirectory(auth.organisationId, auth, query);
   res.json(result);
 }
 

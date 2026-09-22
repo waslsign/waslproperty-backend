@@ -39,6 +39,8 @@ export async function login(req: Request, res: Response) {
         name: option.organisationName,
         slug: option.organisationSlug,
         accountType: option.accountType,
+        orgRole: option.orgRole,
+        propertyRoles: option.propertyRoles,
       })),
     });
     return;
