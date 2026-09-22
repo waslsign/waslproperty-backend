@@ -378,9 +378,22 @@ describe('resident invites', () => {
       .set(authHeader(orgBOwnerToken));
     const token = activationLinkToken();
 
-    const login = await request(app)
+    // This account is now also a resident of its own Org A (added above with
+    // the same email), so a plain login offers a choice — sign in as staff
+    // explicitly, which is what this test actually needs.
+    const orgALookup = await request(app)
       .post('/api/v1/auth/login')
       .send({ email: sharedEmail, password: 'shared-secret-1' });
+    expect(orgALookup.status).toBe(200);
+    expect(orgALookup.body.requiresOrganisationSelection).toBe(true);
+    const orgAId = orgALookup.body.organisations[0].id as string;
+
+    const login = await request(app).post('/api/v1/auth/login').send({
+      email: sharedEmail,
+      password: 'shared-secret-1',
+      organisationId: orgAId,
+      accountType: 'staff',
+    });
     expect(login.status).toBe(200);
     expect(login.body.accountType).toBe('staff');
 
