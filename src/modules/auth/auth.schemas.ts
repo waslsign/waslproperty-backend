@@ -20,5 +20,11 @@ export const loginSchema = z.object({
   /** Only required when the account has more than one organisation
    * relationship (see AuthService.login) — omitted otherwise. */
   organisationId: z.string().trim().min(1).optional(),
+  /** Only required when organisationId alone is ambiguous — a user with
+   * both a staff membership and a resident contact in the *same*
+   * organisation has two options sharing one organisationId. The frontend
+   * echoes back whichever `accountType` it showed for the chosen row from
+   * the `chooseOrganisation` response. Harmless to omit otherwise. */
+  accountType: z.enum(['staff', 'resident']).optional(),
 });
 export type LoginInput = z.infer<typeof loginSchema>;

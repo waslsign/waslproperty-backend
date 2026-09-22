@@ -132,21 +132,35 @@ enum MemberStatus {
 /// them; sessionType/PLATFORM is kept only so existing rows/migrations
 /// don't need a destructive rewrite, but no new PLATFORM row is ever
 /// created here.
+///
+/// propertyContactId pins the session to the exact relationship it was
+/// issued for, not just the organisation — required once a single user can
+/// hold both a staff membership and a resident contact in the *same*
+/// organisation (see AuthService.listAccessOptions): null means this
+/// session was issued as staff, set means it was issued as that specific
+/// resident contact. Without this, refresh() would have no way to tell
+/// which of the two relationships the session represents and could
+/// silently resolve to the wrong one (e.g. a resident session escalating
+/// to staff on refresh, since it would default to whichever access
+/// resolves first).
 model Session {
-  id               String      @id @default(cuid())
-  userId           String
-  organisationId   String?
-  sessionType      SessionType @default(CUSTOMER)
-  refreshTokenHash String
-  expiresAt        DateTime
-  createdAt        DateTime    @default(now())
-  revokedAt        DateTime?
+  id                String      @id @default(cuid())
+  userId            String
+  organisationId    String?
+  propertyContactId String?
+  sessionType       SessionType @default(CUSTOMER)
+  refreshTokenHash  String
+  expiresAt         DateTime
+  createdAt         DateTime    @default(now())
+  revokedAt         DateTime?
 
-  user         User          @relation(fields: [userId], references: [id])
-  organisation Organisation? @relation(fields: [organisationId], references: [id])
+  user            User             @relation(fields: [userId], references: [id])
+  organisation    Organisation?    @relation(fields: [organisationId], references: [id])
+  propertyContact PropertyContact? @relation(fields: [propertyContactId], references: [id])
 
   @@index([userId])
   @@index([organisationId])
+  @@index([propertyContactId])
   @@map("sessions")
 }
 
@@ -379,6 +393,7 @@ model PropertyContact {
   memberships             PropertyMembership[]
   invites                 ContactInvite[]
   communicationRecipients CommunicationRecipient[]
+  sessions                Session[]
 
   @@unique([organisationId, email])
   @@index([organisationId])

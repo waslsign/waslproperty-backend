@@ -67,6 +67,50 @@ async function setupDualIdentityUser() {
   };
 }
 
+/**
+ * The same scenario as setupDualIdentityUser, but both relationships live
+ * in the *same* organisation — a property manager who also personally
+ * rents a unit in the portfolio they manage. Same auto-link mechanism:
+ * adding a contact by an email that already has an account in *this same*
+ * organisation links it immediately, no invite needed.
+ */
+async function setupSameOrgDualRoleUser() {
+  const sharedEmail = `dual-same-org+${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`;
+  const sharedPassword = 'dual-same-org-secret-1';
+
+  const owner = await registerTestUser(app, {
+    organisationName: 'Self-Managed Residences',
+    email: sharedEmail,
+    password: sharedPassword,
+  });
+
+  const propertyRes = await request(app)
+    .post('/api/v1/properties')
+    .set(authHeader(owner.accessToken))
+    .send({
+      name: 'Owner-Occupied Tower',
+      code: 'SELF-01',
+      addressLine1: '1 Self Street',
+      city: 'Dubai',
+      country: 'UAE',
+      propertyType: 'MIXED_USE',
+    });
+  const propertyId = propertyRes.body.id as string;
+
+  const addContactRes = await request(app)
+    .post(`/api/v1/properties/${propertyId}/memberships`)
+    .set(authHeader(owner.accessToken))
+    .send({ email: sharedEmail, firstName: 'Dual', lastName: 'Role', role: 'RESIDENT' });
+  expect(addContactRes.body.contact.userId).toBeTruthy();
+
+  return {
+    sharedEmail,
+    sharedPassword,
+    organisationId: owner.organisationId,
+    propertyId,
+  };
+}
+
 describe('organisation-contextual access', () => {
   beforeEach(async () => {
     await resetDb();
@@ -251,5 +295,115 @@ describe('organisation-contextual access', () => {
     expect(meRes.body.accountType).toBe('resident');
 
     void orgAId;
+  });
+
+  it('a user who is both staff and a resident in the SAME organisation is asked to choose', async () => {
+    const { sharedEmail, sharedPassword, organisationId } = await setupSameOrgDualRoleUser();
+
+    const res = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: sharedEmail, password: sharedPassword });
+
+    expect(res.status).toBe(200);
+    expect(res.body.requiresOrganisationSelection).toBe(true);
+    expect(res.body.accessToken).toBeUndefined();
+
+    // Both options share the same organisationId — accountType is what
+    // distinguishes them.
+    expect(res.body.organisations).toHaveLength(2);
+    for (const option of res.body.organisations) {
+      expect(option.id).toBe(organisationId);
+    }
+    const accountTypes = res.body.organisations
+      .map((o: { accountType: string }) => o.accountType)
+      .sort();
+    expect(accountTypes).toEqual(['resident', 'staff']);
+  });
+
+  it('signs in as staff or resident within the same organisation depending on accountType', async () => {
+    const { sharedEmail, sharedPassword, organisationId } = await setupSameOrgDualRoleUser();
+
+    const asStaff = await request(app).post('/api/v1/auth/login').send({
+      email: sharedEmail,
+      password: sharedPassword,
+      organisationId,
+      accountType: 'staff',
+    });
+    expect(asStaff.status).toBe(200);
+    expect(asStaff.body.accountType).toBe('staff');
+    expect(asStaff.body.orgRole).toBe('OWNER');
+    expect(asStaff.body.organisation.id).toBe(organisationId);
+
+    const asResident = await request(app).post('/api/v1/auth/login').send({
+      email: sharedEmail,
+      password: sharedPassword,
+      organisationId,
+      accountType: 'resident',
+    });
+    expect(asResident.status).toBe(200);
+    expect(asResident.body.accountType).toBe('resident');
+    expect(asResident.body.orgRole).toBeNull();
+    expect(asResident.body.organisation.id).toBe(organisationId);
+  });
+
+  it('rejects a same-organisation login when accountType is missing or does not match either option', async () => {
+    const { sharedEmail, sharedPassword, organisationId } = await setupSameOrgDualRoleUser();
+
+    const noAccountType = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: sharedEmail, password: sharedPassword, organisationId });
+    expect(noAccountType.status).toBe(401);
+
+    const wrongAccountType = await request(app).post('/api/v1/auth/login').send({
+      email: sharedEmail,
+      password: sharedPassword,
+      organisationId,
+      accountType: 'not-a-real-type',
+    });
+    expect(wrongAccountType.status).toBe(422); // fails schema validation (enum)
+  });
+
+  it('pins a refreshed session to the exact relationship (resident) it was issued for, not the staff one gained in the same org', async () => {
+    const { sharedEmail, sharedPassword, organisationId } = await setupSameOrgDualRoleUser();
+
+    const asResident = await request(app).post('/api/v1/auth/login').send({
+      email: sharedEmail,
+      password: sharedPassword,
+      organisationId,
+      accountType: 'resident',
+    });
+    const cookie = asResident.headers['set-cookie'][0];
+
+    const refreshRes = await request(app).post('/api/v1/auth/refresh').set('Cookie', cookie);
+    expect(refreshRes.status).toBe(200);
+
+    const meRes = await request(app)
+      .get('/api/v1/organisations/me')
+      .set(authHeader(refreshRes.body.accessToken));
+    expect(meRes.body.id).toBe(organisationId);
+    // Must still resolve as resident on refresh — never silently upgraded
+    // to the staff relationship that also exists in this same organisation.
+    expect(meRes.body.accountType).toBe('resident');
+  });
+
+  it('pins a refreshed session to the staff relationship when that is what was issued, in the same dual-role org', async () => {
+    const { sharedEmail, sharedPassword, organisationId } = await setupSameOrgDualRoleUser();
+
+    const asStaff = await request(app).post('/api/v1/auth/login').send({
+      email: sharedEmail,
+      password: sharedPassword,
+      organisationId,
+      accountType: 'staff',
+    });
+    const cookie = asStaff.headers['set-cookie'][0];
+
+    const refreshRes = await request(app).post('/api/v1/auth/refresh').set('Cookie', cookie);
+    expect(refreshRes.status).toBe(200);
+
+    const meRes = await request(app)
+      .get('/api/v1/organisations/me')
+      .set(authHeader(refreshRes.body.accessToken));
+    expect(meRes.body.id).toBe(organisationId);
+    expect(meRes.body.accountType).toBe('staff');
   });
 });

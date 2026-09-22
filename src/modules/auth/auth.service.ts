@@ -136,7 +136,17 @@ export class AuthService {
     }
 
     if (input.organisationId) {
-      const chosen = options.find((o) => o.organisationId === input.organisationId);
+      const candidates = options.filter((o) => o.organisationId === input.organisationId);
+      if (candidates.length === 0) {
+        throw new UnauthorizedError('You do not have access to that organisation');
+      }
+      // Same organisationId can now match two options — staff and resident
+      // — when the user holds both relationships in that one organisation.
+      // Never guess between them: accountType must disambiguate.
+      const chosen =
+        candidates.length === 1
+          ? candidates[0]
+          : candidates.find((o) => o.accountType === input.accountType);
       if (!chosen) {
         throw new UnauthorizedError('You do not have access to that organisation');
       }
@@ -182,10 +192,16 @@ export class AuthService {
       throw new UnauthorizedError('Session expired, please log in again');
     }
 
-    // Pinned to the organisation the session was originally issued for —
-    // refreshing never moves a user into a different organisation, even one
-    // they've since gained (or lost) access to.
-    const access = await this.resolveAccessInOrg(session.userId, session.organisationId);
+    // Pinned to the organisation *and* the specific relationship (staff vs.
+    // this exact resident contact) the session was originally issued for —
+    // refreshing never moves a user into a different organisation, or a
+    // different relationship within the same one, even if they've since
+    // gained (or lost) access elsewhere.
+    const access = await this.resolveAccessInOrg(
+      session.userId,
+      session.organisationId,
+      session.propertyContactId,
+    );
     if (!access) {
       throw new UnauthorizedError('Session expired, please log in again');
     }
@@ -231,39 +247,44 @@ export class AuthService {
   }
 
   /**
-   * Resolves access strictly within one organisation — never falls back to
-   * a different organisation the user might also have access to. This is
-   * what keeps a refresh (or an explicit organisationId at login) from ever
-   * granting one organisation's permissions while "in" another.
+   * Resolves access strictly within one organisation *and* one specific
+   * relationship — never falls back to a different organisation, and never
+   * silently switches from the resident relationship a session was issued
+   * for to a staff one the user has since gained in the same organisation
+   * (or vice versa). pinnedPropertyContactId is the session's own stored
+   * value: null means "this session was issued as staff", a set value means
+   * "this session was issued as that exact resident contact" — see the
+   * Session.propertyContactId doc comment in schema.prisma.
    */
   private async resolveAccessInOrg(
     userId: string,
     organisationId: string,
+    pinnedPropertyContactId: string | null,
   ): Promise<AuthAccessContext | null> {
+    if (pinnedPropertyContactId) {
+      const contact = await this.prisma.propertyContact.findFirst({
+        where: { id: pinnedPropertyContactId, userId, organisationId, status: 'ACTIVE' },
+      });
+      return contact ? { organisationId, orgRole: null, propertyContactId: contact.id } : null;
+    }
+
     const membership = await this.prisma.organisationMembership.findFirst({
       where: { userId, organisationId, status: 'ACTIVE' },
     });
-    if (membership) {
-      return { organisationId, orgRole: membership.role, propertyContactId: null };
-    }
-
-    const contact = await this.prisma.propertyContact.findFirst({
-      where: { userId, organisationId, status: 'ACTIVE' },
-    });
-    if (contact) {
-      return { organisationId, orgRole: null, propertyContactId: contact.id };
-    }
-
-    return null;
+    return membership
+      ? { organisationId, orgRole: membership.role, propertyContactId: null }
+      : null;
   }
 
   /**
-   * Every organisation this user has an independent relationship in. Staff
-   * membership and a resident contact in the *same* organisation would be
-   * unusual, but if it ever happens, staff there takes precedence for that
-   * one organisation — exactly as the single-org resolution always worked.
-   * Across *different* organisations, both are listed side by side; neither
-   * suppresses the other.
+   * Every independent relationship this user has, across every
+   * organisation. A staff membership and a resident contact in the *same*
+   * organisation are both listed as separate options now — a user who
+   * manages a portfolio and also rents a unit in it gets a switcher for
+   * that one organisation, exactly like a user with relationships across
+   * two different organisations always has. Neither ever suppresses the
+   * other; disambiguating between two same-organisation options is
+   * AuthService.login's job (via accountType), not this method's.
    */
   private async listAccessOptions(userId: string): Promise<OrganisationAccessOption[]> {
     const [memberships, contacts] = await Promise.all([
@@ -279,8 +300,6 @@ export class AuthService {
       }),
     ]);
 
-    const staffOrgIds = new Set(memberships.map((m) => m.organisationId));
-
     const staffOptions: OrganisationAccessOption[] = memberships.map((m) => ({
       organisationId: m.organisationId,
       organisationName: m.organisation.name,
@@ -290,16 +309,14 @@ export class AuthService {
       accountType: 'staff',
     }));
 
-    const residentOptions: OrganisationAccessOption[] = contacts
-      .filter((c) => !staffOrgIds.has(c.organisationId))
-      .map((c) => ({
-        organisationId: c.organisationId,
-        organisationName: c.organisation.name,
-        organisationSlug: c.organisation.slug,
-        orgRole: null,
-        propertyContactId: c.id,
-        accountType: 'resident',
-      }));
+    const residentOptions: OrganisationAccessOption[] = contacts.map((c) => ({
+      organisationId: c.organisationId,
+      organisationName: c.organisation.name,
+      organisationSlug: c.organisation.slug,
+      orgRole: null,
+      propertyContactId: c.id,
+      accountType: 'resident',
+    }));
 
     return [...staffOptions, ...residentOptions];
   }
@@ -319,6 +336,11 @@ export class AuthService {
       data: {
         userId,
         organisationId: access.organisationId,
+        // Pins the session to the exact relationship it was issued for —
+        // required so refresh() can never resolve to the *other* one when
+        // a user holds both a staff and a resident relationship in this
+        // same organisation.
+        propertyContactId: access.propertyContactId,
         refreshTokenHash: hashRefreshToken(refreshToken),
         expiresAt,
       },
