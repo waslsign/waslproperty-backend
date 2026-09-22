@@ -4,7 +4,11 @@ import { emailService } from '../../lib/email.js';
 import { getPrismaClient } from '../../lib/prisma.js';
 import { logger } from '../../lib/logger.js';
 import { notifyUsers } from '../notifications/notifications.js';
-import { AudienceResolver, type AudienceCriteria, type ResolvedRecipient } from './communications.audience.js';
+import {
+  AudienceResolver,
+  type AudienceCriteria,
+  type ResolvedRecipient,
+} from './communications.audience.js';
 import { renderAnnouncementEmail } from './communications.email.js';
 
 /**
@@ -230,7 +234,7 @@ export class CommunicationDeliveryService {
             organisationName: organisation?.name ?? 'Wasl Property',
             recipientFirstName: recipient.firstName,
           });
-          await emailService.send({
+          const { providerMessageId } = await emailService.send({
             to: recipient.email,
             subject: rendered.subject,
             html: rendered.html,
@@ -238,7 +242,12 @@ export class CommunicationDeliveryService {
           });
           await this.prisma.communicationDelivery.update({
             where: { id: deliveryRow.id },
-            data: { status: 'SENT', attemptedAt: new Date(), sentAt: new Date() },
+            data: {
+              status: 'SENT',
+              attemptedAt: new Date(),
+              sentAt: new Date(),
+              providerMessageId: providerMessageId ?? null,
+            },
           });
         } catch (err) {
           logger.error(
@@ -304,7 +313,11 @@ export class InProcessDeliveryScheduler implements DeliveryScheduler {
   /** Real, genuinely-knowable state only — never a fabricated worker-pool
    * or cluster metric. The Backoffice Jobs screen reads this directly. */
   getStatus(): DeliverySchedulerStatus {
-    return { running: this.timer !== undefined, intervalMs: this.intervalMs, lastTickAt: this.lastTickAt };
+    return {
+      running: this.timer !== undefined,
+      intervalMs: this.intervalMs,
+      lastTickAt: this.lastTickAt,
+    };
   }
 }
 

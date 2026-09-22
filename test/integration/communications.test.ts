@@ -6,7 +6,9 @@ import { signAccessToken } from '../../src/lib/tokens.js';
 import { resetDb, testPrisma } from '../helpers/db.js';
 import { authHeader, registerTestUser } from '../helpers/auth.js';
 
-const { sendMock } = vi.hoisted(() => ({ sendMock: vi.fn().mockResolvedValue(undefined) }));
+const { sendMock } = vi.hoisted(() => ({
+  sendMock: vi.fn().mockResolvedValue({ providerMessageId: 'test-provider-message-id' }),
+}));
 
 vi.mock('../../src/lib/email.js', () => ({
   emailService: { send: sendMock },
@@ -70,7 +72,7 @@ describe('communications', () => {
   beforeEach(async () => {
     await resetDb();
     sendMock.mockClear();
-    sendMock.mockResolvedValue(undefined);
+    sendMock.mockResolvedValue({ providerMessageId: 'test-provider-message-id' });
     recordActivityMock.mockReset();
     recordActivityMock.mockImplementation(
       async (client: { activityEvent: { create: (args: unknown) => unknown } }, input: unknown) =>
@@ -90,7 +92,12 @@ describe('communications', () => {
 
   it('rejects a MEMBER creating a communication but the endpoint stays staff-only (RBAC)', async () => {
     const { organisationId, userId } = await registerTestUser(app);
-    const memberToken = signAccessToken({ sub: userId, sessionType: 'CUSTOMER', organisationId, orgRole: 'MEMBER' });
+    const memberToken = signAccessToken({
+      sub: userId,
+      sessionType: 'CUSTOMER',
+      organisationId,
+      orgRole: 'MEMBER',
+    });
 
     const res = await request(app)
       .post('/api/v1/communications')
@@ -156,7 +163,9 @@ describe('communications', () => {
     const tenantPreview = await request(app)
       .post('/api/v1/communications/preview-audience')
       .set(authHeader(accessToken))
-      .send({ audienceCriteria: { scope: 'PROPERTY', propertyIds: [propertyId], roles: ['TENANT'] } });
+      .send({
+        audienceCriteria: { scope: 'PROPERTY', propertyIds: [propertyId], roles: ['TENANT'] },
+      });
     expect(tenantPreview.status).toBe(200);
     expect(tenantPreview.body.count).toBe(1);
     expect(tenantPreview.body.summary).toContain('Darling Harbour Towers');
@@ -164,7 +173,9 @@ describe('communications', () => {
     const ownerPreview = await request(app)
       .post('/api/v1/communications/preview-audience')
       .set(authHeader(accessToken))
-      .send({ audienceCriteria: { scope: 'PROPERTY', propertyIds: [propertyId], roles: ['OWNER'] } });
+      .send({
+        audienceCriteria: { scope: 'PROPERTY', propertyIds: [propertyId], roles: ['OWNER'] },
+      });
     expect(ownerPreview.status).toBe(200);
     expect(ownerPreview.body.count).toBe(0);
   });
@@ -287,13 +298,15 @@ describe('communications', () => {
 
     // A second tenant who *does* have a linked portal user, via the
     // existing "link an existing Wasl Property user by email" behaviour.
-    const portalUser = await request(app).post('/api/v1/auth/register').send({
-      organisationName: 'Unrelated Org',
-      firstName: 'Mia',
-      lastName: 'Johnson',
-      email: `mia+${Date.now()}@example.com`,
-      password: 'super-secret-1',
-    });
+    const portalUser = await request(app)
+      .post('/api/v1/auth/register')
+      .send({
+        organisationName: 'Unrelated Org',
+        firstName: 'Mia',
+        lastName: 'Johnson',
+        email: `mia+${Date.now()}@example.com`,
+        password: 'super-secret-1',
+      });
 
     await request(app)
       .post(`/api/v1/properties/${propertyId}/memberships`)
@@ -395,9 +408,7 @@ describe('communications', () => {
       .send({});
     expect(crossOrgSend.status).toBe(404);
 
-    const list = await request(app)
-      .get('/api/v1/communications')
-      .set(authHeader(orgB.accessToken));
+    const list = await request(app).get('/api/v1/communications').set(authHeader(orgB.accessToken));
     expect(list.body.items).toHaveLength(0);
   });
 
@@ -565,6 +576,7 @@ describe('communications', () => {
         where: { communicationRecipient: { communicationId }, channel: 'EMAIL' },
       });
       expect(sentDelivery?.status).toBe('SENT');
+      expect(sentDelivery?.providerMessageId).toBe('test-provider-message-id');
       const firstSentAt = sentDelivery?.sentAt;
 
       // Simulate a resumed/retried delivery run for the same communication
@@ -613,7 +625,7 @@ describe('communications', () => {
       // committed before email sending ran) — only the email delivery
       // failed, so retrying delivery for the same communication must
       // actually resend, not be blocked by the duplicate-send guard.
-      sendMock.mockResolvedValueOnce(undefined);
+      sendMock.mockResolvedValueOnce({ providerMessageId: 'retry-message-id' });
       await deliveryService.deliverOne(communicationId);
 
       expect(sendMock).toHaveBeenCalledTimes(2);
