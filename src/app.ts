@@ -11,10 +11,25 @@ import { apiV1Router } from './routes/v1/index.js';
 export function createApp() {
   const app = express();
 
+  // FRONTEND_URL is comma-separated so staging can allow both a deployed
+  // frontend and a local dev one (or any other legitimate origin) without
+  // wildcarding — a request from anything else is still rejected.
+  const allowedOrigins = env.FRONTEND_URL.split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
   app.use(requestLogger);
   app.use(
     cors({
-      origin: env.FRONTEND_URL,
+      origin(origin, callback) {
+        // No Origin header (e.g. curl, server-to-server, the WaslSign
+        // webhook) is never a browser CORS request — nothing to check.
+        if (!origin || allowedOrigins.includes(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error(`Origin ${origin} is not allowed`));
+        }
+      },
       credentials: true,
     }),
   );
