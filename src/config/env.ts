@@ -39,6 +39,19 @@ const envSchema = z.object({
   MAINTENANCE_ATTACHMENT_MAX_FILES: z.coerce.number().default(5),
   MAINTENANCE_ATTACHMENT_MAX_SIZE_MB: z.coerce.number().default(10),
 
+  // --- Outbound email ---
+  // RESEND_API_KEY is the production/staging transport (Resend's HTTPS
+  // API) — required anywhere the platform blocks outbound SMTP ports (e.g.
+  // Render's Free Web Service tier blocks 25/465/587 entirely, so SMTP is
+  // a hard outage there regardless of which mail provider is behind it).
+  // Left unset, EmailService falls back to SMTP, which only ever makes
+  // sense in local development. See src/lib/email/selectEmailProvider.ts.
+  RESEND_API_KEY: z.string().optional(),
+  EMAIL_FROM: z.string().default('Wasl Property <no-reply@waslproperty.dev>'),
+
+  // SMTP: local-development-only fallback transport (see
+  // SmtpEmailProvider). Leave SMTP_HOST unset in development to use an
+  // ad-hoc Ethereal test inbox instead of a real mailbox.
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().default(587),
   SMTP_SECURE: z
