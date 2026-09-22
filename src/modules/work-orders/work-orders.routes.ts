@@ -1,5 +1,11 @@
 import { Router } from 'express';
-import { authenticate, requireOrgRole } from '../../middlewares/auth.middleware.js';
+import { authenticate } from '../../middlewares/auth.middleware.js';
+import { requireCapability } from '../../middlewares/authorize.middleware.js';
+import {
+  fromMaintenanceRequestParam,
+  fromWorkOrderParam,
+} from '../../middlewares/resolvePropertyId.js';
+import { getPrismaClient } from '../../lib/prisma.js';
 import { asyncHandler } from '../../middlewares/asyncHandler.js';
 import {
   assignWorkOrderContractor,
@@ -13,16 +19,50 @@ import {
 
 export const workOrdersRouter = Router();
 
-// Work orders carry cost/contractor data — staff-only, no resident access at all.
-workOrdersRouter.use(authenticate, requireOrgRole(['OWNER', 'ADMIN']));
+const prisma = getPrismaClient();
 
-workOrdersRouter.get('/', asyncHandler(listWorkOrders));
-workOrdersRouter.post('/', asyncHandler(createWorkOrder));
+// Work orders carry cost/contractor data — never resident-visible. Scoping
+// beyond that (org staff full visibility vs. a property-scoped manager's
+// assigned properties) happens inside the service for list/get; single
+// writes are gated per-route below via the work order's own propertyId.
+workOrdersRouter.use(authenticate);
+
+workOrdersRouter.get('/', requireCapability('work_orders.view'), asyncHandler(listWorkOrders));
+workOrdersRouter.post(
+  '/',
+  requireCapability('work_orders.manage', async (req) => {
+    const maintenanceRequestId = req.body?.maintenanceRequestId as string | undefined;
+    if (!maintenanceRequestId || !req.auth) return undefined;
+    const request = await prisma.maintenanceRequest.findFirst({
+      where: { id: maintenanceRequestId, organisationId: req.auth.organisationId },
+      select: { propertyId: true },
+    });
+    return request?.propertyId;
+  }),
+  asyncHandler(createWorkOrder),
+);
 workOrdersRouter.get(
   '/by-request/:maintenanceRequestId',
+  requireCapability('work_orders.view', fromMaintenanceRequestParam('maintenanceRequestId')),
   asyncHandler(getWorkOrderByMaintenanceRequest),
 );
-workOrdersRouter.get('/:id', asyncHandler(getWorkOrder));
-workOrdersRouter.patch('/:id/status', asyncHandler(updateWorkOrderStatus));
-workOrdersRouter.patch('/:id/contractor', asyncHandler(assignWorkOrderContractor));
-workOrdersRouter.patch('/:id/cost', asyncHandler(updateWorkOrderCost));
+workOrdersRouter.get(
+  '/:id',
+  requireCapability('work_orders.view', fromWorkOrderParam('id')),
+  asyncHandler(getWorkOrder),
+);
+workOrdersRouter.patch(
+  '/:id/status',
+  requireCapability('work_orders.manage', fromWorkOrderParam('id')),
+  asyncHandler(updateWorkOrderStatus),
+);
+workOrdersRouter.patch(
+  '/:id/contractor',
+  requireCapability('work_orders.manage', fromWorkOrderParam('id')),
+  asyncHandler(assignWorkOrderContractor),
+);
+workOrdersRouter.patch(
+  '/:id/cost',
+  requireCapability('work_orders.manage', fromWorkOrderParam('id')),
+  asyncHandler(updateWorkOrderCost),
+);

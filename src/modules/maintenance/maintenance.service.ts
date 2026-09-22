@@ -5,6 +5,7 @@ import type { PaginatedResult } from '../../lib/pagination.js';
 import type { AuthContext } from '../../middlewares/auth.middleware.js';
 import { notifyOrgStaff, notifyUser } from '../notifications/notifications.js';
 import { residentWorkOrderStatusLabel } from '../work-orders/work-orders.service.js';
+import { AuthorizationService } from '../authorization/authorization.service.js';
 import type {
   CreateMaintenanceRequestInput,
   MaintenanceRequestQuery,
@@ -41,7 +42,11 @@ function formatStatusLabel(status: string): string {
 }
 
 export class MaintenanceService {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly authz: AuthorizationService;
+
+  constructor(private readonly prisma: PrismaClient) {
+    this.authz = new AuthorizationService(prisma);
+  }
 
   private async assertPropertyInOrg(organisationId: string, propertyId: string) {
     const property = await this.prisma.property.findFirst({
@@ -165,13 +170,39 @@ export class MaintenanceService {
   > {
     const where: Prisma.MaintenanceRequestWhereInput = { organisationId };
 
-    // A resident may only ever see their own reports, regardless of what
-    // filters they pass — this is not optional/overridable from the query.
-    if (!auth.orgRole) {
+    // Three tiers, resolved once here and nowhere else:
+    // 1. Org staff (OWNER/ADMIN, or MEMBER which already had this) — every
+    //    request in the organisation, unchanged from before this milestone.
+    // 2. A property-scoped operational user (e.g. PROPERTY_MANAGER) with
+    //    maintenance.view on at least one property — every request on
+    //    their assigned properties, never the whole organisation.
+    // 3. Everyone else (a plain resident/tenant, or an operational role an
+    //    organisation has stripped maintenance.view from) — only the
+    //    requests they personally reported. Never optional/overridable by
+    //    query params — this is not a filter, it's the ceiling.
+    const accessibleProperties = await this.authz.getAccessiblePropertyIds(
+      auth,
+      'maintenance.view',
+    );
+    if (accessibleProperties === 'ALL') {
+      if (query.propertyId) where.propertyId = query.propertyId;
+    } else if (accessibleProperties.length > 0) {
+      // query.propertyId, if given, must narrow within the accessible set —
+      // never replace it wholesale (that would let a caller-supplied
+      // propertyId escape their portfolio).
+      if (query.propertyId) {
+        if (!accessibleProperties.includes(query.propertyId)) {
+          throw new ForbiddenError('You do not have access to this property');
+        }
+        where.propertyId = query.propertyId;
+      } else {
+        where.propertyId = { in: accessibleProperties };
+      }
+    } else {
       where.reportedByUserId = auth.userId;
+      if (query.propertyId) where.propertyId = query.propertyId;
     }
 
-    if (query.propertyId) where.propertyId = query.propertyId;
     if (query.spaceId) where.spaceId = query.spaceId;
     if (query.status) where.status = { in: query.status };
     if (query.priority) where.priority = query.priority;
@@ -206,15 +237,22 @@ export class MaintenanceService {
       throw new NotFoundError('Maintenance request not found');
     }
 
-    if (!auth.orgRole && request.reportedByUserId !== auth.userId) {
-      // A resident probing another resident's request id — 404, not 403,
-      // so existence isn't leaked.
+    const isOwnReport = request.reportedByUserId === auth.userId;
+    const hasOperationalAccess =
+      !auth.orgRole && (await this.authz.can(auth, 'maintenance.view', request.propertyId));
+    const isOrgStaff = auth.orgRole === 'OWNER' || auth.orgRole === 'ADMIN' || auth.orgRole === 'MEMBER';
+
+    if (!isOrgStaff && !isOwnReport && !hasOperationalAccess) {
+      // Probing another resident's (or another property's) request id —
+      // 404, not 403, so existence isn't leaked.
       throw new NotFoundError('Maintenance request not found');
     }
 
-    // A resident gets only a plain-language progress label — never the
-    // WorkOrder object itself (no cost, contractor, or workflow fields).
-    if (!auth.orgRole) {
+    // A resident (own report, no operational capability on this property)
+    // gets only a plain-language progress label — never the WorkOrder
+    // object itself (no cost, contractor, or workflow fields). Org staff
+    // and property-scoped operational users both get the full record.
+    if (!isOrgStaff && !hasOperationalAccess) {
       const workOrder = await this.prisma.workOrder.findFirst({
         where: { organisationId, maintenanceRequestId: request.id, status: { not: 'CANCELLED' } },
         select: { status: true },

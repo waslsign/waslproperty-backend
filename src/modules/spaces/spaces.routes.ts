@@ -1,5 +1,7 @@
 import { Router } from 'express';
-import { authenticate, requireOrgRole } from '../../middlewares/auth.middleware.js';
+import { authenticate } from '../../middlewares/auth.middleware.js';
+import { requireCapability } from '../../middlewares/authorize.middleware.js';
+import { fromSpaceParam } from '../../middlewares/resolvePropertyId.js';
 import { asyncHandler } from '../../middlewares/asyncHandler.js';
 import { listActivityForSpace } from '../activity/activity.controller.js';
 import { listPeopleForSpace } from '../people/people.controller.js';
@@ -9,7 +11,23 @@ export const spacesRouter = Router();
 
 spacesRouter.use(authenticate);
 
-spacesRouter.get('/:id', asyncHandler(getSpace));
-spacesRouter.patch('/:id', requireOrgRole(['OWNER', 'ADMIN']), asyncHandler(updateSpace));
-spacesRouter.get('/:id/memberships', asyncHandler(listPeopleForSpace));
-spacesRouter.get('/:id/activity', asyncHandler(listActivityForSpace));
+spacesRouter.get(
+  '/:id',
+  requireCapability('spaces.view', fromSpaceParam('id')),
+  asyncHandler(getSpace),
+);
+spacesRouter.patch(
+  '/:id',
+  requireCapability('spaces.manage', fromSpaceParam('id')),
+  asyncHandler(updateSpace),
+);
+spacesRouter.get(
+  '/:id/memberships',
+  requireCapability('people.view', fromSpaceParam('id')),
+  asyncHandler(listPeopleForSpace),
+);
+spacesRouter.get(
+  '/:id/activity',
+  requireCapability('activity.view', fromSpaceParam('id')),
+  asyncHandler(listActivityForSpace),
+);

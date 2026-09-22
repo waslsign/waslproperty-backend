@@ -208,11 +208,14 @@ describe('people / property memberships', () => {
     expect(contact?.userId).toBe(secondOrgUser.userId);
   });
 
-  it('adds a person successfully even when their email is already a portal identity in another organisation', async () => {
-    // PropertyContact.userId is globally unique — a User can be the portal
-    // identity for at most one contact system-wide. Reproduces a real bug:
-    // adding a person by an email already linked elsewhere used to hit that
-    // unique constraint directly and 500 instead of degrading cleanly.
+  it('auto-links a person even when their email is already a portal identity in another organisation', async () => {
+    // PropertyContact.userId is unique per organisation, not globally — a
+    // User may be the property-scoped portal identity for at most one
+    // contact *within a given organisation*, but for one contact in each
+    // of several different organisations at once (e.g. staff/manager at
+    // Org A who is also a resident at Org B). Adding this person to a
+    // second organisation must auto-link there too, independently of the
+    // first link, never degrade to an orphaned contact.
     const orgA = await registerTestUser(app);
     const { propertyId: propertyAId, spaceId: spaceAId } = await setupPropertyAndSpace(
       orgA.accessToken,
@@ -241,9 +244,9 @@ describe('people / property memberships', () => {
       .send({ email: sharedEmail, firstName: 'Already', lastName: 'Linked', role: 'OWNER' });
 
     expect(secondRes.status).toBe(201);
-    // Added successfully, but not auto-linked to the portal identity that's
-    // already claimed by Org A's contact.
-    expect(secondRes.body.contact.userId).toBeNull();
+    // Auto-linked independently in Org B — a real, second portal identity
+    // for the same underlying User, not a shared/merged one.
+    expect(secondRes.body.contact.userId).toBe(linkedUserId);
 
     const orgAContact = await testPrisma.propertyContact.findFirst({
       where: { organisationId: orgA.organisationId, email: sharedEmail },

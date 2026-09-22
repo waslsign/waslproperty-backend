@@ -5,7 +5,7 @@ import type { MaintenanceRequestStatus, PrismaClient } from '@prisma/client';
  * item types only, each with its own age-based severity thresholds. Shared
  * between the org-wide dashboard (src/modules/dashboard/dashboard.service.ts)
  * and a single property's detail page (src/modules/properties/properties.service.ts),
- * via an optional `propertyId` filter on every finder — never duplicated
+ * via an optional `propertyIds` filter on every finder — never duplicated
  * between the two callers.
  */
 
@@ -65,16 +65,16 @@ export async function getAttentionItems(
   prisma: PrismaClient,
   organisationId: string,
   now: Date,
-  propertyId?: string,
+  propertyIds?: string[],
 ): Promise<AttentionResult> {
   const results = await Promise.all([
-    findUrgentRequestsOpen(prisma, organisationId, now, propertyId),
-    findWorkOrderOverdueSchedule(prisma, organisationId, now, propertyId),
-    findQuoteSignatureStalled(prisma, organisationId, now, propertyId),
-    findQuotePendingApprovalTooLong(prisma, organisationId, now, propertyId),
-    findWorkOrderStuckInDraft(prisma, organisationId, now, propertyId),
-    findStaleOpenRequests(prisma, organisationId, now, propertyId),
-    findQuoteRejectedNeedsFollowup(prisma, organisationId, now, propertyId),
+    findUrgentRequestsOpen(prisma, organisationId, now, propertyIds),
+    findWorkOrderOverdueSchedule(prisma, organisationId, now, propertyIds),
+    findQuoteSignatureStalled(prisma, organisationId, now, propertyIds),
+    findQuotePendingApprovalTooLong(prisma, organisationId, now, propertyIds),
+    findWorkOrderStuckInDraft(prisma, organisationId, now, propertyIds),
+    findStaleOpenRequests(prisma, organisationId, now, propertyIds),
+    findQuoteRejectedNeedsFollowup(prisma, organisationId, now, propertyIds),
   ]);
 
   const severityRank: Record<AttentionSeverity, number> = { CRITICAL: 0, WARNING: 1, INFO: 2 };
@@ -107,14 +107,14 @@ async function findUrgentRequestsOpen(
   prisma: PrismaClient,
   organisationId: string,
   now: Date,
-  propertyId?: string,
+  propertyIds?: string[],
 ): Promise<AttentionItem[]> {
   const rows = await prisma.maintenanceRequest.findMany({
     where: {
       organisationId,
       priority: 'URGENT',
       status: { in: OPEN_REQUEST_STATUSES },
-      ...(propertyId ? { propertyId } : {}),
+      ...(propertyIds ? { propertyId: { in: propertyIds } } : {}),
     },
     select: { id: true, title: true, propertyId: true, spaceId: true, reportedAt: true },
   });
@@ -145,14 +145,14 @@ async function findStaleOpenRequests(
   prisma: PrismaClient,
   organisationId: string,
   now: Date,
-  propertyId?: string,
+  propertyIds?: string[],
 ): Promise<AttentionItem[]> {
   const rows = await prisma.maintenanceRequest.findMany({
     where: {
       organisationId,
       priority: { not: 'URGENT' },
       status: { in: OPEN_REQUEST_STATUSES },
-      ...(propertyId ? { propertyId } : {}),
+      ...(propertyIds ? { propertyId: { in: propertyIds } } : {}),
     },
     select: { id: true, title: true, propertyId: true, spaceId: true, reportedAt: true },
   });
@@ -183,10 +183,14 @@ async function findWorkOrderStuckInDraft(
   prisma: PrismaClient,
   organisationId: string,
   now: Date,
-  propertyId?: string,
+  propertyIds?: string[],
 ): Promise<AttentionItem[]> {
   const rows = await prisma.workOrder.findMany({
-    where: { organisationId, status: 'DRAFT', ...(propertyId ? { propertyId } : {}) },
+    where: {
+      organisationId,
+      status: 'DRAFT',
+      ...(propertyIds ? { propertyId: { in: propertyIds } } : {}),
+    },
     select: { id: true, title: true, propertyId: true, spaceId: true, createdAt: true },
   });
 
@@ -216,14 +220,14 @@ async function findWorkOrderOverdueSchedule(
   prisma: PrismaClient,
   organisationId: string,
   now: Date,
-  propertyId?: string,
+  propertyIds?: string[],
 ): Promise<AttentionItem[]> {
   const rows = await prisma.workOrder.findMany({
     where: {
       organisationId,
       status: 'SCHEDULED',
       scheduledAt: { lt: now },
-      ...(propertyId ? { propertyId } : {}),
+      ...(propertyIds ? { propertyId: { in: propertyIds } } : {}),
     },
     select: { id: true, title: true, propertyId: true, spaceId: true, scheduledAt: true },
   });
@@ -251,14 +255,14 @@ async function findQuotePendingApprovalTooLong(
   prisma: PrismaClient,
   organisationId: string,
   now: Date,
-  propertyId?: string,
+  propertyIds?: string[],
 ): Promise<AttentionItem[]> {
   const rows = await prisma.contractorQuote.findMany({
     where: {
       organisationId,
       approvalStatus: 'PENDING',
       workflowMode: { in: ['APPROVAL_ONLY', 'APPROVAL_THEN_SIGNATURE'] },
-      ...(propertyId ? { workOrder: { propertyId } } : {}),
+      ...(propertyIds ? { workOrder: { propertyId: { in: propertyIds } } } : {}),
     },
     select: {
       id: true,
@@ -295,7 +299,7 @@ async function findQuoteSignatureStalled(
   prisma: PrismaClient,
   organisationId: string,
   now: Date,
-  propertyId?: string,
+  propertyIds?: string[],
 ): Promise<AttentionItem[]> {
   const rows = await prisma.contractorQuote.findMany({
     where: {
@@ -305,7 +309,7 @@ async function findQuoteSignatureStalled(
         { workflowMode: 'SIGNATURE_ONLY' },
         { workflowMode: 'APPROVAL_THEN_SIGNATURE', approvalStatus: 'APPROVED' },
       ],
-      ...(propertyId ? { workOrder: { propertyId } } : {}),
+      ...(propertyIds ? { workOrder: { propertyId: { in: propertyIds } } } : {}),
     },
     select: {
       id: true,
@@ -352,7 +356,7 @@ async function findQuoteRejectedNeedsFollowup(
   prisma: PrismaClient,
   organisationId: string,
   now: Date,
-  propertyId?: string,
+  propertyIds?: string[],
 ): Promise<AttentionItem[]> {
   const cutoff = new Date(now.getTime() - 14 * DAY_MS);
   const rejected = await prisma.contractorQuote.findMany({
@@ -360,7 +364,7 @@ async function findQuoteRejectedNeedsFollowup(
       organisationId,
       status: 'REJECTED',
       rejectedAt: { gte: cutoff },
-      ...(propertyId ? { workOrder: { propertyId } } : {}),
+      ...(propertyIds ? { workOrder: { propertyId: { in: propertyIds } } } : {}),
     },
     select: {
       id: true,

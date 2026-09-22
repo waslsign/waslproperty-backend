@@ -1,5 +1,7 @@
 import { Router } from 'express';
-import { authenticate, requireOrgRole } from '../../middlewares/auth.middleware.js';
+import { authenticate } from '../../middlewares/auth.middleware.js';
+import { requireCapability } from '../../middlewares/authorize.middleware.js';
+import { fromContactParam, fromMembershipParam } from '../../middlewares/resolvePropertyId.js';
 import { asyncHandler } from '../../middlewares/asyncHandler.js';
 import {
   endMembership,
@@ -17,36 +19,42 @@ export const peopleRouter = Router();
 peopleRouter.use(authenticate);
 
 peopleRouter.get('/me', asyncHandler(listMyMemberships));
+// Portfolio scoping happens inside the service (PeopleService.listDirectory)
+// via AuthorizationService.getAccessiblePropertyIds.
 peopleRouter.get('/', asyncHandler(listPeopleDirectory));
 
+// Search-to-link has no single property to scope against (it's how a
+// manager finds an existing person before attaching them to one of their
+// properties) — gated on holding people.manage anywhere, same bar as
+// before (was OWNER/ADMIN only).
 peopleRouter.get(
   '/contacts/search',
-  requireOrgRole(['OWNER', 'ADMIN']),
+  requireCapability('people.manage'),
   asyncHandler(searchContacts),
 );
 peopleRouter.patch(
   '/memberships/:membershipId',
-  requireOrgRole(['OWNER', 'ADMIN']),
+  requireCapability('people.manage', fromMembershipParam('membershipId')),
   asyncHandler(updateMembership),
 );
 peopleRouter.post(
   '/memberships/:membershipId/end',
-  requireOrgRole(['OWNER', 'ADMIN']),
+  requireCapability('people.manage', fromMembershipParam('membershipId')),
   asyncHandler(endMembership),
 );
 
 peopleRouter.post(
   '/:contactId/invite',
-  requireOrgRole(['OWNER', 'ADMIN']),
+  requireCapability('people.manage', fromContactParam('contactId')),
   asyncHandler(inviteContact),
 );
 peopleRouter.post(
   '/:contactId/invite/resend',
-  requireOrgRole(['OWNER', 'ADMIN']),
+  requireCapability('people.manage', fromContactParam('contactId')),
   asyncHandler(resendContactInvite),
 );
 peopleRouter.post(
   '/:contactId/invite/revoke',
-  requireOrgRole(['OWNER', 'ADMIN']),
+  requireCapability('people.manage', fromContactParam('contactId')),
   asyncHandler(revokeContactInvite),
 );

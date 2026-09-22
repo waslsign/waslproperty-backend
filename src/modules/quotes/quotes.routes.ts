@@ -1,5 +1,8 @@
 import { Router } from 'express';
-import { authenticate, requireOrgRole } from '../../middlewares/auth.middleware.js';
+import { authenticate } from '../../middlewares/auth.middleware.js';
+import { requireCapability } from '../../middlewares/authorize.middleware.js';
+import { fromQuoteParam } from '../../middlewares/resolvePropertyId.js';
+import { getPrismaClient } from '../../lib/prisma.js';
 import { asyncHandler } from '../../middlewares/asyncHandler.js';
 import {
   approveQuote,
@@ -12,12 +15,46 @@ import {
 
 export const quotesRouter = Router();
 
-// Quotes carry cost/contractor/workflow data — staff-only, no resident access.
-quotesRouter.use(authenticate, requireOrgRole(['OWNER', 'ADMIN']));
+const prisma = getPrismaClient();
 
-quotesRouter.post('/', asyncHandler(createQuote));
-quotesRouter.get('/:id', asyncHandler(getQuote));
-quotesRouter.patch('/:id/submit', asyncHandler(submitQuote));
-quotesRouter.patch('/:id/workflow-mode', asyncHandler(setQuoteWorkflowMode));
-quotesRouter.post('/:id/approve', asyncHandler(approveQuote));
-quotesRouter.post('/:id/reject', asyncHandler(rejectQuote));
+// Quotes carry cost/contractor/workflow data — never resident-visible.
+quotesRouter.use(authenticate);
+
+quotesRouter.post(
+  '/',
+  requireCapability('quotes.manage', async (req) => {
+    const workOrderId = req.body?.workOrderId as string | undefined;
+    if (!workOrderId || !req.auth) return undefined;
+    const workOrder = await prisma.workOrder.findFirst({
+      where: { id: workOrderId, organisationId: req.auth.organisationId },
+      select: { propertyId: true },
+    });
+    return workOrder?.propertyId;
+  }),
+  asyncHandler(createQuote),
+);
+quotesRouter.get(
+  '/:id',
+  requireCapability('quotes.view', fromQuoteParam('id')),
+  asyncHandler(getQuote),
+);
+quotesRouter.patch(
+  '/:id/submit',
+  requireCapability('quotes.manage', fromQuoteParam('id')),
+  asyncHandler(submitQuote),
+);
+quotesRouter.patch(
+  '/:id/workflow-mode',
+  requireCapability('quotes.manage', fromQuoteParam('id')),
+  asyncHandler(setQuoteWorkflowMode),
+);
+quotesRouter.post(
+  '/:id/approve',
+  requireCapability('quotes.approve', fromQuoteParam('id')),
+  asyncHandler(approveQuote),
+);
+quotesRouter.post(
+  '/:id/reject',
+  requireCapability('quotes.approve', fromQuoteParam('id')),
+  asyncHandler(rejectQuote),
+);

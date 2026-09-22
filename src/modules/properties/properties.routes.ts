@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import { authenticate, requireOrgRole } from '../../middlewares/auth.middleware.js';
+import { requireCapability } from '../../middlewares/authorize.middleware.js';
+import { fromParam } from '../../middlewares/resolvePropertyId.js';
 import { asyncHandler } from '../../middlewares/asyncHandler.js';
 import { listActivityForProperty } from '../activity/activity.controller.js';
 import {
@@ -20,35 +22,60 @@ export const propertiesRouter = Router();
 
 propertiesRouter.use(authenticate);
 
+// Portfolio scoping happens inside the service (PropertiesService.list) via
+// AuthorizationService.getAccessiblePropertyIds — a user with no accessible
+// properties simply gets an empty list, no separate route gate needed here.
 propertiesRouter.get('/', asyncHandler(listProperties));
+// Creating a brand-new property has no propertyId to scope against, and
+// isn't something a property-scoped manager does — stays organisation-admin
+// only, unchanged.
 propertiesRouter.post('/', requireOrgRole(['OWNER', 'ADMIN']), asyncHandler(createProperty));
+// No route-level capability gate: a resident/tenant may view their own
+// property read-only (pre-existing behaviour), separate from the
+// operational `property.view` capability — PropertiesService.getById
+// resolves both and 404s if neither applies (never leaking that a
+// different property exists, staff or resident alike).
 propertiesRouter.get('/:id', asyncHandler(getProperty));
-propertiesRouter.patch('/:id', requireOrgRole(['OWNER', 'ADMIN']), asyncHandler(updateProperty));
-// Attention/operational data — same staff-only sensitivity as the org-wide
-// dashboard (quote/work-order context residents must never see).
+propertiesRouter.patch(
+  '/:id',
+  requireCapability('property.manage', fromParam('id')),
+  asyncHandler(updateProperty),
+);
 propertiesRouter.get(
   '/:id/insights',
-  requireOrgRole(['OWNER', 'ADMIN']),
+  requireCapability('analytics.view', fromParam('id')),
   asyncHandler(getPropertyInsights),
 );
 
-propertiesRouter.get('/:propertyId/spaces', asyncHandler(listSpacesForProperty));
+propertiesRouter.get(
+  '/:propertyId/spaces',
+  requireCapability('spaces.view', fromParam('propertyId')),
+  asyncHandler(listSpacesForProperty),
+);
 propertiesRouter.post(
   '/:propertyId/spaces',
-  requireOrgRole(['OWNER', 'ADMIN']),
+  requireCapability('spaces.manage', fromParam('propertyId')),
   asyncHandler(createSpaceForProperty),
 );
 
-propertiesRouter.get('/:propertyId/memberships', asyncHandler(listPeopleForProperty));
+propertiesRouter.get(
+  '/:propertyId/memberships',
+  requireCapability('people.view', fromParam('propertyId')),
+  asyncHandler(listPeopleForProperty),
+);
 propertiesRouter.post(
   '/:propertyId/memberships',
-  requireOrgRole(['OWNER', 'ADMIN']),
+  requireCapability('people.manage', fromParam('propertyId')),
   asyncHandler(addPersonToProperty),
 );
 propertiesRouter.post(
   '/:propertyId/memberships/assign',
-  requireOrgRole(['OWNER', 'ADMIN']),
+  requireCapability('people.manage', fromParam('propertyId')),
   asyncHandler(assignExistingPerson),
 );
 
-propertiesRouter.get('/:propertyId/activity', asyncHandler(listActivityForProperty));
+propertiesRouter.get(
+  '/:propertyId/activity',
+  requireCapability('activity.view', fromParam('propertyId')),
+  asyncHandler(listActivityForProperty),
+);

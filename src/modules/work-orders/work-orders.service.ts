@@ -1,8 +1,10 @@
 import type { Prisma, PrismaClient, WorkOrderStatus } from '@prisma/client';
 import { recordActivity } from '../activity/activity.js';
-import { ConflictError, NotFoundError } from '../../errors/AppError.js';
+import { ConflictError, ForbiddenError, NotFoundError } from '../../errors/AppError.js';
 import type { PaginatedResult } from '../../lib/pagination.js';
 import { ContractorsService } from '../contractors/contractors.service.js';
+import { AuthorizationService } from '../authorization/authorization.service.js';
+import type { AuthContext } from '../../middlewares/auth.middleware.js';
 import { notifyUser } from '../notifications/notifications.js';
 import { canReleaseWorkOrder, deriveWorkflowResult } from '../quotes/workflow-result.js';
 import type {
@@ -60,9 +62,11 @@ function formatStatusLabel(status: string): string {
 
 export class WorkOrdersService {
   private readonly contractorsService: ContractorsService;
+  private readonly authz: AuthorizationService;
 
   constructor(private readonly prisma: PrismaClient) {
     this.contractorsService = new ContractorsService(prisma);
+    this.authz = new AuthorizationService(prisma);
   }
 
   private async getOwned(organisationId: string, workOrderId: string) {
@@ -154,9 +158,21 @@ export class WorkOrdersService {
 
   async list(
     organisationId: string,
+    auth: AuthContext,
     query: WorkOrderQuery,
   ): Promise<PaginatedResult<Prisma.WorkOrderGetPayload<{ include: typeof workOrderInclude }>>> {
-    const where: Prisma.WorkOrderWhereInput = { organisationId };
+    const accessible = await this.authz.getAccessiblePropertyIds(auth, 'work_orders.view');
+    if (accessible !== 'ALL' && accessible.length === 0) {
+      return { items: [], page: query.page, pageSize: query.pageSize, total: 0 };
+    }
+    if (query.propertyId && accessible !== 'ALL' && !accessible.includes(query.propertyId)) {
+      throw new ForbiddenError('You do not have access to this property');
+    }
+
+    const where: Prisma.WorkOrderWhereInput = {
+      organisationId,
+      ...(accessible !== 'ALL' && !query.propertyId ? { propertyId: { in: accessible } } : {}),
+    };
     if (query.propertyId) where.propertyId = query.propertyId;
     if (query.status) where.status = { in: query.status };
     if (query.priority) where.priority = query.priority;

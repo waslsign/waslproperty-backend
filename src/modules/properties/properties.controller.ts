@@ -15,7 +15,7 @@ function requireAuth(req: Request) {
 export async function listProperties(req: Request, res: Response) {
   const auth = requireAuth(req);
   const query = paginationQuerySchema.parse(req.query);
-  const result = await propertiesService.list(auth.organisationId, query);
+  const result = await propertiesService.list(auth.organisationId, auth, query);
   res.json(result);
 }
 
@@ -28,7 +28,7 @@ export async function createProperty(req: Request, res: Response) {
 
 export async function getProperty(req: Request, res: Response) {
   const auth = requireAuth(req);
-  const property = await propertiesService.getById(auth.organisationId, req.params.id as string);
+  const property = await propertiesService.getById(auth.organisationId, auth, req.params.id as string);
   res.json(property);
 }
 

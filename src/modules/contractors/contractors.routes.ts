@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { authenticate, requireOrgRole } from '../../middlewares/auth.middleware.js';
+import { authenticate } from '../../middlewares/auth.middleware.js';
+import { requireCapability } from '../../middlewares/authorize.middleware.js';
 import { asyncHandler } from '../../middlewares/asyncHandler.js';
 import {
   createContractor,
@@ -10,10 +11,21 @@ import {
 
 export const contractorsRouter = Router();
 
-// Contractors are operational/vendor data — staff-only, no resident access at all.
-contractorsRouter.use(authenticate, requireOrgRole(['OWNER', 'ADMIN']));
+// Contractors are operational/vendor data — never resident-visible. The
+// Contractor model itself has no propertyId (it's an organisation-wide
+// vendor directory, not owned by any one property — a contractor can work
+// across many properties), so — unlike property/space/maintenance/work
+// order/quote — access here is a coarse "does this user hold
+// contractors.view/manage on at least one assigned property" check, not a
+// per-contractor property scope. A deliberate, documented simplification;
+// see the Roles & Permissions milestone report.
+contractorsRouter.use(authenticate);
 
-contractorsRouter.get('/', asyncHandler(listContractors));
-contractorsRouter.post('/', asyncHandler(createContractor));
-contractorsRouter.get('/:id', asyncHandler(getContractor));
-contractorsRouter.patch('/:id', asyncHandler(updateContractor));
+contractorsRouter.get('/', requireCapability('contractors.view'), asyncHandler(listContractors));
+contractorsRouter.post('/', requireCapability('contractors.manage'), asyncHandler(createContractor));
+contractorsRouter.get('/:id', requireCapability('contractors.view'), asyncHandler(getContractor));
+contractorsRouter.patch(
+  '/:id',
+  requireCapability('contractors.manage'),
+  asyncHandler(updateContractor),
+);

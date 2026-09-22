@@ -1,8 +1,15 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { recordActivity } from '../activity/activity.js';
 import { ConflictError, NotFoundError } from '../../errors/AppError.js';
+import type { AuthContext } from '../../middlewares/auth.middleware.js';
 import type { PaginatedResult } from '../../lib/pagination.js';
-import { AudienceResolver, type AudienceCriteria } from './communications.audience.js';
+import { AuthorizationService } from '../authorization/authorization.service.js';
+import type { Capability } from '../authorization/capabilities.js';
+import {
+  assertAudienceWithinScope,
+  AudienceResolver,
+  type AudienceCriteria,
+} from './communications.audience.js';
 import type {
   AudienceCriteriaInput,
   CommunicationsQuery,
@@ -23,9 +30,11 @@ const EDITABLE_STATUSES = new Set(['DRAFT', 'SCHEDULED']);
 
 export class CommunicationsService {
   private readonly audience: AudienceResolver;
+  private readonly authz: AuthorizationService;
 
   constructor(private readonly prisma: PrismaClient) {
     this.audience = new AudienceResolver(prisma);
+    this.authz = new AuthorizationService(prisma);
   }
 
   private toCriteria(input: AudienceCriteriaInput): AudienceCriteria {
@@ -43,9 +52,27 @@ export class CommunicationsService {
     return communication;
   }
 
-  async create(organisationId: string, actorUserId: string, input: CreateCommunicationInput) {
+  /** A property-scoped manager must never be able to reach beyond their own
+   * assigned properties by way of the audience criteria — regardless of
+   * what capability check let them into this route in the first place.
+   * Org staff (OWNER/ADMIN/MEMBER) are unrestricted, unchanged. */
+  private async assertAudienceWithinScope(
+    auth: AuthContext,
+    capability: Capability,
+    criteria: AudienceCriteria,
+  ) {
+    return assertAudienceWithinScope(this.prisma, this.authz, auth, capability, criteria);
+  }
+
+  async create(
+    organisationId: string,
+    auth: AuthContext,
+    actorUserId: string,
+    input: CreateCommunicationInput,
+  ) {
     const criteria = this.toCriteria(input.audienceCriteria);
     await this.audience.validate(organisationId, criteria);
+    await this.assertAudienceWithinScope(auth, 'communications.manage', criteria);
 
     return this.prisma.$transaction(async (tx) => {
       const communication = await tx.communication.create({
@@ -77,6 +104,7 @@ export class CommunicationsService {
 
   async update(
     organisationId: string,
+    auth: AuthContext,
     id: string,
     input: UpdateCommunicationInput,
   ): Promise<Prisma.CommunicationGetPayload<{ include: typeof communicationInclude }>> {
@@ -84,11 +112,21 @@ export class CommunicationsService {
     if (!EDITABLE_STATUSES.has(existing.status)) {
       throw new ConflictError('A sent or cancelled announcement cannot be edited');
     }
+    // Authorized for the audience as it stands today, even if this
+    // particular edit doesn't touch audienceCriteria — a property-scoped
+    // manager must never be able to tweak the title/body of an
+    // organisation-wide (or another property's) announcement.
+    await this.assertAudienceWithinScope(
+      auth,
+      'communications.manage',
+      existing.audienceCriteria as unknown as AudienceCriteria,
+    );
 
     let criteria: AudienceCriteria | undefined;
     if (input.audienceCriteria) {
       criteria = this.toCriteria(input.audienceCriteria);
       await this.audience.validate(organisationId, criteria);
+      await this.assertAudienceWithinScope(auth, 'communications.manage', criteria);
     }
 
     return this.prisma.communication.update({
@@ -106,10 +144,30 @@ export class CommunicationsService {
 
   async list(
     organisationId: string,
+    auth: AuthContext,
     query: CommunicationsQuery,
   ): Promise<PaginatedResult<Prisma.CommunicationGetPayload<{ include: typeof communicationInclude }>>> {
+    const accessible = await this.authz.getAccessiblePropertyIds(auth, 'communications.view');
+    if (accessible !== 'ALL' && accessible.length === 0) {
+      return { items: [], page: query.page, pageSize: query.pageSize, total: 0 };
+    }
+
     const where: Prisma.CommunicationWhereInput = {
       organisationId,
+      // A property-scoped user sees: their own drafts (recipients aren't
+      // materialized until send, so a not-yet-sent draft has none to match
+      // on yet — this still surfaces it), plus any announcement — theirs
+      // or another manager's — that actually reached one of their assigned
+      // properties. Never an organisation-wide broadcast or another
+      // property's announcement they have no part in.
+      ...(accessible !== 'ALL'
+        ? {
+            OR: [
+              { recipients: { some: { propertyId: { in: accessible } } } },
+              { createdByUserId: auth.userId },
+            ],
+          }
+        : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(query.search ? { title: { contains: query.search, mode: 'insensitive' } } : {}),
     };
@@ -128,18 +186,38 @@ export class CommunicationsService {
     return { items, page: query.page, pageSize: query.pageSize, total };
   }
 
-  async getById(organisationId: string, id: string) {
-    return this.getOwned(organisationId, id);
+  async getById(organisationId: string, auth: AuthContext, id: string) {
+    const existing = await this.getOwned(organisationId, id);
+    if (existing.createdByUserId !== auth.userId) {
+      await this.assertAudienceWithinScope(
+        auth,
+        'communications.view',
+        existing.audienceCriteria as unknown as AudienceCriteria,
+      );
+    }
+    return existing;
   }
 
-  async previewAudience(organisationId: string, criteriaInput: AudienceCriteriaInput) {
-    return this.audience.preview(organisationId, this.toCriteria(criteriaInput));
+  async previewAudience(
+    organisationId: string,
+    auth: AuthContext,
+    criteriaInput: AudienceCriteriaInput,
+  ) {
+    const criteria = this.toCriteria(criteriaInput);
+    await this.assertAudienceWithinScope(auth, 'communications.manage', criteria);
+    return this.audience.preview(organisationId, criteria);
   }
 
   /** Always schedules — even a "send now" just sets scheduledAt to now, so
    * every send is picked up asynchronously by the delivery worker on its
    * next tick. Nothing ever fans out to recipients inside this request. */
-  async send(organisationId: string, actorUserId: string, id: string, input: SendCommunicationInput) {
+  async send(
+    organisationId: string,
+    auth: AuthContext,
+    actorUserId: string,
+    id: string,
+    input: SendCommunicationInput,
+  ) {
     const existing = await this.getOwned(organisationId, id);
     if (existing.status !== 'DRAFT' && existing.status !== 'SCHEDULED') {
       throw new ConflictError('This announcement has already been sent or cancelled');
@@ -147,6 +225,7 @@ export class CommunicationsService {
 
     const criteria = existing.audienceCriteria as unknown as AudienceCriteria;
     await this.audience.validate(organisationId, criteria);
+    await this.assertAudienceWithinScope(auth, 'communications.send', criteria);
 
     const scheduledAt = input.scheduledAt ?? new Date();
 
@@ -157,11 +236,16 @@ export class CommunicationsService {
     });
   }
 
-  async cancel(organisationId: string, actorUserId: string, id: string) {
+  async cancel(organisationId: string, auth: AuthContext, actorUserId: string, id: string) {
     const existing = await this.getOwned(organisationId, id);
     if (existing.status !== 'SCHEDULED') {
       throw new ConflictError('Only a scheduled announcement can be cancelled');
     }
+    await this.assertAudienceWithinScope(
+      auth,
+      'communications.manage',
+      existing.audienceCriteria as unknown as AudienceCriteria,
+    );
 
     return this.prisma.$transaction(async (tx) => {
       const updated = await tx.communication.update({
@@ -183,8 +267,13 @@ export class CommunicationsService {
     });
   }
 
-  async duplicateAsDraft(organisationId: string, actorUserId: string, id: string) {
+  async duplicateAsDraft(organisationId: string, auth: AuthContext, actorUserId: string, id: string) {
     const existing = await this.getOwned(organisationId, id);
+    await this.assertAudienceWithinScope(
+      auth,
+      'communications.manage',
+      existing.audienceCriteria as unknown as AudienceCriteria,
+    );
     return this.prisma.communication.create({
       data: {
         organisationId,
@@ -202,8 +291,15 @@ export class CommunicationsService {
 
   /** Recipient + delivery snapshot for the detail view — real per-channel
    * counts, never an engagement/open-rate metric. */
-  async getDeliverySummary(organisationId: string, id: string) {
-    await this.getOwned(organisationId, id);
+  async getDeliverySummary(organisationId: string, auth: AuthContext, id: string) {
+    const existing = await this.getOwned(organisationId, id);
+    if (existing.createdByUserId !== auth.userId) {
+      await this.assertAudienceWithinScope(
+        auth,
+        'communications.view',
+        existing.audienceCriteria as unknown as AudienceCriteria,
+      );
+    }
     const deliveries = await this.prisma.communicationDelivery.groupBy({
       by: ['channel', 'status'],
       where: { communicationRecipient: { communicationId: id } },

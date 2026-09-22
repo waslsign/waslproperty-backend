@@ -14,6 +14,6 @@ function requireAuth(req: Request) {
 export async function getDashboard(req: Request, res: Response) {
   const auth = requireAuth(req);
   const query = dashboardQuerySchema.parse(req.query);
-  const result = await dashboardService.getDashboard(auth.organisationId, query);
+  const result = await dashboardService.getDashboard(auth.organisationId, auth, query);
   res.json(result);
 }

@@ -2,7 +2,9 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { ConflictError, NotFoundError } from '../../errors/AppError.js';
 import { recordActivity } from '../activity/activity.js';
 import { getAttentionItems, OPEN_REQUEST_STATUSES } from '../../lib/attention-engine.js';
+import type { AuthContext } from '../../middlewares/auth.middleware.js';
 import type { PaginatedResult, PaginationQuery } from '../../lib/pagination.js';
+import { AuthorizationService } from '../authorization/authorization.service.js';
 import { assertOrganisationFeature } from '../organisations/organisation-features.js';
 import type { CreatePropertyInput, UpdatePropertyInput } from './properties.schemas.js';
 
@@ -33,11 +35,25 @@ export interface PropertyInsights {
 }
 
 export class PropertiesService {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly authz: AuthorizationService;
 
-  async list(organisationId: string, query: PaginationQuery): PaginatedPropertiesResult {
+  constructor(private readonly prisma: PrismaClient) {
+    this.authz = new AuthorizationService(prisma);
+  }
+
+  async list(
+    organisationId: string,
+    auth: AuthContext,
+    query: PaginationQuery,
+  ): PaginatedPropertiesResult {
+    const accessible = await this.authz.getAccessiblePropertyIds(auth, 'property.view');
+    if (accessible !== 'ALL' && accessible.length === 0) {
+      return { items: [], page: query.page, pageSize: query.pageSize, total: 0 };
+    }
+
     const where: Prisma.PropertyWhereInput = {
       organisationId,
+      ...(accessible !== 'ALL' ? { id: { in: accessible } } : {}),
       ...(query.search
         ? {
             OR: [
@@ -93,12 +109,38 @@ export class PropertiesService {
     });
   }
 
-  async getById(organisationId: string, propertyId: string) {
+  /**
+   * Two independent ways in: an operational `property.view` capability
+   * (org staff, or a property-scoped manager assigned to this property),
+   * OR the caller simply being an ACTIVE member of this property in any
+   * capacity — read-only self-view, the same access a resident/tenant has
+   * always had for their own home (this endpoint previously had no
+   * per-resource check at all, which let a resident view *any* property in
+   * the org; this restores that resident-self-view while closing the
+   * cross-property leak — see the property-role-authorization milestone).
+   * Neither grants access to another property, staff or resident alike.
+   */
+  async getById(organisationId: string, auth: AuthContext, propertyId: string) {
     const property = await this.prisma.property.findFirst({
       where: { id: propertyId, organisationId },
       include: { _count: { select: { spaces: true } } },
     });
     if (!property) {
+      throw new NotFoundError('Property not found');
+    }
+
+    const hasOperationalAccess = await this.authz.can(auth, 'property.view', propertyId);
+    const isOwnProperty =
+      !hasOperationalAccess && auth.propertyContactId
+        ? await this.prisma.propertyMembership
+            .findFirst({
+              where: { propertyId, contactId: auth.propertyContactId, status: 'ACTIVE' },
+              select: { id: true },
+            })
+            .then(Boolean)
+        : false;
+
+    if (!hasOperationalAccess && !isOwnProperty) {
       throw new NotFoundError('Property not found');
     }
 
@@ -176,7 +218,7 @@ export class PropertiesService {
         where: { organisationId, propertyId, status: { in: ['RESOLVED', 'CLOSED'] } },
         select: { reportedAt: true, resolvedAt: true },
       }),
-      getAttentionItems(this.prisma, organisationId, now, propertyId),
+      getAttentionItems(this.prisma, organisationId, now, [propertyId]),
     ]);
 
     const resolved = resolvedRows.filter((r) => r.resolvedAt);
