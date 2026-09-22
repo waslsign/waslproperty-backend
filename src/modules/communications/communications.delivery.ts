@@ -1,9 +1,9 @@
-import type { Communication, PrismaClient } from '@prisma/client';
+import type { Communication, CommunicationChannel, PrismaClient } from '@prisma/client';
 import { recordActivity } from '../activity/activity.js';
 import { emailService } from '../../lib/email.js';
 import { getPrismaClient } from '../../lib/prisma.js';
 import { logger } from '../../lib/logger.js';
-import { notifyUser } from '../notifications/notifications.js';
+import { notifyUsers } from '../notifications/notifications.js';
 import { AudienceResolver, type AudienceCriteria, type ResolvedRecipient } from './communications.audience.js';
 import { renderAnnouncementEmail } from './communications.email.js';
 
@@ -72,63 +72,95 @@ export class CommunicationDeliveryService {
       const criteria = communication.audienceCriteria as unknown as AudienceCriteria;
       const recipients = await this.audience.resolve(communication.organisationId, criteria);
 
-      await this.prisma.$transaction(async (tx) => {
-        for (const recipient of recipients) {
-          const recipientRow = await tx.communicationRecipient.upsert({
-            where: {
-              communicationId_contactId: { communicationId, contactId: recipient.contactId },
-            },
-            update: {},
-            create: {
-              communicationId,
-              contactId: recipient.contactId,
-              userId: recipient.userId,
-              propertyId: recipient.propertyId,
-              spaceId: recipient.spaceId,
-            },
-          });
+      // Recipient/delivery/notification rows are written as fast, batched,
+      // idempotent operations — never inside one long-lived interactive
+      // transaction. The previous implementation ran every recipient's
+      // upserts (recipient row, one delivery row per channel, an in-app
+      // notification, a delivery status update) sequentially inside a
+      // single `$transaction`, so the transaction's total duration scaled
+      // with audience size. Against a pooled remote connection (Supabase's
+      // Supavisor Session Pooler in staging vs. loopback Postgres locally)
+      // that easily exceeds Prisma's 5s default interactive-transaction
+      // timeout well before a realistic audience finishes — the exact
+      // cause of the P2028 "transaction not found" failure this fixes.
+      // Each step below is O(1) round trips regardless of recipient count,
+      // and `createMany({ skipDuplicates: true })` is exactly as safe to
+      // re-run against a partially-processed communication as the original
+      // per-row upserts were — resuming after a crash just no-ops the rows
+      // that already exist.
+      if (recipients.length > 0) {
+        await this.prisma.communicationRecipient.createMany({
+          data: recipients.map((r) => ({
+            communicationId,
+            contactId: r.contactId,
+            userId: r.userId,
+            propertyId: r.propertyId,
+            spaceId: r.spaceId,
+          })),
+          skipDuplicates: true,
+        });
 
+        const recipientRows = await this.prisma.communicationRecipient.findMany({
+          where: { communicationId },
+          select: { id: true, contactId: true, userId: true },
+        });
+        const recipientByContactId = new Map(recipientRows.map((r) => [r.contactId, r]));
+
+        const deliveryRows: Array<{
+          communicationRecipientId: string;
+          channel: CommunicationChannel;
+          status: 'PENDING';
+        }> = [];
+        for (const recipient of recipients) {
+          const row = recipientByContactId.get(recipient.contactId);
+          if (!row) continue; // should be unreachable — never let a map miss crash delivery
           for (const channel of communication.channels) {
             if (channel === 'WHATSAPP') continue; // never attempted — not live yet
             // An IN_APP delivery is only meaningful for a recipient who
             // actually has portal access — with no userId there is no
             // inbox to deliver to, so no placeholder row is created for
             // that channel rather than leaving a permanently-PENDING one.
-            if (channel === 'IN_APP' && !recipient.userId) continue;
-            await tx.communicationDelivery.upsert({
-              where: {
-                communicationRecipientId_channel: {
-                  communicationRecipientId: recipientRow.id,
-                  channel,
-                },
-              },
-              update: {},
-              create: { communicationRecipientId: recipientRow.id, channel, status: 'PENDING' },
-            });
+            if (channel === 'IN_APP' && !row.userId) continue;
+            deliveryRows.push({ communicationRecipientId: row.id, channel, status: 'PENDING' });
           }
+        }
+        if (deliveryRows.length > 0) {
+          await this.prisma.communicationDelivery.createMany({
+            data: deliveryRows,
+            skipDuplicates: true,
+          });
+        }
 
-          if (communication.channels.includes('IN_APP') && recipient.userId) {
-            await notifyUser(tx, {
-              organisationId: communication.organisationId,
-              userId: recipient.userId,
-              title: communication.title,
-              body: communication.body,
-              entityType: 'Communication',
-              entityId: communication.id,
-              sourceCommunicationId: communication.id,
-            });
-            await tx.communicationDelivery.update({
-              where: {
-                communicationRecipientId_channel: {
-                  communicationRecipientId: recipientRow.id,
-                  channel: 'IN_APP',
-                },
-              },
+        if (communication.channels.includes('IN_APP')) {
+          const inAppRecipients = recipients.filter((r) => r.userId);
+          if (inAppRecipients.length > 0) {
+            await notifyUsers(
+              this.prisma,
+              inAppRecipients.map((r) => ({
+                organisationId: communication.organisationId,
+                userId: r.userId as string,
+                title: communication.title,
+                body: communication.body,
+                entityType: 'Communication',
+                entityId: communication.id,
+                sourceCommunicationId: communication.id,
+              })),
+            );
+
+            const inAppRecipientIds = inAppRecipients
+              .map((r) => recipientByContactId.get(r.contactId)?.id)
+              .filter((id): id is string => Boolean(id));
+            await this.prisma.communicationDelivery.updateMany({
+              where: { communicationRecipientId: { in: inAppRecipientIds }, channel: 'IN_APP' },
               data: { status: 'DELIVERED', sentAt: new Date(), deliveredAt: new Date() },
             });
           }
         }
+      }
 
+      // Short, fast, constant-time transaction — its duration never scales
+      // with audience size, so it can never hit the same timeout.
+      await this.prisma.$transaction(async (tx) => {
         await recordActivity(tx, {
           organisationId: communication.organisationId,
           actorUserId: communication.createdByUserId,
@@ -175,6 +207,22 @@ export class CommunicationDeliveryService {
         });
         if (!recipientRow) return;
 
+        const deliveryRow = await this.prisma.communicationDelivery.findUnique({
+          where: {
+            communicationRecipientId_channel: {
+              communicationRecipientId: recipientRow.id,
+              channel: 'EMAIL',
+            },
+          },
+        });
+        if (!deliveryRow) return;
+        // The actual duplicate-send guard: the external email call can't be
+        // made transactional with the DB write that records it, so if
+        // deliverOne is ever resumed/retried after this recipient's email
+        // already went out (status SENT or DELIVERED), never send it again.
+        // A PENDING or FAILED row is retried, matching existing behaviour.
+        if (deliveryRow.status === 'SENT' || deliveryRow.status === 'DELIVERED') return;
+
         try {
           const rendered = renderAnnouncementEmail({
             title: communication.title,
@@ -189,12 +237,7 @@ export class CommunicationDeliveryService {
             text: rendered.text,
           });
           await this.prisma.communicationDelivery.update({
-            where: {
-              communicationRecipientId_channel: {
-                communicationRecipientId: recipientRow.id,
-                channel: 'EMAIL',
-              },
-            },
+            where: { id: deliveryRow.id },
             data: { status: 'SENT', attemptedAt: new Date(), sentAt: new Date() },
           });
         } catch (err) {
@@ -203,12 +246,7 @@ export class CommunicationDeliveryService {
             'Failed to send announcement email',
           );
           await this.prisma.communicationDelivery.update({
-            where: {
-              communicationRecipientId_channel: {
-                communicationRecipientId: recipientRow.id,
-                channel: 'EMAIL',
-              },
-            },
+            where: { id: deliveryRow.id },
             data: {
               status: 'FAILED',
               attemptedAt: new Date(),

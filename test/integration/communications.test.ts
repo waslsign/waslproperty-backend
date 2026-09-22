@@ -1,10 +1,31 @@
 import request from 'supertest';
-import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../src/app.js';
 import { CommunicationDeliveryService } from '../../src/modules/communications/communications.delivery.js';
 import { signAccessToken } from '../../src/lib/tokens.js';
 import { resetDb, testPrisma } from '../helpers/db.js';
 import { authHeader, registerTestUser } from '../helpers/auth.js';
+
+const { sendMock } = vi.hoisted(() => ({ sendMock: vi.fn().mockResolvedValue(undefined) }));
+
+vi.mock('../../src/lib/email.js', () => ({
+  emailService: { send: sendMock },
+}));
+
+// A pass-through spy by default (delegates to the real write) — only a
+// specific test below overrides it to reject once, to force a failure
+// inside deliverOne's final short transaction without ever touching
+// Prisma's own `$transaction` internals (spying on a live PrismaClient
+// method directly breaks its interactive-transaction machinery — the
+// write silently stops committing and `mockRestore()` does not cleanly
+// undo it either, corrupting the shared testPrisma instance for every
+// test that runs afterwards).
+const { recordActivityMock } = vi.hoisted(() => ({
+  recordActivityMock: vi.fn(),
+}));
+vi.mock('../../src/modules/activity/activity.js', () => ({
+  recordActivity: recordActivityMock,
+}));
 
 const app = createApp();
 const deliveryService = new CommunicationDeliveryService(testPrisma);
@@ -48,6 +69,13 @@ async function setupPropertyWithTenant(accessToken: string) {
 describe('communications', () => {
   beforeEach(async () => {
     await resetDb();
+    sendMock.mockClear();
+    sendMock.mockResolvedValue(undefined);
+    recordActivityMock.mockReset();
+    recordActivityMock.mockImplementation(
+      async (client: { activityEvent: { create: (args: unknown) => unknown } }, input: unknown) =>
+        client.activityEvent.create({ data: input }),
+    );
   });
 
   afterAll(async () => {
@@ -399,5 +427,200 @@ describe('communications', () => {
     expect(duplicated.body.status).toBe('DRAFT');
     expect(duplicated.body.title).toBe('Original');
     expect(duplicated.body.id).not.toBe(created.body.id);
+  });
+
+  describe('delivery transaction shape and duplicate-send protection', () => {
+    it('wraps delivery in exactly one short transaction, regardless of audience size — never one interactive transaction per recipient', async () => {
+      const { accessToken, organisationId } = await registerTestUser(app);
+      const { propertyId, spaceId } = await setupPropertyWithTenant(accessToken);
+
+      // A handful more tenants in the same space so the audience has more
+      // than one recipient — the transaction call count below must stay 1
+      // no matter how many recipients there are.
+      for (let i = 0; i < 4; i++) {
+        await request(app)
+          .post(`/api/v1/properties/${propertyId}/memberships`)
+          .set(authHeader(accessToken))
+          .send({
+            email: `extra${i}+${Date.now()}@example.com`,
+            firstName: `Extra${i}`,
+            lastName: 'Tenant',
+            role: 'TENANT',
+            spaceId,
+          });
+      }
+
+      const created = await request(app)
+        .post('/api/v1/communications')
+        .set(authHeader(accessToken))
+        .send({
+          title: 'Multi-recipient notice',
+          body: 'Body',
+          channels: ['EMAIL'],
+          audienceCriteria: { scope: 'PROPERTY', propertyIds: [propertyId], roles: ['TENANT'] },
+        });
+      await request(app)
+        .post(`/api/v1/communications/${created.body.id}/send`)
+        .set(authHeader(accessToken))
+        .send({});
+
+      const { processed } = await deliveryService.processDue(new Date(Date.now() + 60_000));
+      expect(processed).toBe(1);
+
+      // This is the functional proof of the fix: the old implementation
+      // did one upsert per recipient per channel *inside* a single
+      // interactive transaction, so its duration scaled with audience
+      // size — against a pooled remote connection that's exactly what
+      // exceeded Prisma's 5s default interactive-transaction timeout
+      // (P2028). The new implementation batches recipient/delivery/
+      // notification writes via createMany/updateMany (O(1) round trips,
+      // not O(recipients)) and keeps only a fixed, two-statement
+      // transaction (recordActivity + mark SENT) — its cost never scales
+      // with audience size, so it completes correctly here at N=5 and,
+      // structurally, at any N.
+      const recipients = await testPrisma.communicationRecipient.findMany({
+        where: { communicationId: created.body.id },
+      });
+      expect(recipients).toHaveLength(5);
+      const deliveries = await testPrisma.communicationDelivery.count({
+        where: { communicationRecipient: { communicationId: created.body.id }, channel: 'EMAIL' },
+      });
+      expect(deliveries).toBe(5);
+      expect(sendMock).toHaveBeenCalledTimes(5);
+
+      const sent = await testPrisma.communication.findUnique({ where: { id: created.body.id } });
+      expect(sent?.status).toBe('SENT');
+
+      const activity = await testPrisma.activityEvent.findFirst({
+        where: { organisationId, eventType: 'ANNOUNCEMENT_SENT' },
+      });
+      expect(activity?.description).toContain('5 recipients');
+    });
+
+    it('recipient and delivery rows survive even if the final commit step fails — no longer one all-or-nothing transaction', async () => {
+      const { accessToken } = await registerTestUser(app);
+      await setupPropertyWithTenant(accessToken);
+
+      const created = await request(app)
+        .post('/api/v1/communications')
+        .set(authHeader(accessToken))
+        .send({
+          title: 'Partial failure notice',
+          body: 'Body',
+          channels: ['EMAIL'],
+          audienceCriteria: { scope: 'ORGANISATION' },
+        });
+      await request(app)
+        .post(`/api/v1/communications/${created.body.id}/send`)
+        .set(authHeader(accessToken))
+        .send({});
+
+      // Force the final short transaction (recordActivity + mark SENT) to
+      // fail, simulating a transient DB error at that specific step —
+      // without touching Prisma's own $transaction (see the comment on
+      // recordActivityMock above for why that's unsafe to mock directly).
+      recordActivityMock.mockRejectedValueOnce(new Error('simulated transient DB error'));
+
+      await deliveryService.processDue(new Date(Date.now() + 60_000));
+
+      const failed = await testPrisma.communication.findUnique({ where: { id: created.body.id } });
+      expect(failed?.status).toBe('FAILED');
+
+      // Recipient/delivery rows created before the failing step are real,
+      // committed rows — not rolled back — because they were never part of
+      // the same transaction as the step that failed.
+      const recipients = await testPrisma.communicationRecipient.findMany({
+        where: { communicationId: created.body.id },
+      });
+      expect(recipients).toHaveLength(1);
+      const deliveries = await testPrisma.communicationDelivery.count({
+        where: { communicationRecipient: { communicationId: created.body.id } },
+      });
+      expect(deliveries).toBe(1);
+    });
+
+    it('never sends the same email twice if delivery is resumed after already succeeding', async () => {
+      const { accessToken } = await registerTestUser(app);
+      await setupPropertyWithTenant(accessToken);
+
+      const created = await request(app)
+        .post('/api/v1/communications')
+        .set(authHeader(accessToken))
+        .send({
+          title: 'Resumed delivery notice',
+          body: 'Body',
+          channels: ['EMAIL'],
+          audienceCriteria: { scope: 'ORGANISATION' },
+        });
+      const communicationId = created.body.id as string;
+      await request(app)
+        .post(`/api/v1/communications/${communicationId}/send`)
+        .set(authHeader(accessToken))
+        .send({});
+
+      await deliveryService.processDue(new Date(Date.now() + 60_000));
+      expect(sendMock).toHaveBeenCalledTimes(1);
+
+      const sentDelivery = await testPrisma.communicationDelivery.findFirst({
+        where: { communicationRecipient: { communicationId }, channel: 'EMAIL' },
+      });
+      expect(sentDelivery?.status).toBe('SENT');
+      const firstSentAt = sentDelivery?.sentAt;
+
+      // Simulate a resumed/retried delivery run for the same communication
+      // (e.g. a worker restart re-invoking deliverOne directly) — the
+      // email must not go out a second time.
+      await deliveryService.deliverOne(communicationId);
+
+      expect(sendMock).toHaveBeenCalledTimes(1);
+      const stillSentDelivery = await testPrisma.communicationDelivery.findFirst({
+        where: { communicationRecipient: { communicationId }, channel: 'EMAIL' },
+      });
+      expect(stillSentDelivery?.status).toBe('SENT');
+      expect(stillSentDelivery?.sentAt).toEqual(firstSentAt);
+    });
+
+    it('does retry a FAILED email delivery on the next run — the duplicate guard only blocks SENT/DELIVERED', async () => {
+      const { accessToken } = await registerTestUser(app);
+      await setupPropertyWithTenant(accessToken);
+
+      const created = await request(app)
+        .post('/api/v1/communications')
+        .set(authHeader(accessToken))
+        .send({
+          title: 'Retry notice',
+          body: 'Body',
+          channels: ['EMAIL'],
+          audienceCriteria: { scope: 'ORGANISATION' },
+        });
+      const communicationId = created.body.id as string;
+      await request(app)
+        .post(`/api/v1/communications/${communicationId}/send`)
+        .set(authHeader(accessToken))
+        .send({});
+
+      sendMock.mockRejectedValueOnce(new Error('SMTP timeout'));
+      await deliveryService.processDue(new Date(Date.now() + 60_000));
+      expect(sendMock).toHaveBeenCalledTimes(1);
+
+      const failedDelivery = await testPrisma.communicationDelivery.findFirst({
+        where: { communicationRecipient: { communicationId }, channel: 'EMAIL' },
+      });
+      expect(failedDelivery?.status).toBe('FAILED');
+      expect(failedDelivery?.failureReason).toContain('SMTP timeout');
+
+      // Communication itself is already SENT (the fast transaction
+      // committed before email sending ran) — only the email delivery
+      // failed, so retrying delivery for the same communication must
+      // actually resend, not be blocked by the duplicate-send guard.
+      sendMock.mockResolvedValueOnce(undefined);
+      await deliveryService.deliverOne(communicationId);
+
+      expect(sendMock).toHaveBeenCalledTimes(2);
+      const retriedDelivery = await testPrisma.communicationDelivery.findFirst({
+        where: { communicationRecipient: { communicationId }, channel: 'EMAIL' },
+      });
+      expect(retriedDelivery?.status).toBe('SENT');
+    });
   });
 });
