@@ -1,6 +1,6 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { ConflictError, NotFoundError } from '../../errors/AppError.js';
-import type { PaginatedResult } from '../../lib/pagination.js';
+import { ContractorEligibilityService } from './compliance/eligibility.service.js';
 import type {
   ContractorQuery,
   CreateContractorInput,
@@ -8,7 +8,11 @@ import type {
 } from './contractors.schemas.js';
 
 export class ContractorsService {
-  constructor(private readonly prisma: PrismaClient) {}
+  private readonly eligibility: ContractorEligibilityService;
+
+  constructor(private readonly prisma: PrismaClient) {
+    this.eligibility = new ContractorEligibilityService(prisma);
+  }
 
   async create(organisationId: string, input: CreateContractorInput) {
     const existing = await this.prisma.contractor.findFirst({
@@ -23,10 +27,7 @@ export class ContractorsService {
     });
   }
 
-  async list(
-    organisationId: string,
-    query: ContractorQuery,
-  ): Promise<PaginatedResult<Prisma.ContractorGetPayload<object>>> {
+  async list(organisationId: string, query: ContractorQuery) {
     const where: Prisma.ContractorWhereInput = { organisationId };
     if (query.status) where.status = query.status;
     if (query.search) {
@@ -47,7 +48,24 @@ export class ContractorsService {
       this.prisma.contractor.count({ where }),
     ]);
 
-    return { items, page: query.page, pageSize: query.pageSize, total };
+    // Two queries total for the whole page, regardless of contractor or
+    // trade-category count — never itself an authorization decision, only
+    // ever informational (a list badge + concise reason).
+    const summaries = await this.eligibility.getComplianceSummaries(
+      organisationId,
+      items.map((item) => ({ id: item.id, tradeCategories: item.tradeCategories })),
+    );
+    const withCompliance = items.map((item) => {
+      const summary = summaries.get(item.id);
+      return {
+        ...item,
+        complianceStatus: summary?.status ?? 'COMPLIANT',
+        complianceIssueCount: summary?.issueCount ?? 0,
+        complianceTopIssues: summary?.topIssues ?? [],
+      };
+    });
+
+    return { items: withCompliance, page: query.page, pageSize: query.pageSize, total };
   }
 
   async getById(organisationId: string, contractorId: string) {
@@ -74,7 +92,8 @@ export class ContractorsService {
     if (!contractor) {
       throw new NotFoundError('Contractor not found');
     }
-    return contractor;
+    const compliance = await this.eligibility.getComplianceOverview(organisationId, contractorId);
+    return { ...contractor, complianceStatus: compliance.status };
   }
 
   async update(organisationId: string, contractorId: string, input: UpdateContractorInput) {

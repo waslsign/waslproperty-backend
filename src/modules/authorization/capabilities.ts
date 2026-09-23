@@ -36,6 +36,18 @@ export const CAPABILITIES = [
   'work_orders.manage',
   'contractors.view',
   'contractors.manage',
+  /** Credentials/licences/insurance a contractor holds, and the
+   * organisation's compliance requirements that judge them. Deliberately
+   * separate from contractors.view/manage: seeing a contractor's basic
+   * profile never implies seeing (or worse, verifying) their compliance
+   * documents — see the contractor-compliance milestone report. */
+  'contractor_compliance.view',
+  'contractor_compliance.manage',
+  /** Marking a credential VERIFIED/REJECTED is a meaningful trust decision,
+   * not a data-entry action — held separately from
+   * contractor_compliance.manage so an organisation can let more people add
+   * credentials than can attest to their validity. */
+  'contractor_compliance.verify',
   'quotes.view',
   'quotes.manage',
   'quotes.approve',
@@ -69,6 +81,7 @@ export const CAPABILITY_GROUPS: Array<{ label: string; capabilities: Capability[
   { label: 'Maintenance', capabilities: ['maintenance.view', 'maintenance.manage'] },
   { label: 'Work Orders', capabilities: ['work_orders.view', 'work_orders.manage'] },
   { label: 'Contractors & Quotes', capabilities: ['contractors.view', 'contractors.manage', 'quotes.view', 'quotes.manage', 'quotes.approve'] },
+  { label: 'Contractor Compliance', capabilities: ['contractor_compliance.view', 'contractor_compliance.manage', 'contractor_compliance.verify'] },
   { label: 'Communications', capabilities: ['communications.view', 'communications.send', 'communications.manage'] },
   { label: 'Visibility', capabilities: ['analytics.view', 'activity.view'] },
   { label: 'Strata', capabilities: ['strata.view', 'strata.manage'] },
@@ -103,6 +116,9 @@ export const DEFAULT_ROLE_CAPABILITIES: Record<PropertyRole, Capability[]> = {
     'work_orders.manage',
     'contractors.view',
     'contractors.manage',
+    'contractor_compliance.view',
+    'contractor_compliance.manage',
+    'contractor_compliance.verify',
     'quotes.view',
     'quotes.manage',
     'quotes.approve',
@@ -121,6 +137,7 @@ export const DEFAULT_ROLE_CAPABILITIES: Record<PropertyRole, Capability[]> = {
     'work_orders.view',
     'work_orders.manage',
     'contractors.view',
+    'contractor_compliance.view',
     'quotes.view',
     'communications.view',
     'analytics.view',
