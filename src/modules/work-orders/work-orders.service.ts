@@ -3,6 +3,7 @@ import { recordActivity } from '../activity/activity.js';
 import { ConflictError, ForbiddenError, NotFoundError } from '../../errors/AppError.js';
 import type { PaginatedResult } from '../../lib/pagination.js';
 import { ContractorsService } from '../contractors/contractors.service.js';
+import { ContractorEligibilityService } from '../contractors/compliance/eligibility.service.js';
 import { AuthorizationService } from '../authorization/authorization.service.js';
 import type { AuthContext } from '../../middlewares/auth.middleware.js';
 import { notifyUser } from '../notifications/notifications.js';
@@ -63,10 +64,12 @@ function formatStatusLabel(status: string): string {
 export class WorkOrdersService {
   private readonly contractorsService: ContractorsService;
   private readonly authz: AuthorizationService;
+  private readonly eligibility: ContractorEligibilityService;
 
   constructor(private readonly prisma: PrismaClient) {
     this.contractorsService = new ContractorsService(prisma);
     this.authz = new AuthorizationService(prisma);
+    this.eligibility = new ContractorEligibilityService(prisma);
   }
 
   private async getOwned(organisationId: string, workOrderId: string) {
@@ -302,6 +305,28 @@ export class WorkOrdersService {
       input.contractorId,
     );
 
+    // Backend-authoritative: a manually crafted request against this
+    // endpoint can never bypass compliance the way frontend-only filtering
+    // could. Evaluated against the work order's own category (resolved via
+    // its originating MaintenanceRequest — see
+    // ContractorEligibilityService's own doc comment) so the same
+    // contractor can be blocked for Electrical work and freely assigned to
+    // Plumbing work. An organisation with no configured requirements for
+    // this trade sees identical behaviour to before this milestone — the
+    // eligibility check only ever adds a real, configured blocker, never a
+    // default one.
+    const eligibility = await this.eligibility.evaluateForWorkOrder(
+      organisationId,
+      contractor.id,
+      workOrderId,
+    );
+    if (!eligibility.eligible) {
+      throw new ForbiddenError(
+        `${contractor.name} is not eligible for this work order`,
+        eligibility,
+      );
+    }
+
     return this.prisma.$transaction(async (tx) => {
       const updated = await tx.workOrder.update({
         where: { id: workOrderId },
@@ -332,5 +357,38 @@ export class WorkOrdersService {
       data: input,
       include: workOrderInclude,
     });
+  }
+
+  /**
+   * Powers the contractor-selector UX: eligibility for every ACTIVE
+   * contractor in the organisation against this one work order's trade, so
+   * the frontend can group/prioritise eligible contractors rather than
+   * showing every contractor equally. This is a UX convenience only — the
+   * real gate is assignContractor's own evaluateForWorkOrder call, which a
+   * caller of this endpoint could never bypass by, say, hiding an
+   * ineligible contractor from the list and assigning them directly.
+   */
+  async listContractorEligibility(organisationId: string, workOrderId: string) {
+    const workOrder = await this.getOwned(organisationId, workOrderId);
+    const category = workOrder.maintenanceRequest?.category ?? null;
+
+    const contractors = await this.prisma.contractor.findMany({
+      where: { organisationId, status: 'ACTIVE' },
+      select: { id: true, name: true, companyName: true },
+      orderBy: { name: 'asc' },
+    });
+
+    const results = await Promise.all(
+      contractors.map(async (contractor) => ({
+        contractor: {
+          id: contractor.id,
+          name: contractor.name,
+          companyName: contractor.companyName,
+        },
+        eligibility: await this.eligibility.evaluate(organisationId, contractor.id, category),
+      })),
+    );
+
+    return { category, contractors: results };
   }
 }

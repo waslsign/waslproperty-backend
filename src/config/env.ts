@@ -38,6 +38,15 @@ const envSchema = z.object({
   S3_BUCKET_NAME: z.string().min(1, 'S3_BUCKET_NAME is required'),
   MAINTENANCE_ATTACHMENT_MAX_FILES: z.coerce.number().default(5),
   MAINTENANCE_ATTACHMENT_MAX_SIZE_MB: z.coerce.number().default(10),
+  // Credential evidence (licence scans, Certificates of Currency, ...) — a
+  // separate limit from maintenance photos since these are commonly
+  // multi-page PDF scans, not single photos.
+  CREDENTIAL_DOCUMENT_MAX_SIZE_MB: z.coerce.number().default(15),
+  // Days out from expiry a VERIFIED credential is considered
+  // EXPIRING_SOON rather than CURRENT — a sensible central default, not
+  // organisation-configurable this milestone (see the compliance
+  // milestone report).
+  CREDENTIAL_EXPIRING_SOON_DAYS: z.coerce.number().default(30),
 
   // --- Outbound email ---
   // RESEND_API_KEY is the production/staging transport (Resend's HTTPS

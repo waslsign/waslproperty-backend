@@ -13,6 +13,8 @@ export async function resetDb() {
     testPrisma.savedAudience.deleteMany(),
     testPrisma.contractorQuote.deleteMany(),
     testPrisma.workOrder.deleteMany(),
+    testPrisma.contractorCredential.deleteMany(),
+    testPrisma.contractorComplianceRequirement.deleteMany(),
     testPrisma.contractor.deleteMany(),
     testPrisma.maintenanceRequestAttachment.deleteMany(),
     testPrisma.maintenanceRequest.deleteMany(),

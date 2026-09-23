@@ -1,4 +1,4 @@
-import { ContractorStatus } from '@prisma/client';
+import { ContractorStatus, MaintenanceCategory } from '@prisma/client';
 import { z } from 'zod';
 
 export const createContractorSchema = z.object({
@@ -7,6 +7,8 @@ export const createContractorSchema = z.object({
   email: z.string().trim().email(),
   phone: z.string().trim().min(1).max(40).optional(),
   tradeTypes: z.array(z.string().trim().min(1).max(60)).default([]),
+  tradeCategories: z.array(z.nativeEnum(MaintenanceCategory)).default([]),
+  businessNumber: z.string().trim().min(1).max(40).optional(),
   notes: z.string().trim().min(1).max(2000).optional(),
 });
 export type CreateContractorInput = z.infer<typeof createContractorSchema>;
@@ -17,6 +19,8 @@ export const updateContractorSchema = z.object({
   email: z.string().trim().email().optional(),
   phone: z.string().trim().min(1).max(40).optional(),
   tradeTypes: z.array(z.string().trim().min(1).max(60)).optional(),
+  tradeCategories: z.array(z.nativeEnum(MaintenanceCategory)).optional(),
+  businessNumber: z.string().trim().min(1).max(40).nullable().optional(),
   notes: z.string().trim().min(1).max(2000).optional(),
   status: z.nativeEnum(ContractorStatus).optional(),
 });

@@ -1,4 +1,6 @@
 import type { MaintenanceRequestStatus, PrismaClient } from '@prisma/client';
+import { env } from '../config/env.js';
+import { ContractorEligibilityService } from '../modules/contractors/compliance/eligibility.service.js';
 
 /**
  * A deterministic, non-AI "Needs Your Attention" engine — schema-derived
@@ -29,7 +31,11 @@ export type AttentionItemType =
   | 'QUOTE_PENDING_APPROVAL_TOO_LONG'
   | 'WORK_ORDER_STUCK_IN_DRAFT'
   | 'STALE_OPEN_REQUEST'
-  | 'QUOTE_REJECTED_NEEDS_FOLLOWUP';
+  | 'QUOTE_REJECTED_NEEDS_FOLLOWUP'
+  | 'CONTRACTOR_CREDENTIAL_EXPIRED'
+  | 'CONTRACTOR_CREDENTIAL_EXPIRING_SOON'
+  | 'CONTRACTOR_CREDENTIAL_PENDING_VERIFICATION'
+  | 'WORK_ORDER_CONTRACTOR_NO_LONGER_ELIGIBLE';
 
 export interface AttentionItem {
   id: string;
@@ -37,9 +43,12 @@ export interface AttentionItem {
   severity: AttentionSeverity;
   title: string;
   description: string;
-  entityType: 'MaintenanceRequest' | 'WorkOrder' | 'ContractorQuote';
+  entityType: 'MaintenanceRequest' | 'WorkOrder' | 'ContractorQuote' | 'Contractor';
   entityId: string;
-  propertyId: string;
+  /** Null for organisation-wide facts with no single property — a
+   * contractor is an organisation-wide vendor (see Contractor's own doc
+   * comment), so a credential expiring has no property to attach to. */
+  propertyId: string | null;
   spaceId: string | null;
   occurredAt: string;
   actionLabel: string;
@@ -75,6 +84,20 @@ export async function getAttentionItems(
     findWorkOrderStuckInDraft(prisma, organisationId, now, propertyIds),
     findStaleOpenRequests(prisma, organisationId, now, propertyIds),
     findQuoteRejectedNeedsFollowup(prisma, organisationId, now, propertyIds),
+    // Contractors are an organisation-wide vendor directory (no propertyId
+    // — see Contractor's own doc comment), so these facts only make sense
+    // for a caller with unrestricted (org-wide) visibility — a
+    // property-scoped manager's portfolio dashboard never includes them,
+    // matching the same coarse-visibility precedent already documented for
+    // contractors.view/manage.
+    ...(propertyIds === undefined
+      ? [
+          findContractorCredentialsExpired(prisma, organisationId, now),
+          findContractorCredentialsExpiringSoon(prisma, organisationId, now),
+          findContractorCredentialsPendingVerification(prisma, organisationId, now),
+          findWorkOrderContractorNoLongerEligible(prisma, organisationId, now),
+        ]
+      : []),
   ]);
 
   const severityRank: Record<AttentionSeverity, number> = { CRITICAL: 0, WARNING: 1, INFO: 2 };
@@ -86,6 +109,10 @@ export async function getAttentionItems(
     WORK_ORDER_STUCK_IN_DRAFT: 4,
     STALE_OPEN_REQUEST: 5,
     QUOTE_REJECTED_NEEDS_FOLLOWUP: 6,
+    WORK_ORDER_CONTRACTOR_NO_LONGER_ELIGIBLE: 7,
+    CONTRACTOR_CREDENTIAL_EXPIRED: 8,
+    CONTRACTOR_CREDENTIAL_EXPIRING_SOON: 9,
+    CONTRACTOR_CREDENTIAL_PENDING_VERIFICATION: 10,
   };
 
   const all = results.flat();
@@ -406,6 +433,160 @@ async function findQuoteRejectedNeedsFollowup(
       occurredAt: (r.rejectedAt as Date).toISOString(),
       actionLabel: 'View work order',
       actionUrl: `/operations/work-orders/${r.workOrder.id}`,
+    });
+  }
+  return items;
+}
+
+async function findContractorCredentialsExpired(
+  prisma: PrismaClient,
+  organisationId: string,
+  now: Date,
+): Promise<AttentionItem[]> {
+  const rows = await prisma.contractorCredential.findMany({
+    where: { organisationId, verificationStatus: 'VERIFIED', expiresAt: { lt: now } },
+    select: { id: true, type: true, expiresAt: true, contractor: { select: { id: true, name: true } } },
+    take: ATTENTION_HARD_CAP,
+  });
+
+  return rows.map((r) => ({
+    id: `CONTRACTOR_CREDENTIAL_EXPIRED:${r.id}`,
+    type: 'CONTRACTOR_CREDENTIAL_EXPIRED' as const,
+    severity: 'CRITICAL' as const,
+    title: `${r.contractor.name}'s ${r.type} has expired`,
+    description: `Expired ${formatAge(hoursBetween(r.expiresAt as Date, now))} ago.`,
+    entityType: 'Contractor' as const,
+    entityId: r.contractor.id,
+    propertyId: null,
+    spaceId: null,
+    occurredAt: (r.expiresAt as Date).toISOString(),
+    actionLabel: 'View contractor',
+    actionUrl: `/contractors/${r.contractor.id}`,
+  }));
+}
+
+async function findContractorCredentialsExpiringSoon(
+  prisma: PrismaClient,
+  organisationId: string,
+  now: Date,
+): Promise<AttentionItem[]> {
+  const warnAt = new Date(now.getTime() + env.CREDENTIAL_EXPIRING_SOON_DAYS * DAY_MS);
+  const rows = await prisma.contractorCredential.findMany({
+    where: {
+      organisationId,
+      verificationStatus: 'VERIFIED',
+      expiresAt: { gte: now, lte: warnAt },
+    },
+    select: { id: true, type: true, expiresAt: true, contractor: { select: { id: true, name: true } } },
+    take: ATTENTION_HARD_CAP,
+  });
+
+  return rows.map((r) => {
+    const daysLeft = Math.max(0, Math.round(hoursBetween(now, r.expiresAt as Date) / 24));
+    return {
+      id: `CONTRACTOR_CREDENTIAL_EXPIRING_SOON:${r.id}`,
+      type: 'CONTRACTOR_CREDENTIAL_EXPIRING_SOON' as const,
+      severity: daysLeft <= 7 ? ('WARNING' as const) : ('INFO' as const),
+      title: `${r.contractor.name}'s ${r.type} expires soon`,
+      description: `Expires in ${daysLeft} day${daysLeft === 1 ? '' : 's'}.`,
+      entityType: 'Contractor' as const,
+      entityId: r.contractor.id,
+      propertyId: null,
+      spaceId: null,
+      occurredAt: now.toISOString(),
+      actionLabel: 'View contractor',
+      actionUrl: `/contractors/${r.contractor.id}`,
+    };
+  });
+}
+
+async function findContractorCredentialsPendingVerification(
+  prisma: PrismaClient,
+  organisationId: string,
+  now: Date,
+): Promise<AttentionItem[]> {
+  const rows = await prisma.contractorCredential.findMany({
+    where: { organisationId, verificationStatus: 'PENDING' },
+    select: { id: true, type: true, createdAt: true, contractor: { select: { id: true, name: true } } },
+    take: ATTENTION_HARD_CAP,
+  });
+
+  const items: AttentionItem[] = [];
+  for (const r of rows) {
+    const ageHours = hoursBetween(r.createdAt, now);
+    // A brief grace period — no need to flag a credential someone uploaded
+    // an hour ago as something needing attention yet.
+    if (ageHours <= 48) continue;
+    items.push({
+      id: `CONTRACTOR_CREDENTIAL_PENDING_VERIFICATION:${r.id}`,
+      type: 'CONTRACTOR_CREDENTIAL_PENDING_VERIFICATION',
+      severity: 'WARNING',
+      title: `${r.contractor.name}'s ${r.type} is awaiting verification`,
+      description: `Provided ${formatAge(ageHours)} ago and not yet reviewed.`,
+      entityType: 'Contractor',
+      entityId: r.contractor.id,
+      propertyId: null,
+      spaceId: null,
+      occurredAt: r.createdAt.toISOString(),
+      actionLabel: 'View contractor',
+      actionUrl: `/contractors/${r.contractor.id}`,
+    });
+  }
+  return items;
+}
+
+/**
+ * A contractor's compliance can lapse *after* they were assigned (a
+ * policy expires, a licence is rejected on review) — this catches a
+ * still-open or upcoming work order whose assigned contractor is no
+ * longer eligible for it right now, which nothing else in this engine
+ * would surface (assignment itself was validated at the time, not since).
+ * Capped and scoped to SCHEDULED/IN_PROGRESS only (genuinely upcoming/
+ * active work, not every historical DRAFT) to keep this bounded.
+ */
+async function findWorkOrderContractorNoLongerEligible(
+  prisma: PrismaClient,
+  organisationId: string,
+  now: Date,
+): Promise<AttentionItem[]> {
+  const candidates = await prisma.workOrder.findMany({
+    where: { organisationId, status: { in: ['SCHEDULED', 'IN_PROGRESS'] }, contractorId: { not: null } },
+    select: {
+      id: true,
+      title: true,
+      propertyId: true,
+      spaceId: true,
+      contractorId: true,
+      maintenanceRequest: { select: { category: true } },
+    },
+    take: ATTENTION_HARD_CAP,
+  });
+  if (candidates.length === 0) return [];
+
+  const eligibilityService = new ContractorEligibilityService(prisma);
+  const items: AttentionItem[] = [];
+  for (const wo of candidates) {
+    if (!wo.contractorId) continue;
+    const result = await eligibilityService.evaluate(
+      organisationId,
+      wo.contractorId,
+      wo.maintenanceRequest?.category ?? null,
+    );
+    if (result.eligible) continue;
+    const reason = result.blockingIssues[0];
+    items.push({
+      id: `WORK_ORDER_CONTRACTOR_NO_LONGER_ELIGIBLE:${wo.id}`,
+      type: 'WORK_ORDER_CONTRACTOR_NO_LONGER_ELIGIBLE',
+      severity: 'CRITICAL',
+      title: `Assigned contractor no longer eligible: ${wo.title}`,
+      description: reason?.message ?? 'This contractor no longer meets a required compliance rule.',
+      entityType: 'WorkOrder',
+      entityId: wo.id,
+      propertyId: wo.propertyId,
+      spaceId: wo.spaceId,
+      occurredAt: now.toISOString(),
+      actionLabel: 'View work order',
+      actionUrl: `/operations/work-orders/${wo.id}`,
     });
   }
   return items;

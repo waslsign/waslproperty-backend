@@ -38,21 +38,23 @@ model Organisation {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  memberships                   OrganisationMembership[]
-  properties                    Property[]
-  activityEvents                ActivityEvent[]
-  maintenanceRequests           MaintenanceRequest[]
-  maintenanceRequestAttachments MaintenanceRequestAttachment[]
-  contacts                      PropertyContact[]
-  contactInvites                ContactInvite[]
-  sessions                      Session[]
-  workOrders                    WorkOrder[]
-  contractors                   Contractor[]
-  contractorQuotes              ContractorQuote[]
-  communications                Communication[]
-  savedAudiences                SavedAudience[]
-  notifications                 Notification[]
-  rolePermissions               OrganisationRolePermission[]
+  memberships                      OrganisationMembership[]
+  properties                       Property[]
+  activityEvents                   ActivityEvent[]
+  maintenanceRequests              MaintenanceRequest[]
+  maintenanceRequestAttachments    MaintenanceRequestAttachment[]
+  contacts                         PropertyContact[]
+  contactInvites                   ContactInvite[]
+  sessions                         Session[]
+  workOrders                       WorkOrder[]
+  contractors                      Contractor[]
+  contractorQuotes                 ContractorQuote[]
+  communications                   Communication[]
+  savedAudiences                   SavedAudience[]
+  notifications                    Notification[]
+  rolePermissions                  OrganisationRolePermission[]
+  contractorCredentials            ContractorCredential[]
+  contractorComplianceRequirements ContractorComplianceRequirement[]
 
   @@map("organisations")
 }
@@ -79,11 +81,14 @@ model User {
   maintenanceRequests           MaintenanceRequest[]
   maintenanceRequestAttachments MaintenanceRequestAttachment[]
   sentContactInvites            ContactInvite[]
-  createdWorkOrders             WorkOrder[]                    @relation("WorkOrderCreatedBy")
-  approvedContractorQuotes      ContractorQuote[]              @relation("ContractorQuoteApprovedBy")
+  createdWorkOrders             WorkOrder[]                       @relation("WorkOrderCreatedBy")
+  approvedContractorQuotes      ContractorQuote[]                 @relation("ContractorQuoteApprovedBy")
   createdCommunications         Communication[]
   createdSavedAudiences         SavedAudience[]
   notifications                 Notification[]
+  verifiedContractorCredentials ContractorCredential[]            @relation("ContractorCredentialVerifiedBy")
+  createdContractorCredentials  ContractorCredential[]            @relation("ContractorCredentialCreatedBy")
+  createdComplianceRequirements ContractorComplianceRequirement[]
 
   @@map("users")
 }
@@ -552,6 +557,12 @@ enum ActivityEventType {
   ANNOUNCEMENT_SENT
   ANNOUNCEMENT_CANCELLED
   ROLE_PERMISSIONS_UPDATED
+  CONTRACTOR_CREDENTIAL_ADDED
+  CONTRACTOR_CREDENTIAL_UPDATED
+  CONTRACTOR_CREDENTIAL_VERIFIED
+  CONTRACTOR_CREDENTIAL_REJECTED
+  CONTRACTOR_CREDENTIAL_REMOVED
+  CONTRACTOR_COMPLIANCE_REQUIREMENTS_UPDATED
 }
 
 // --- Resident invitations (Slice 2 / M6.5) ---
@@ -754,21 +765,40 @@ enum WorkOrderStatus {
 // --- Contractors (M8) ---
 
 model Contractor {
-  id             String           @id @default(cuid())
-  organisationId String
-  name           String
-  companyName    String?
-  email          String
-  phone          String?
-  status         ContractorStatus @default(ACTIVE)
-  tradeTypes     String[]
-  notes          String?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  id              String                @id @default(cuid())
+  organisationId  String
+  name            String
+  companyName     String?
+  email           String
+  phone           String?
+  status          ContractorStatus      @default(ACTIVE)
+  /// Free-text specialisations as originally typed by whoever added the
+  /// contractor (e.g. "24/7 emergency electrical") — display-only, never
+  /// matched against anything. Kept exactly as it was pre-compliance-milestone
+  /// for backward compatibility; tradeCategories below is the new,
+  /// structured field eligibility actually matches against.
+  tradeTypes      String[]
+  /// Structured trades this contractor is classified under, reusing
+  /// MaintenanceCategory — the same enum a MaintenanceRequest/WorkOrder is
+  /// categorised with, so "Electrical work" and "a contractor's Electrical
+  /// trade" are always the same value, never a separate disconnected
+  /// taxonomy. Empty for every contractor created before this milestone
+  /// (and any contractor an admin simply hasn't classified yet) —
+  /// deliberately never treated as "matches nothing" for eligibility
+  /// purposes; see ContractorEligibilityService's trade-match rule.
+  tradeCategories MaintenanceCategory[]
+  /// Optional business identifier (e.g. an Australian ABN, or another
+  /// jurisdiction's equivalent) — deliberately a plain jurisdiction-neutral
+  /// string, never validated against a live registry.
+  businessNumber  String?
+  notes           String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
 
-  organisation Organisation      @relation(fields: [organisationId], references: [id])
+  organisation Organisation           @relation(fields: [organisationId], references: [id])
   workOrders   WorkOrder[]
   quotes       ContractorQuote[]
+  credentials  ContractorCredential[]
 
   @@unique([organisationId, email])
   @@index([organisationId])
@@ -778,6 +808,189 @@ model Contractor {
 enum ContractorStatus {
   ACTIVE
   INACTIVE
+}
+
+// --- Contractor compliance & work eligibility (M12) ---
+
+enum CredentialCategory {
+  LICENCE
+  CERTIFICATION
+  INSURANCE
+  QUALIFICATION
+  BUSINESS_REGISTRATION
+  OTHER
+}
+
+/// PENDING = provided but not yet reviewed by an authorised organisation
+/// user. VERIFIED = an authorised user manually reviewed it. REJECTED = an
+/// authorised user reviewed it and declined it. Never conflated with
+/// expiry — CURRENT/EXPIRING_SOON/EXPIRED is derived from
+/// (verificationStatus, expiresAt) at read time by
+/// ContractorEligibilityService, never stored, so it can never drift out of
+/// sync with the clock.
+enum CredentialVerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+/// How VERIFIED was reached. Only MANUAL is actually implemented this
+/// milestone (an authorised WaslProp user reviewing the uploaded document);
+/// REGISTRY/INTEGRATION exist so a future live licensing-body or insurer
+/// lookup has somewhere to record itself without another migration — no
+/// such integration exists today, and nothing in this codebase claims one
+/// does.
+enum CredentialVerificationSource {
+  MANUAL
+  REGISTRY
+  INTEGRATION
+}
+
+/// A first-class credential/licence/insurance/qualification record for a
+/// contractor — deliberately not a pile of named columns on Contractor
+/// (contractor.electricalLicenceExpiry, contractor.publicLiabilityExpiry,
+/// ...), which cannot represent "which credentials does this contractor
+/// actually hold" as data, only as an ever-growing, ever-incomplete schema.
+/// One row per credential the contractor holds (a contractor may hold many:
+/// several licences, several insurance policies, ...).
+model ContractorCredential {
+  id             String @id @default(cuid())
+  organisationId String
+  contractorId   String
+
+  category CredentialCategory
+  /// Free-text canonical type, e.g. "Electrical Contractor Licence" or
+  /// "Public Liability Insurance" — deliberately not an enum, so a new
+  /// credential type never requires a migration (see the milestone's own
+  /// "must allow future credential types without a schema migration"
+  /// requirement). Matched case-insensitively against
+  /// ContractorComplianceRequirement.credentialType. src/modules/contractors/compliance/credentialTypes.ts
+  /// offers a starter catalogue of common names for the picker UI, but any
+  /// value is accepted — the catalogue is a UX convenience, not an enum.
+  type     String
+
+  credentialNumber String?
+  /// Issuing authority for a licence/certification, or the insurer/provider
+  /// name for an insurance policy — one generic field rather than two
+  /// near-identical ones for different credential categories.
+  issuer           String?
+
+  issuedAt  DateTime?
+  /// Nullable — not every credential expires (e.g. a one-off business
+  /// registration number). Never assume every credential has an expiry.
+  expiresAt DateTime?
+
+  /// Insurance-only structured metadata — nullable on every other category,
+  /// never forced onto a licence/certification/qualification row. Kept as
+  /// plain optional columns rather than a separate polymorphic table: only
+  /// two fields, only one category uses them, a second table would be
+  /// unnecessary complexity for this milestone's actual needs.
+  coverageAmount       Decimal? @db.Decimal(12, 2)
+  coverageCurrencyCode String?
+
+  /// S3 evidence for this credential (a licence scan, Certificate of
+  /// Currency, ...) — same presign-PUT/GET pattern as
+  /// MaintenanceRequestAttachment, reusing src/lib/s3.ts directly rather
+  /// than a second storage mechanism. Nullable: a credential can be
+  /// recorded (e.g. while chasing the contractor for evidence) before a
+  /// document exists.
+  documentStorageKey  String?
+  documentFileName    String?
+  documentContentType String?
+  documentFileSize    Int?
+
+  verificationStatus CredentialVerificationStatus  @default(PENDING)
+  verificationSource CredentialVerificationSource?
+  verifiedAt         DateTime?
+  verifiedByUserId   String?
+
+  /// Set the first (and only) time the expiry-notification scheduler
+  /// notifies org staff that this credential has reached that state —
+  /// never re-notified for the same expiry cycle. Reset to null whenever
+  /// expiresAt materially changes (see ContractorCredentialsService.update),
+  /// so a renewed credential's next real expiry notifies again.
+  expiringSoonNotifiedAt DateTime?
+  expiredNotifiedAt      DateTime?
+
+  /// Free-text note from whoever last touched verification/rejection, or
+  /// from whoever added the credential — never a substitute for the
+  /// structured status fields above.
+  notes String?
+
+  createdByUserId String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organisation   Organisation @relation(fields: [organisationId], references: [id])
+  contractor     Contractor   @relation(fields: [contractorId], references: [id])
+  verifiedByUser User?        @relation("ContractorCredentialVerifiedBy", fields: [verifiedByUserId], references: [id])
+  createdByUser  User         @relation("ContractorCredentialCreatedBy", fields: [createdByUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([contractorId])
+  @@index([contractorId, category])
+  @@index([expiresAt])
+  @@map("contractor_credentials")
+}
+
+enum ComplianceEnforcement {
+  BLOCK_ASSIGNMENT
+  WARN_ONLY
+}
+
+/// What credential an organisation requires (or merely recommends) for a
+/// given trade/work category, configured by that organisation alone —
+/// Organisation Settings -> Contractor Compliance, OWNER/ADMIN only.
+/// Deliberately a plain relational row per (organisation, category,
+/// credentialType), never a JSON rule blob — every field here is something
+/// ContractorEligibilityService explicitly understands and evaluates, not
+/// an opaque configuration the backend merely stores.
+model ContractorComplianceRequirement {
+  id             String @id @default(cuid())
+  organisationId String
+
+  /// The trade/work category this requirement applies to (see
+  /// Contractor.tradeCategories's doc comment for why this reuses
+  /// MaintenanceCategory rather than a separate trade taxonomy).
+  category           MaintenanceCategory
+  credentialCategory CredentialCategory
+  /// Matched case-insensitively against ContractorCredential.type.
+  credentialType     String
+
+  /// false = shown to admins/managers as a recognised-but-optional
+  /// credential (e.g. "Professional Indemnity") that never blocks or warns
+  /// on its own — informational only. true = participates in eligibility
+  /// per `enforcement` below.
+  required    Boolean               @default(true)
+  /// Only consulted when required = true.
+  enforcement ComplianceEnforcement @default(BLOCK_ASSIGNMENT)
+
+  /// If true (the default), a credential that is merely PROVIDED but not
+  /// yet reviewed (PENDING) does not satisfy this requirement. If false, a
+  /// PENDING credential is accepted as sufficient.
+  mustBeVerified   Boolean @default(true)
+  /// If true (the default), an expired matching credential fails this
+  /// requirement. Modelled explicitly (not assumed) since some credentials
+  /// legitimately never expire.
+  mustNotBeExpired Boolean @default(true)
+
+  /// Only meaningful when credentialCategory = INSURANCE; null otherwise.
+  minimumCoverageAmount       Decimal? @db.Decimal(12, 2)
+  minimumCoverageCurrencyCode String?
+
+  notes String?
+
+  createdByUserId String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organisation  Organisation @relation(fields: [organisationId], references: [id])
+  createdByUser User         @relation(fields: [createdByUserId], references: [id])
+
+  @@unique([organisationId, category, credentialType])
+  @@index([organisationId])
+  @@index([organisationId, category])
+  @@map("contractor_compliance_requirements")
 }
 
 // --- Contractor quotes + configurable WaslSign workflow (M8 / M9-A) ---

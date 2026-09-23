@@ -12,6 +12,7 @@ import {
   createWorkOrder,
   getWorkOrder,
   getWorkOrderByMaintenanceRequest,
+  getWorkOrderContractorEligibility,
   listWorkOrders,
   updateWorkOrderCost,
   updateWorkOrderStatus,
@@ -55,6 +56,11 @@ workOrdersRouter.patch(
   '/:id/status',
   requireCapability('work_orders.manage', fromWorkOrderParam('id')),
   asyncHandler(updateWorkOrderStatus),
+);
+workOrdersRouter.get(
+  '/:id/contractor-eligibility',
+  requireCapability('work_orders.manage', fromWorkOrderParam('id')),
+  asyncHandler(getWorkOrderContractorEligibility),
 );
 workOrdersRouter.patch(
   '/:id/contractor',

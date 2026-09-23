@@ -2,6 +2,7 @@ import { createApp } from './app.js';
 import { env } from './config/env.js';
 import { logger } from './lib/logger.js';
 import { getDeliveryScheduler } from './modules/communications/communications.delivery.js';
+import { getComplianceScheduler } from './modules/contractors/compliance/complianceNotifications.service.js';
 
 const app = createApp();
 
@@ -11,6 +12,10 @@ const app = createApp();
 // import createApp() directly and never touch this file. The Backoffice
 // Jobs module reads the same shared instance's status but never starts it.
 getDeliveryScheduler().start();
+
+// Same in-process pattern for contractor credential expiry notifications —
+// see complianceNotifications.service.ts.
+getComplianceScheduler().start();
 
 app.listen(env.PORT, () => {
   logger.info(`waslproperty-backend listening on port ${env.PORT}`);

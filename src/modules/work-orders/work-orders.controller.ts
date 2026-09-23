@@ -70,6 +70,15 @@ export async function assignWorkOrderContractor(req: Request, res: Response) {
   res.json(workOrder);
 }
 
+export async function getWorkOrderContractorEligibility(req: Request, res: Response) {
+  const auth = requireAuth(req);
+  const result = await workOrdersService.listContractorEligibility(
+    auth.organisationId,
+    req.params.id as string,
+  );
+  res.json(result);
+}
+
 export async function updateWorkOrderCost(req: Request, res: Response) {
   const auth = requireAuth(req);
   const input = updateCostSchema.parse(req.body);
