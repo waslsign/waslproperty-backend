@@ -14,14 +14,27 @@ export const createQuoteSchema = z.object({
 });
 export type CreateQuoteInput = z.infer<typeof createQuoteSchema>;
 
-/** Staff-entered on behalf of a contractor — there is no contractor login in M8. */
+/** Used both by staff entering a quote on a contractor's behalf and by a
+ * contractor submitting through their own secure RFQ link — the same
+ * commercial content either way. Free text throughout for the proposal
+ * fields (see ContractorQuote's own schema comment for why). */
 export const submitQuoteSchema = z.object({
   amount: z.coerce.number().positive().optional(),
   description: z.string().trim().min(1).max(2000).optional(),
+  proposedStartAt: z.coerce.date().optional(),
+  estimatedDuration: z.string().trim().max(200).optional(),
+  inclusions: z.string().trim().max(2000).optional(),
+  exclusions: z.string().trim().max(2000).optional(),
+  warrantyInfo: z.string().trim().max(1000).optional(),
 });
 export type SubmitQuoteInput = z.infer<typeof submitQuoteSchema>;
 
+// NONE is settable too — a manager confirming that a quote genuinely needs
+// no approval or signature (only ever allowed when the organisation's
+// Approval & Acceptance policy doesn't require more — see
+// QuotesService.setWorkflowMode's meetsOrExceedsRequirement check).
 const settableWorkflowModes = [
+  WorkflowMode.NONE,
   WorkflowMode.APPROVAL_ONLY,
   WorkflowMode.SIGNATURE_ONLY,
   WorkflowMode.APPROVAL_THEN_SIGNATURE,

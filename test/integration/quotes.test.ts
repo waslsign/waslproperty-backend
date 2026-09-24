@@ -96,15 +96,59 @@ describe('contractor quotes + workflow modes', () => {
     await testPrisma.$disconnect();
   });
 
-  describe('NONE (below threshold)', () => {
-    it('defaults a low-value quote to NONE and lets it be released without any workflow', async () => {
+  describe('organisation approval policy (replaces the old env-var threshold)', () => {
+    async function configurePolicy(accessToken: string) {
+      const res = await request(app)
+        .put('/api/v1/organisations/me/approval-policy')
+        .set(authHeader(accessToken))
+        .send({
+          currencyCode: 'AUD',
+          enabled: true,
+          rules: [
+            { maxAmount: 5000, workflowMode: 'NONE' },
+            { maxAmount: null, workflowMode: 'APPROVAL_ONLY' },
+          ],
+        });
+      expect(res.status).toBe(200);
+      return res.body;
+    }
+
+    it('with no policy configured, a quote gets no suggested workflow and release stays blocked until a manager explicitly chooses one', async () => {
       const { accessToken } = await registerTestUser(app);
       const { workOrderId, quoteId } = await setupWorkOrderWithContractor(accessToken, 500);
 
       const quote = await request(app)
         .get(`/api/v1/quotes/${quoteId}`)
         .set(authHeader(accessToken));
+      expect(quote.body.workflowMode).toBeNull();
+      expect(quote.body.requiredWorkflowMode).toBeNull();
+
+      // No silent bypass merely because policy is absent — release is still
+      // blocked until a workflow is actually chosen.
+      const toReady = await request(app)
+        .patch(`/api/v1/work-orders/${workOrderId}/status`)
+        .set(authHeader(accessToken))
+        .send({ status: 'READY' });
+      expect(toReady.status).toBe(409);
+
+      const setMode = await request(app)
+        .patch(`/api/v1/quotes/${quoteId}/workflow-mode`)
+        .set(authHeader(accessToken))
+        .send({ workflowMode: 'NONE' });
+      expect(setMode.status).toBe(200);
+    });
+
+    it('resolves a low-value quote to the policy-configured NONE band and lets it be released without any workflow', async () => {
+      const { accessToken } = await registerTestUser(app);
+      await configurePolicy(accessToken);
+      const { workOrderId, quoteId } = await setupWorkOrderWithContractor(accessToken, 500);
+
+      const quote = await request(app)
+        .get(`/api/v1/quotes/${quoteId}`)
+        .set(authHeader(accessToken));
       expect(quote.body.workflowMode).toBe('NONE');
+      expect(quote.body.requiredWorkflowMode).toBe('NONE');
+      expect(quote.body.approvalPolicySnapshot.reason).toMatch(/AUD 5,000\.00/);
 
       const toReady = await request(app)
         .patch(`/api/v1/work-orders/${workOrderId}/status`)
@@ -114,17 +158,19 @@ describe('contractor quotes + workflow modes', () => {
       expect(waslSignServiceMock.createAgreementWorkflow).not.toHaveBeenCalled();
     });
 
-    it('a high-value quote still blocks release before the manager confirms a workflow, even though workflowMode already carries a threshold-based default', async () => {
-      // Regression: create() pre-fills workflowMode with a suggested default
-      // for amounts at/above the threshold — that must never be mistaken for
-      // an actually-confirmed, in-progress workflow.
+    it('a high-value quote resolves to the policy-required workflow as a suggestion only — release still blocks until the manager confirms it', async () => {
+      // Regression: create() pre-fills workflowMode with the policy's
+      // suggestion — that must never be mistaken for an actually-confirmed,
+      // in-progress workflow.
       const { accessToken } = await registerTestUser(app);
+      await configurePolicy(accessToken);
       const { workOrderId, quoteId } = await setupWorkOrderWithContractor(accessToken, 7500);
 
       const quote = await request(app)
         .get(`/api/v1/quotes/${quoteId}`)
         .set(authHeader(accessToken));
       expect(quote.body.workflowMode).toBe('APPROVAL_ONLY');
+      expect(quote.body.requiredWorkflowMode).toBe('APPROVAL_ONLY');
       expect(quote.body.approvalStatus).toBeNull();
 
       const toReady = await request(app)
@@ -132,6 +178,35 @@ describe('contractor quotes + workflow modes', () => {
         .set(authHeader(accessToken))
         .send({ status: 'READY' });
       expect(toReady.status).toBe(409);
+    });
+
+    it('a manager cannot weaken the policy-required workflow to NONE', async () => {
+      const { accessToken } = await registerTestUser(app);
+      await configurePolicy(accessToken);
+      const { quoteId } = await setupWorkOrderWithContractor(accessToken, 7500);
+
+      const setMode = await request(app)
+        .patch(`/api/v1/quotes/${quoteId}/workflow-mode`)
+        .set(authHeader(accessToken))
+        .send({ workflowMode: 'NONE' });
+      expect(setMode.status).toBe(409);
+      expect(setMode.body.error.message).toMatch(/policy requires at least/i);
+    });
+
+    it('a manager may add more control than the policy requires', async () => {
+      const { accessToken } = await registerTestUser(app);
+      await configurePolicy(accessToken);
+      const { quoteId } = await setupWorkOrderWithContractor(accessToken, 7500);
+
+      // Required: APPROVAL_ONLY. Strengthening to APPROVAL_THEN_SIGNATURE
+      // adds the signature gate on top rather than removing the approval
+      // one, so it must be allowed.
+      const setMode = await request(app)
+        .patch(`/api/v1/quotes/${quoteId}/workflow-mode`)
+        .set(authHeader(accessToken))
+        .send({ workflowMode: 'APPROVAL_THEN_SIGNATURE' });
+      expect(setMode.status).toBe(200);
+      expect(setMode.body.approvalStatus).toBe('PENDING');
     });
   });
 

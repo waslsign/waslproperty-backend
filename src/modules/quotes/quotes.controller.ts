@@ -74,3 +74,25 @@ export async function rejectQuote(req: Request, res: Response) {
   );
   res.json(quote);
 }
+
+/** A manager recording that a contractor declined to quote (received by
+ * phone/email rather than through the contractor's own secure link). */
+export async function declineQuote(req: Request, res: Response) {
+  const auth = requireAuth(req);
+  const quote = await quotesService.decline(
+    auth.organisationId,
+    auth.userId,
+    req.params.id as string,
+  );
+  res.json(quote);
+}
+
+export async function withdrawQuote(req: Request, res: Response) {
+  const auth = requireAuth(req);
+  const quote = await quotesService.withdraw(
+    auth.organisationId,
+    auth.userId,
+    req.params.id as string,
+  );
+  res.json(quote);
+}

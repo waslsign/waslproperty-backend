@@ -289,6 +289,10 @@ async function findQuotePendingApprovalTooLong(
       organisationId,
       approvalStatus: 'PENDING',
       workflowMode: { in: ['APPROVAL_ONLY', 'APPROVAL_THEN_SIGNATURE'] },
+      // The approval workflow only ever runs on an awarded quote (see
+      // QuotesService.assertAwarded) — this filter just makes that
+      // guarantee explicit for the query itself.
+      workOrderId: { not: null },
       ...(propertyIds ? { workOrder: { propertyId: { in: propertyIds } } } : {}),
     },
     select: {
@@ -301,6 +305,7 @@ async function findQuotePendingApprovalTooLong(
 
   const items: AttentionItem[] = [];
   for (const r of rows) {
+    if (!r.workOrder) continue;
     const since = r.submittedAt ?? r.createdAt;
     const ageHours = hoursBetween(since, now);
     if (ageHours <= 3 * 24) continue;
@@ -336,6 +341,7 @@ async function findQuoteSignatureStalled(
         { workflowMode: 'SIGNATURE_ONLY' },
         { workflowMode: 'APPROVAL_THEN_SIGNATURE', approvalStatus: 'APPROVED' },
       ],
+      workOrderId: { not: null },
       ...(propertyIds ? { workOrder: { propertyId: { in: propertyIds } } } : {}),
     },
     select: {
@@ -349,6 +355,7 @@ async function findQuoteSignatureStalled(
 
   const items: AttentionItem[] = [];
   for (const r of rows) {
+    if (!r.workOrder) continue;
     const since = r.submittedAt ?? r.createdAt;
     const ageHours = hoursBetween(since, now);
     // Someone is actively waiting on a co-signer once one side has already
@@ -391,6 +398,9 @@ async function findQuoteRejectedNeedsFollowup(
       organisationId,
       status: 'REJECTED',
       rejectedAt: { gte: cutoff },
+      // REJECTED only ever happens via the approval workflow, which only
+      // ever runs on an awarded quote — see assertAwarded.
+      workOrderId: { not: null },
       ...(propertyIds ? { workOrder: { propertyId: { in: propertyIds } } } : {}),
     },
     select: {
@@ -405,13 +415,14 @@ async function findQuoteRejectedNeedsFollowup(
 
   // Only flag it if no newer quote has since been requested for the same
   // work order — a superseded rejection doesn't need a nudge.
-  const workOrderIds = [...new Set(rejected.map((r) => r.workOrderId))];
+  const workOrderIds = [...new Set(rejected.map((r) => r.workOrderId as string))];
   const allQuotesForThoseWorkOrders = await prisma.contractorQuote.findMany({
     where: { workOrderId: { in: workOrderIds } },
     select: { workOrderId: true, createdAt: true },
   });
   const latestCreatedAtByWorkOrder = new Map<string, number>();
   for (const q of allQuotesForThoseWorkOrders) {
+    if (!q.workOrderId) continue;
     const t = q.createdAt.getTime();
     const current = latestCreatedAtByWorkOrder.get(q.workOrderId) ?? -Infinity;
     if (t > current) latestCreatedAtByWorkOrder.set(q.workOrderId, t);
@@ -419,6 +430,7 @@ async function findQuoteRejectedNeedsFollowup(
 
   const items: AttentionItem[] = [];
   for (const r of rejected) {
+    if (!r.workOrder || !r.workOrderId) continue;
     if (latestCreatedAtByWorkOrder.get(r.workOrderId) !== r.createdAt.getTime()) continue;
     items.push({
       id: `QUOTE_REJECTED_NEEDS_FOLLOWUP:${r.id}`,

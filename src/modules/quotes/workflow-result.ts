@@ -63,3 +63,28 @@ function signatureResult(signatureStatus: SignatureStatus | null): WorkflowResul
 export function canReleaseWorkOrder(workflowResult: WorkflowResult): boolean {
   return workflowResult === 'NOT_REQUIRED' || workflowResult === 'COMPLETED';
 }
+
+/** WaslSign's own event-type vocabulary → this app's SignatureStatus —
+ * resource-agnostic (a quote and a Work Order Variation both go through
+ * the same handful of WaslSign states), so both QuotesService and
+ * WorkOrderVariationsService's callback handlers import this one
+ * function rather than each maintaining their own copy. */
+export function mapWaslSignEventToSignatureStatus(eventType: string): SignatureStatus | null {
+  switch (eventType) {
+    case 'SIGNATURE_PENDING':
+      return 'PENDING';
+    case 'PARTIALLY_SIGNED':
+      return 'PARTIALLY_SIGNED';
+    case 'SIGNED':
+    case 'WORKFLOW_COMPLETED':
+      return 'SIGNED';
+    case 'WORKFLOW_CANCELLED':
+      return 'CANCELLED';
+    case 'DECLINED':
+      return 'DECLINED';
+    case 'EXPIRED':
+      return 'EXPIRED';
+    default:
+      return null;
+  }
+}

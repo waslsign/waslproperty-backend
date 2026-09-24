@@ -3,6 +3,16 @@ import { getPrismaClient } from '../../src/lib/prisma.js';
 export const testPrisma = getPrismaClient();
 
 export async function resetDb() {
+  // WorkOrder.selectedQuoteId <-> ContractorQuote.workOrderId and
+  // QuoteRound.awardedQuoteId <-> ContractorQuote.quoteRoundId are each a
+  // circular FK pair — neither table in either pair can be fully deleted
+  // first without violating the other direction, so both "award" links
+  // are nulled out up front to break the cycles before any deletes run.
+  await testPrisma.$transaction([
+    testPrisma.workOrder.updateMany({ data: { selectedQuoteId: null } }),
+    testPrisma.quoteRound.updateMany({ data: { awardedQuoteId: null } }),
+  ]);
+
   await testPrisma.$transaction([
     testPrisma.activityEvent.deleteMany(),
     testPrisma.waslSignWebhookEvent.deleteMany(),
@@ -11,10 +21,17 @@ export async function resetDb() {
     testPrisma.communicationRecipient.deleteMany(),
     testPrisma.communication.deleteMany(),
     testPrisma.savedAudience.deleteMany(),
+    testPrisma.contractorQuoteAttachment.deleteMany(),
+    testPrisma.workOrderVariationAttachment.deleteMany(),
+    testPrisma.workOrderVariation.deleteMany(),
+    testPrisma.quoteRoundInvitation.deleteMany(),
     testPrisma.contractorQuote.deleteMany(),
     testPrisma.workOrder.deleteMany(),
+    testPrisma.quoteRound.deleteMany(),
     testPrisma.contractorCredential.deleteMany(),
     testPrisma.contractorComplianceRequirement.deleteMany(),
+    testPrisma.approvalPolicyRule.deleteMany(),
+    testPrisma.organisationApprovalPolicy.deleteMany(),
     testPrisma.contractor.deleteMany(),
     testPrisma.maintenanceRequestAttachment.deleteMany(),
     testPrisma.maintenanceRequest.deleteMany(),

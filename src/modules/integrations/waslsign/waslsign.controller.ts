@@ -5,8 +5,11 @@ import { env } from '../../../config/env.js';
 import { logger } from '../../../lib/logger.js';
 import { getPrismaClient } from '../../../lib/prisma.js';
 import { QuotesService } from '../../quotes/quotes.service.js';
+import { WorkOrderVariationsService } from '../../work-orders/work-order-variations.service.js';
 
-const quotesService = new QuotesService(getPrismaClient());
+const prisma = getPrismaClient();
+const quotesService = new QuotesService(prisma);
+const variationsService = new WorkOrderVariationsService(prisma);
 
 const callbackPayloadSchema = z.object({
   eventId: z.string().trim().min(1),
@@ -72,6 +75,32 @@ export async function handleWaslSignCallback(req: Request, res: Response) {
     return res.status(200).json({ handled: false, reason: 'wrong_source_system' });
   }
 
-  const result = await quotesService.handleWaslSignCallback(payload);
-  return res.status(200).json(result);
+  // Route by a persisted identifier — sourceEntityId is the domain row's
+  // own id, and each of ContractorQuote/WorkOrderVariation is the one
+  // place its own startSignatureWorkflow ever set it as a WaslSign
+  // sourceEntityId — never inferred from the id's shape or any string
+  // parsing. Both use the exact same WaslSignWebhookEvent idempotency
+  // ledger (the eventId unique constraint above already guarantees this
+  // request is being processed at most once, regardless of which handler
+  // ends up running).
+  const quote = await prisma.contractorQuote.findFirst({
+    where: { id: payload.sourceEntityId },
+    select: { id: true },
+  });
+  if (quote) {
+    const result = await quotesService.handleWaslSignCallback(payload);
+    return res.status(200).json(result);
+  }
+
+  const variation = await prisma.workOrderVariation.findFirst({
+    where: { id: payload.sourceEntityId },
+    select: { id: true },
+  });
+  if (variation) {
+    const result = await variationsService.handleWaslSignCallback(payload);
+    return res.status(200).json(result);
+  }
+
+  logger.warn({ payload }, 'WaslSign callback for an unknown resource — ignored');
+  return res.status(200).json({ handled: false, reason: 'unknown_resource' });
 }

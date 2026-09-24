@@ -7,10 +7,12 @@ import { asyncHandler } from '../../middlewares/asyncHandler.js';
 import {
   approveQuote,
   createQuote,
+  declineQuote,
   getQuote,
   rejectQuote,
   setQuoteWorkflowMode,
   submitQuote,
+  withdrawQuote,
 } from './quotes.controller.js';
 
 export const quotesRouter = Router();
@@ -47,6 +49,16 @@ quotesRouter.patch(
   '/:id/workflow-mode',
   requireCapability('quotes.manage', fromQuoteParam('id')),
   asyncHandler(setQuoteWorkflowMode),
+);
+quotesRouter.patch(
+  '/:id/decline',
+  requireCapability('quotes.manage', fromQuoteParam('id')),
+  asyncHandler(declineQuote),
+);
+quotesRouter.patch(
+  '/:id/withdraw',
+  requireCapability('quotes.manage', fromQuoteParam('id')),
+  asyncHandler(withdrawQuote),
 );
 quotesRouter.post(
   '/:id/approve',
