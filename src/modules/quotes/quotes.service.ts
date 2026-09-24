@@ -1,12 +1,16 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { recordActivity } from '../activity/activity.js';
 import { ConflictError, NotFoundError } from '../../errors/AppError.js';
-import { env } from '../../config/env.js';
 import { logger } from '../../lib/logger.js';
 import { generateQuoteAcceptanceDocument } from '../../lib/quoteAcceptanceDocument.js';
 import { waslSignService, WaslSignServiceError } from '../../lib/waslSign.js';
 import { notifyOrgStaff } from '../notifications/notifications.js';
 import { WorkOrdersService } from '../work-orders/work-orders.service.js';
+import {
+  ApprovalPolicyService,
+  meetsOrExceedsRequirement,
+} from '../approval-policy/approval-policy.service.js';
+import { mapWaslSignEventToSignatureStatus } from './workflow-result.js';
 import type {
   CreateQuoteInput,
   RejectQuoteInput,
@@ -26,13 +30,69 @@ const quoteInclude = {
       space: { select: { id: true, name: true } },
     },
   },
+  quoteRound: {
+    select: {
+      id: true,
+      title: true,
+      property: { select: { id: true, name: true } },
+      space: { select: { id: true, name: true } },
+    },
+  },
 } satisfies Prisma.ContractorQuoteInclude;
+
+type QuoteWithInclude = Prisma.ContractorQuoteGetPayload<{ include: typeof quoteInclude }>;
+
+/** Property/space/title/entity context for activity + notifications —
+ * derived from whichever of workOrder/quoteRound this quote actually has.
+ * Before award (RFQ path), only quoteRound exists; from award onward, both
+ * do (and workOrder is what everything after award should describe). */
+function quoteContext(quote: QuoteWithInclude) {
+  if (quote.workOrder) {
+    return {
+      propertyId: quote.workOrder.property.id,
+      spaceId: quote.workOrder.space?.id ?? null,
+      title: quote.workOrder.title,
+      entityType: 'WorkOrder' as const,
+      entityId: quote.workOrder.id,
+    };
+  }
+  if (quote.quoteRound) {
+    return {
+      propertyId: quote.quoteRound.property.id,
+      spaceId: quote.quoteRound.space?.id ?? null,
+      title: quote.quoteRound.title,
+      entityType: 'QuoteRound' as const,
+      entityId: quote.quoteRound.id,
+    };
+  }
+  throw new ConflictError('This quote is not linked to a work order or quote round');
+}
+/** Once M11's RFQ path can leave workOrderId null until award, every method
+ * below that manages the approval/signature workflow (which only ever
+ * makes sense once a quote governs a real Work Order) needs this
+ * confirmed first — a quote still awaiting award has no workflow to speak
+ * of yet. Narrows `quote.workOrder` to non-null for the rest of the
+ * calling function. */
+type AwardedQuote = QuoteWithInclude & {
+  workOrder: NonNullable<QuoteWithInclude['workOrder']>;
+  amount: NonNullable<QuoteWithInclude['amount']>;
+};
+function assertAwarded(quote: QuoteWithInclude): asserts quote is AwardedQuote {
+  if (!quote.workOrder) {
+    throw new ConflictError('This quote has not been awarded to a work order yet');
+  }
+  if (quote.amount == null) {
+    throw new ConflictError('This quote has no amount yet');
+  }
+}
 
 export class QuotesService {
   private readonly workOrdersService: WorkOrdersService;
+  private readonly approvalPolicy: ApprovalPolicyService;
 
   constructor(private readonly prisma: PrismaClient) {
     this.workOrdersService = new WorkOrdersService(prisma);
+    this.approvalPolicy = new ApprovalPolicyService(prisma);
   }
 
   /**
@@ -58,14 +118,6 @@ export class QuotesService {
       if (err instanceof ConflictError) return;
       throw err;
     }
-  }
-
-  private defaultWorkflowMode(
-    amount: number,
-  ): 'NONE' | 'APPROVAL_ONLY' | 'SIGNATURE_ONLY' | 'APPROVAL_THEN_SIGNATURE' {
-    return amount >= env.WORK_ORDER_WASLSIGN_THRESHOLD_AED
-      ? env.WORK_ORDER_DEFAULT_WORKFLOW_MODE
-      : 'NONE';
   }
 
   private async getOwnedQuote(organisationId: string, quoteId: string) {
@@ -107,6 +159,13 @@ export class QuotesService {
         })
       ).currencyCode;
 
+    // Direct Work has no separate "award" moment — recording this quote IS
+    // the commercial commitment becoming real, so this is where the
+    // organisation's Approval & Acceptance policy is resolved (see
+    // ApprovalPolicyService's doc comment for why this is one of exactly
+    // three resolution points).
+    const resolution = await this.approvalPolicy.resolve(organisationId, input.amount, currencyCode);
+
     return this.prisma.contractorQuote.create({
       data: {
         organisationId,
@@ -116,7 +175,13 @@ export class QuotesService {
         currencyCode,
         description: input.description,
         status: 'REQUESTED',
-        workflowMode: this.defaultWorkflowMode(input.amount),
+        // A pre-selected suggestion only — nothing starts until a manager
+        // confirms via setWorkflowMode, exactly as before. Null (no
+        // policy/currency mismatch) means no suggestion at all; the
+        // manager must choose explicitly, never silently NONE.
+        workflowMode: resolution.workflowMode ?? undefined,
+        requiredWorkflowMode: resolution.workflowMode,
+        approvalPolicySnapshot: resolution as unknown as Prisma.InputJsonValue,
       },
       include: quoteInclude,
     });
@@ -126,9 +191,13 @@ export class QuotesService {
     return this.getOwnedQuote(organisationId, quoteId);
   }
 
+  /** actorUserId is null when a contractor submits through their own
+   * secure RFQ link — there is no WaslProp user acting. A manager entering
+   * a quote on a contractor's behalf (or revising a Direct Work quote)
+   * supplies their own id. */
   async submit(
     organisationId: string,
-    actorUserId: string,
+    actorUserId: string | null,
     quoteId: string,
     input: SubmitQuoteInput,
   ) {
@@ -136,6 +205,14 @@ export class QuotesService {
     if (quote.status !== 'REQUESTED') {
       throw new ConflictError(`Cannot submit a quote in ${quote.status} status`);
     }
+    // A quote created straight against a Work Order (Direct Work) already
+    // has its amount from creation; an RFQ-invited quote has none until
+    // this exact moment, so one is required here for that case.
+    if (quote.amount == null && input.amount == null) {
+      throw new ConflictError('An amount is required to submit this quote');
+    }
+
+    const ctx = quoteContext(quote);
 
     return this.prisma.$transaction(async (tx) => {
       const updated = await tx.contractorQuote.update({
@@ -145,35 +222,127 @@ export class QuotesService {
           submittedAt: new Date(),
           amount: input.amount ?? undefined,
           description: input.description ?? undefined,
-          workflowMode:
-            input.amount !== undefined ? this.defaultWorkflowMode(input.amount) : undefined,
+          proposedStartAt: input.proposedStartAt ?? undefined,
+          estimatedDuration: input.estimatedDuration ?? undefined,
+          inclusions: input.inclusions ?? undefined,
+          exclusions: input.exclusions ?? undefined,
+          warrantyInfo: input.warrantyInfo ?? undefined,
+          // No workflowMode resolution here — receiving a quote (even a
+          // manager typing one in) is not the same as it being selected.
+          // The Approval & Acceptance policy is resolved once, at the
+          // moment a quote actually becomes the selected/awarded one — see
+          // QuoteRoundsService.award for the RFQ path and create() above
+          // for Direct Work.
         },
         include: quoteInclude,
       });
 
       await recordActivity(tx, {
         organisationId,
-        propertyId: quote.workOrder.property.id,
-        spaceId: quote.workOrder.space?.id ?? null,
+        propertyId: ctx.propertyId,
+        spaceId: ctx.spaceId,
         actorUserId,
         eventType: 'QUOTE_SUBMITTED',
-        entityType: 'WorkOrder',
-        entityId: quote.workOrder.id,
+        entityType: ctx.entityType,
+        entityId: ctx.entityId,
         title: `Quote submitted by ${quote.contractor.name}`,
-        description: `${updated.amount} ${updated.currencyCode} · ${quote.workOrder.title}`,
+        description: `${updated.amount} ${updated.currencyCode} · ${ctx.title}`,
       });
 
       await notifyOrgStaff(
         tx,
         organisationId,
         {
-          title: `Quote submitted for ${quote.workOrder.title}`,
+          title: `Quote submitted for ${ctx.title}`,
           body: `${quote.contractor.name} · needs review`,
-          entityType: 'WorkOrder',
-          entityId: quote.workOrder.id,
+          entityType: ctx.entityType,
+          entityId: ctx.entityId,
         },
-        { excludeUserId: actorUserId },
+        actorUserId ? { excludeUserId: actorUserId } : {},
       );
+
+      return updated;
+    });
+  }
+
+  /** The contractor explicitly declines to quote — RFQ path only (a Direct
+   * Work quote was never "invited" in this sense). actorUserId is null
+   * when the contractor declines through their own secure link; a manager
+   * recording a decline they received by phone/email supplies their own
+   * id. */
+  async decline(organisationId: string, actorUserId: string | null, quoteId: string) {
+    const quote = await this.getOwnedQuote(organisationId, quoteId);
+    if (quote.status !== 'REQUESTED') {
+      throw new ConflictError(`Cannot decline a quote in ${quote.status} status`);
+    }
+    const ctx = quoteContext(quote);
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.contractorQuote.update({
+        where: { id: quoteId },
+        data: { status: 'DECLINED', declinedAt: new Date() },
+        include: quoteInclude,
+      });
+
+      await recordActivity(tx, {
+        organisationId,
+        propertyId: ctx.propertyId,
+        spaceId: ctx.spaceId,
+        actorUserId,
+        eventType: 'QUOTE_DECLINED',
+        entityType: ctx.entityType,
+        entityId: ctx.entityId,
+        title: `${quote.contractor.name} declined to quote`,
+        description: ctx.title,
+      });
+
+      await notifyOrgStaff(tx, organisationId, {
+        title: `${quote.contractor.name} declined to quote`,
+        body: ctx.title,
+        entityType: ctx.entityType,
+        entityId: ctx.entityId,
+      });
+
+      return updated;
+    });
+  }
+
+  /** The contractor withdraws a quote they already submitted, before it's
+   * been selected. Once a round is AWARDED its losing quotes become
+   * NOT_SELECTED instead — withdrawal is only ever a contractor's own
+   * choice, not an outcome of losing. */
+  async withdraw(organisationId: string, actorUserId: string | null, quoteId: string) {
+    const quote = await this.getOwnedQuote(organisationId, quoteId);
+    if (quote.status !== 'SUBMITTED') {
+      throw new ConflictError(`Cannot withdraw a quote in ${quote.status} status`);
+    }
+    const ctx = quoteContext(quote);
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.contractorQuote.update({
+        where: { id: quoteId },
+        data: { status: 'WITHDRAWN', withdrawnAt: new Date() },
+        include: quoteInclude,
+      });
+
+      await recordActivity(tx, {
+        organisationId,
+        propertyId: ctx.propertyId,
+        spaceId: ctx.spaceId,
+        actorUserId,
+        eventType: 'QUOTE_ROUND_QUOTE_WITHDRAWN',
+        entityType: ctx.entityType,
+        entityId: ctx.entityId,
+        title: `${quote.contractor.name} withdrew their quote`,
+        description: ctx.title,
+      });
+
+      await notifyOrgStaff(tx, organisationId, {
+        title: `${quote.contractor.name} withdrew their quote`,
+        body: ctx.title,
+        entityType: ctx.entityType,
+        entityId: ctx.entityId,
+      });
 
       return updated;
     });
@@ -193,10 +362,38 @@ export class QuotesService {
     input: SetWorkflowModeInput,
   ) {
     const quote = await this.getOwnedQuote(organisationId, quoteId);
+    assertAwarded(quote);
     if (quote.status === 'APPROVED' || quote.status === 'REJECTED') {
       throw new ConflictError(
         `Cannot change the workflow for a quote already ${quote.status.toLowerCase()}`,
       );
+    }
+    // A manager may add MORE control than the organisation's policy
+    // requires (e.g. choosing APPROVAL_THEN_SIGNATURE where only
+    // APPROVAL_ONLY was required), but may never weaken it — if that
+    // policy is wrong for this organisation, an OWNER/ADMIN should change
+    // the policy itself, not quietly bypass it quote by quote. No floor is
+    // enforced when requiredWorkflowMode is null (no policy was configured
+    // or the currency didn't match at resolution time).
+    if (
+      quote.requiredWorkflowMode &&
+      !meetsOrExceedsRequirement(input.workflowMode, quote.requiredWorkflowMode)
+    ) {
+      const requiredLabel = quote.requiredWorkflowMode.toLowerCase().replace(/_/g, ' ');
+      throw new ConflictError(
+        `Organisation policy requires at least "${requiredLabel}" for this amount — a manager cannot select a weaker workflow. An OWNER or ADMIN can change the organisation's Approval & Acceptance policy if this requirement is wrong.`,
+      );
+    }
+
+    if (input.workflowMode === 'NONE') {
+      // Nothing to review or sign — confirming NONE is itself the
+      // decision, so this quote is immediately as final as APPROVAL_ONLY's
+      // approve() leaves one, not left in an in-progress review state.
+      return this.prisma.contractorQuote.update({
+        where: { id: quoteId },
+        data: { workflowMode: 'NONE', status: 'APPROVED' },
+        include: quoteInclude,
+      });
     }
 
     if (
@@ -220,6 +417,7 @@ export class QuotesService {
 
   async approve(organisationId: string, actorUserId: string, quoteId: string) {
     const quote = await this.getOwnedQuote(organisationId, quoteId);
+    assertAwarded(quote);
     if (
       quote.workflowMode !== 'APPROVAL_ONLY' &&
       quote.workflowMode !== 'APPROVAL_THEN_SIGNATURE'
@@ -278,6 +476,10 @@ export class QuotesService {
 
     // APPROVAL_THEN_SIGNATURE — the signature phase only ever starts here,
     // never before approval, and never if approval was rejected instead.
+    // Still the same quote assertAwarded already vetted, just re-fetched
+    // via the update above — re-assert rather than trust the Prisma return
+    // type, which doesn't know that.
+    assertAwarded(approved);
     return this.startSignatureWorkflow(
       organisationId,
       actorUserId,
@@ -293,6 +495,7 @@ export class QuotesService {
     input: RejectQuoteInput,
   ) {
     const quote = await this.getOwnedQuote(organisationId, quoteId);
+    assertAwarded(quote);
     if (
       quote.workflowMode !== 'APPROVAL_ONLY' &&
       quote.workflowMode !== 'APPROVAL_THEN_SIGNATURE'
@@ -343,7 +546,7 @@ export class QuotesService {
   private async startSignatureWorkflow(
     organisationId: string,
     actorUserId: string,
-    quote: Prisma.ContractorQuoteGetPayload<{ include: typeof quoteInclude }>,
+    quote: AwardedQuote,
     workflowMode: 'SIGNATURE_ONLY' | 'APPROVAL_THEN_SIGNATURE',
   ) {
     if (!waslSignService.isConfigured()) {
@@ -484,8 +687,12 @@ export class QuotesService {
       );
       return { handled: false, reason: 'agreement_mismatch' as const };
     }
+    // A quote only ever gets a waslSignAgreementId via startSignatureWorkflow,
+    // which only ever runs on an AwardedQuote — so this always holds in
+    // practice; asserted here purely so TypeScript knows it too.
+    assertAwarded(quote);
 
-    const signatureStatus = mapSignatureEvent(payload.eventType);
+    const signatureStatus = mapWaslSignEventToSignatureStatus(payload.eventType);
     if (!signatureStatus) {
       return { handled: false, reason: 'unrecognised_event' as const };
     }
@@ -536,25 +743,5 @@ export class QuotesService {
     }
 
     return { handled: true as const };
-  }
-}
-
-function mapSignatureEvent(eventType: string) {
-  switch (eventType) {
-    case 'SIGNATURE_PENDING':
-      return 'PENDING' as const;
-    case 'PARTIALLY_SIGNED':
-      return 'PARTIALLY_SIGNED' as const;
-    case 'SIGNED':
-    case 'WORKFLOW_COMPLETED':
-      return 'SIGNED' as const;
-    case 'WORKFLOW_CANCELLED':
-      return 'CANCELLED' as const;
-    case 'DECLINED':
-      return 'DECLINED' as const;
-    case 'EXPIRED':
-      return 'EXPIRED' as const;
-    default:
-      return null;
   }
 }

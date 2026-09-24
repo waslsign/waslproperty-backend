@@ -101,3 +101,23 @@ export function inviteTokenExpiresAt(): Date {
   const hours = env.INVITE_TOKEN_EXPIRES_IN_HOURS;
   return new Date(Date.now() + hours * 60 * 60 * 1000);
 }
+
+/**
+ * A contractor's own secure link into one QuoteRoundInvitation — same
+ * shape/security posture as an invite token (high-entropy, sha256-hashed
+ * at rest, only the raw value ever leaves the server in the RFQ
+ * notification), scoped to exactly that one invitation via
+ * QuoteRoundInvitation.tokenHash, never anything broader.
+ */
+export function generateRfqToken(): string {
+  return randomBytes(32).toString('hex');
+}
+
+export function hashRfqToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+export function rfqTokenExpiresAt(): Date {
+  const days = env.RFQ_TOKEN_EXPIRES_IN_DAYS;
+  return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+}

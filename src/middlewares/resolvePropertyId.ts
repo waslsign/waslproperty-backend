@@ -50,16 +50,46 @@ export function fromWorkOrderParam(paramName: string) {
   };
 }
 
-/** Resolves via ContractorQuote -> WorkOrder.propertyId — for routes
- * addressed by quoteId. */
+/** Resolves via ContractorQuote -> WorkOrder.propertyId (once awarded) or
+ * -> QuoteRound.propertyId (before award, the RFQ path's only property
+ * link) — for routes addressed by quoteId. */
 export function fromQuoteParam(paramName: string) {
   return async (req: Request) => {
     if (!req.auth) return undefined;
     const quote = await prisma.contractorQuote.findFirst({
       where: { id: req.params[paramName], organisationId: req.auth.organisationId },
+      select: {
+        workOrder: { select: { propertyId: true } },
+        quoteRound: { select: { propertyId: true } },
+      },
+    });
+    return quote?.workOrder?.propertyId ?? quote?.quoteRound?.propertyId;
+  };
+}
+
+/** Resolves via WorkOrderVariation -> WorkOrder.propertyId — for routes
+ * addressed by variationId. */
+export function fromVariationParam(paramName: string) {
+  return async (req: Request) => {
+    if (!req.auth) return undefined;
+    const variation = await prisma.workOrderVariation.findFirst({
+      where: { id: req.params[paramName], organisationId: req.auth.organisationId },
       select: { workOrder: { select: { propertyId: true } } },
     });
-    return quote?.workOrder.propertyId;
+    return variation?.workOrder.propertyId;
+  };
+}
+
+/** Resolves via QuoteRound.propertyId — for routes addressed by
+ * quoteRoundId. */
+export function fromQuoteRoundParam(paramName: string) {
+  return async (req: Request) => {
+    if (!req.auth) return undefined;
+    const round = await prisma.quoteRound.findFirst({
+      where: { id: req.params[paramName], organisationId: req.auth.organisationId },
+      select: { propertyId: true },
+    });
+    return round?.propertyId;
   };
 }
 

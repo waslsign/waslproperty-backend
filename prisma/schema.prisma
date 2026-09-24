@@ -55,6 +55,13 @@ model Organisation {
   rolePermissions                  OrganisationRolePermission[]
   contractorCredentials            ContractorCredential[]
   contractorComplianceRequirements ContractorComplianceRequirement[]
+  quoteRounds                      QuoteRound[]
+  quoteRoundInvitations            QuoteRoundInvitation[]
+  contractorQuoteAttachments       ContractorQuoteAttachment[]
+  workOrderVariations              WorkOrderVariation[]
+  workOrderVariationAttachments    WorkOrderVariationAttachment[]
+  approvalPolicy                   OrganisationApprovalPolicy?
+  approvalPolicyRules              ApprovalPolicyRule[]
 
   @@map("organisations")
 }
@@ -74,21 +81,30 @@ model User {
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
-  organisationMemberships       OrganisationMembership[]
-  sessions                      Session[]
-  propertyContacts              PropertyContact[]
-  activityEvents                ActivityEvent[]
-  maintenanceRequests           MaintenanceRequest[]
-  maintenanceRequestAttachments MaintenanceRequestAttachment[]
-  sentContactInvites            ContactInvite[]
-  createdWorkOrders             WorkOrder[]                       @relation("WorkOrderCreatedBy")
-  approvedContractorQuotes      ContractorQuote[]                 @relation("ContractorQuoteApprovedBy")
-  createdCommunications         Communication[]
-  createdSavedAudiences         SavedAudience[]
-  notifications                 Notification[]
-  verifiedContractorCredentials ContractorCredential[]            @relation("ContractorCredentialVerifiedBy")
-  createdContractorCredentials  ContractorCredential[]            @relation("ContractorCredentialCreatedBy")
-  createdComplianceRequirements ContractorComplianceRequirement[]
+  organisationMemberships               OrganisationMembership[]
+  sessions                              Session[]
+  propertyContacts                      PropertyContact[]
+  activityEvents                        ActivityEvent[]
+  maintenanceRequests                   MaintenanceRequest[]
+  maintenanceRequestAttachments         MaintenanceRequestAttachment[]
+  sentContactInvites                    ContactInvite[]
+  createdWorkOrders                     WorkOrder[]                       @relation("WorkOrderCreatedBy")
+  approvedContractorQuotes              ContractorQuote[]                 @relation("ContractorQuoteApprovedBy")
+  createdCommunications                 Communication[]
+  createdSavedAudiences                 SavedAudience[]
+  notifications                         Notification[]
+  verifiedContractorCredentials         ContractorCredential[]            @relation("ContractorCredentialVerifiedBy")
+  createdContractorCredentials          ContractorCredential[]            @relation("ContractorCredentialCreatedBy")
+  createdComplianceRequirements         ContractorComplianceRequirement[]
+  createdQuoteRounds                    QuoteRound[]                      @relation("QuoteRoundCreatedBy")
+  sentQuoteRoundInvitations             QuoteRoundInvitation[]            @relation("QuoteRoundInvitationInvitedBy")
+  selectedContractorQuotes              ContractorQuote[]                 @relation("ContractorQuoteSelectedBy")
+  uploadedContractorQuoteAttachments    ContractorQuoteAttachment[]
+  recordedWorkOrderVariations           WorkOrderVariation[]              @relation("WorkOrderVariationRecordedBy")
+  approvedWorkOrderVariations           WorkOrderVariation[]              @relation("WorkOrderVariationApprovedBy")
+  uploadedWorkOrderVariationAttachments WorkOrderVariationAttachment[]
+  createdApprovalPolicies               OrganisationApprovalPolicy[]      @relation("ApprovalPolicyCreatedBy")
+  updatedApprovalPolicies               OrganisationApprovalPolicy[]      @relation("ApprovalPolicyUpdatedBy")
 
   @@map("users")
 }
@@ -299,6 +315,7 @@ model Property {
   activityEvents      ActivityEvent[]
   maintenanceRequests MaintenanceRequest[]
   workOrders          WorkOrder[]
+  quoteRounds         QuoteRound[]
 
   @@unique([organisationId, code])
   @@index([organisationId])
@@ -353,6 +370,7 @@ model Space {
   activityEvents      ActivityEvent[]
   maintenanceRequests MaintenanceRequest[]
   workOrders          WorkOrder[]
+  quoteRounds         QuoteRound[]
 
   @@unique([propertyId, code])
   @@index([organisationId])
@@ -563,6 +581,39 @@ enum ActivityEventType {
   CONTRACTOR_CREDENTIAL_REJECTED
   CONTRACTOR_CREDENTIAL_REMOVED
   CONTRACTOR_COMPLIANCE_REQUIREMENTS_UPDATED
+  PROCUREMENT_PATH_CHOSEN
+  QUOTE_ROUND_CREATED
+  QUOTE_ROUND_CONTRACTOR_INVITED
+  QUOTE_ROUND_QUOTE_WITHDRAWN
+  QUOTE_SELECTED
+  QUOTE_ROUND_AWARDED
+  QUOTE_ROUND_CANCELLED
+  WORK_ORDER_AUTHORISED
+  WORK_ORDER_VARIATION_CREATED
+  WORK_ORDER_VARIATION_APPROVED
+  WORK_ORDER_VARIATION_REJECTED
+  WORK_ORDER_VARIATION_CANCELLED
+  /// Covers create/update/enable/disable of the organisation's Approval &
+  /// Acceptance policy — one coarse event type, matching the existing
+  /// CONTRACTOR_COMPLIANCE_REQUIREMENTS_UPDATED precedent, not a noisy
+  /// event per field edited.
+  APPROVAL_POLICY_UPDATED
+  /// A manager confirmed (or strengthened) the Approval & Acceptance
+  /// workflow a variation will go through — mirrors QUOTE_WORKFLOW_REQUESTED
+  /// in spirit, added as its own event since quotes never actually record
+  /// this step today (see WorkOrderVariationsService.setWorkflowMode).
+  WORK_ORDER_VARIATION_WORKFLOW_CONFIRMED
+  WORK_ORDER_VARIATION_SIGNATURE_STARTED
+  WORK_ORDER_VARIATION_SIGNED
+  /// A signature was declined/expired — the variation stays unauthorised
+  /// (never REJECTED, mirroring how a quote's failed signature leaves its
+  /// status alone too — see workflow-result.ts's FAILED case).
+  WORK_ORDER_VARIATION_SIGNATURE_FAILED
+  /// The one canonical "this variation now counts toward the authorised
+  /// total" event, fired at the exact moment status becomes APPROVED via
+  /// any of the three workflow paths (NONE / APPROVAL_ONLY /
+  /// APPROVAL_THEN_SIGNATURE) — see WorkOrderVariationsService.
+  WORK_ORDER_VARIATION_AUTHORISED
 }
 
 // --- Resident invitations (Slice 2 / M6.5) ---
@@ -619,6 +670,13 @@ model MaintenanceRequest {
   priority MaintenancePriority
   status   MaintenanceRequestStatus @default(NEW)
 
+  /// How this request is (or will be) arranged for work — chosen once by an
+  /// authorised user via "Arrange work" (see M11). Null until that decision
+  /// is made; every request created before M11 stays null forever and
+  /// simply never shows the RFQ/procurement UI, matching its pre-M11
+  /// behaviour exactly (create a Work Order, assign a contractor directly).
+  procurementPath ProcurementPath?
+
   reportedAt DateTime  @default(now())
   resolvedAt DateTime?
   closedAt   DateTime?
@@ -633,6 +691,7 @@ model MaintenanceRequest {
 
   attachments MaintenanceRequestAttachment[]
   workOrders  WorkOrder[]
+  quoteRounds QuoteRound[]
 
   @@index([organisationId])
   @@index([propertyId])
@@ -733,6 +792,19 @@ model WorkOrder {
   contractorId    String?
   createdByUserId String
 
+  /// Set only when this Work Order was authorised via the M11 RFQ/quote
+  /// award flow — the one ContractorQuote whose commercial terms this Work
+  /// Order actually represents. Null for a Work Order created the pre-M11
+  /// way (Direct Work: create Work Order, assign a contractor, optionally
+  /// record a quote against it directly) — that legacy shape keeps working
+  /// completely unchanged, it just never populates this link.
+  selectedQuoteId String? @unique
+  /// Denormalised convenience back-link to the quote round this award came
+  /// from, if any — the same fact is already derivable via
+  /// selectedQuote.quoteRoundId, kept here too only so a Work Order's own
+  /// round can be queried without joining through the quote.
+  quoteRoundId    String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -742,14 +814,18 @@ model WorkOrder {
   maintenanceRequest MaintenanceRequest? @relation(fields: [maintenanceRequestId], references: [id])
   contractor         Contractor?         @relation(fields: [contractorId], references: [id])
   createdBy          User                @relation("WorkOrderCreatedBy", fields: [createdByUserId], references: [id])
+  selectedQuote      ContractorQuote?    @relation("WorkOrderSelectedQuote", fields: [selectedQuoteId], references: [id])
+  quoteRound         QuoteRound?         @relation(fields: [quoteRoundId], references: [id])
 
-  quotes ContractorQuote[]
+  quotes     ContractorQuote[]
+  variations WorkOrderVariation[]
 
   @@index([organisationId])
   @@index([propertyId])
   @@index([spaceId])
   @@index([maintenanceRequestId])
   @@index([contractorId])
+  @@index([quoteRoundId])
   @@map("work_orders")
 }
 
@@ -795,10 +871,11 @@ model Contractor {
   createdAt       DateTime              @default(now())
   updatedAt       DateTime              @updatedAt
 
-  organisation Organisation           @relation(fields: [organisationId], references: [id])
-  workOrders   WorkOrder[]
-  quotes       ContractorQuote[]
-  credentials  ContractorCredential[]
+  organisation          Organisation           @relation(fields: [organisationId], references: [id])
+  workOrders            WorkOrder[]
+  quotes                ContractorQuote[]
+  credentials           ContractorCredential[]
+  quoteRoundInvitations QuoteRoundInvitation[]
 
   @@unique([organisationId, email])
   @@index([organisationId])
@@ -1002,28 +1079,83 @@ model ContractorComplianceRequirement {
 /// *derived* from (workflowMode, approvalStatus, signatureStatus) in
 /// application code rather than stored redundantly here.
 model ContractorQuote {
-  id             String @id @default(cuid())
+  id             String  @id @default(cuid())
   organisationId String
-  workOrderId    String
+  /// Nullable since M11 — a quote exists from the moment a contractor is
+  /// invited to a QuoteRound, long before any Work Order does. Set exactly
+  /// once, at award time, when WorkOrdersService.authoriseFromQuote creates
+  /// (or, for legacy Direct Work, already has) the Work Order this quote's
+  /// commercial terms govern. Still required and set at creation for the
+  /// pre-M11 Direct Work path, where a Work Order always already exists.
+  workOrderId    String?
+  /// Set only for a quote that originated from an M11 QuoteRound invitation
+  /// — null for a Direct Work quote recorded straight against a Work Order,
+  /// exactly as before this milestone.
+  quoteRoundId   String?
   contractorId   String
 
-  amount       Decimal @db.Decimal(10, 2)
+  /// Nullable — a freshly-invited quote has no amount until the contractor
+  /// (or a manager recording on their behalf) actually responds.
+  amount       Decimal? @db.Decimal(10, 2)
   /// Copied from Organisation.currencyCode at creation (or an explicit
   /// override — a contractor may quote in a different currency) — never
   /// re-derived from the organisation setting, so changing the org default
   /// later never mutates an existing quote's own currency.
-  currencyCode String  @default("AUD")
+  currencyCode String   @default("AUD")
   description  String?
 
   status ContractorQuoteStatus @default(REQUESTED)
+  /// How this quote's commercial content actually arrived — the contractor
+  /// responding through their own secure link, or a manager typing up
+  /// something received by phone/email/WhatsApp/PDF. Both participate in
+  /// exactly the same comparison/selection/approval flow; this is purely
+  /// informational provenance.
+  source ContractorQuoteSource @default(MANUAL)
+
+  /// Free text throughout — a contractor's own commercial offer doesn't fit
+  /// a rigid structured shape, and forcing one invites either data loss or
+  /// meaningless required fields.
+  proposedStartAt   DateTime?
+  estimatedDuration String?
+  inclusions        String?
+  exclusions        String?
+  warrantyInfo      String?
 
   submittedAt DateTime?
+  /// The contractor explicitly declined to quote (RFQ path only).
+  declinedAt  DateTime?
+  /// The contractor withdrew a SUBMITTED quote before it was selected.
+  withdrawnAt DateTime?
   approvedAt  DateTime?
   rejectedAt  DateTime?
+
+  /// The human award decision — captured independently of the later
+  /// approval/signature workflow, which only ever starts on the quote a
+  /// manager has already chosen here. Never inferred from "lowest amount".
+  selectedAt       DateTime?
+  selectedByUserId String?
 
   /// What Wasl Property asked WaslSign (or nothing) to execute for this
   /// quote. Null until a manager makes that choice.
   workflowMode WorkflowMode?
+
+  /// The minimum workflow the organisation's Approval & Acceptance policy
+  /// requires for this quote's amount — resolved exactly once, at the
+  /// moment this quote became the "selected quote / proposed award" (Direct
+  /// Work: at creation; RFQ: at award), via ApprovalPolicyService. Null
+  /// means either no policy was configured/enabled at that moment, or the
+  /// quote's currency didn't match the policy's currency — in both cases no
+  /// floor is enforced and a manager must explicitly choose workflowMode.
+  /// Immutable afterwards: a later change to the organisation's policy must
+  /// never rewrite this historical decision (see ApprovalPolicyService's
+  /// own doc comment).
+  requiredWorkflowMode WorkflowMode?
+  /// Frozen explanation of the resolution above (matched rule's band,
+  /// currency, human-readable reason) — see ApprovalPolicyResolution in
+  /// approval-policy.service.ts. Kept as JSON, not a live FK to
+  /// ApprovalPolicyRule, so a later rule edit/deletion never changes what
+  /// this historical record says was required at the time.
+  approvalPolicySnapshot Json?
 
   /// Native to Wasl Property — WaslSign has no approval primitive today
   /// (see docs/waslsign-integration.md). Populated only when workflowMode
@@ -1043,12 +1175,25 @@ model ContractorQuote {
   updatedAt DateTime @updatedAt
 
   organisation   Organisation @relation(fields: [organisationId], references: [id])
-  workOrder      WorkOrder    @relation(fields: [workOrderId], references: [id])
+  workOrder      WorkOrder?   @relation(fields: [workOrderId], references: [id])
+  quoteRound     QuoteRound?  @relation("QuoteRoundQuotes", fields: [quoteRoundId], references: [id])
   contractor     Contractor   @relation(fields: [contractorId], references: [id])
   approvedByUser User?        @relation("ContractorQuoteApprovedBy", fields: [approvedByUserId], references: [id])
+  selectedByUser User?        @relation("ContractorQuoteSelectedBy", fields: [selectedByUserId], references: [id])
+
+  /// Reverse of WorkOrder.selectedQuoteId — the FK lives on WorkOrder, this
+  /// side has none of its own.
+  awardedForWorkOrder  WorkOrder?                  @relation("WorkOrderSelectedQuote")
+  /// Reverse of QuoteRound.awardedQuoteId — set only on the one quote a
+  /// round was actually awarded to.
+  awardedForQuoteRound QuoteRound?                 @relation("QuoteRoundAwardedQuote")
+  /// Reverse of QuoteRoundInvitation.quoteId — set only for an RFQ-originated quote.
+  invitation           QuoteRoundInvitation?
+  attachments          ContractorQuoteAttachment[]
 
   @@index([organisationId])
   @@index([workOrderId])
+  @@index([quoteRoundId])
   @@index([contractorId])
   @@index([waslSignAgreementId])
   @@map("contractor_quotes")
@@ -1061,6 +1206,19 @@ enum ContractorQuoteStatus {
   APPROVED
   REJECTED
   EXPIRED
+  /// The contractor explicitly declined the RFQ invitation.
+  DECLINED
+  /// The contractor withdrew a SUBMITTED quote before it was selected.
+  WITHDRAWN
+  /// The QuoteRound this quote belonged to was awarded to a different
+  /// contractor — this quote was never wrong, just not chosen.
+  NOT_SELECTED
+}
+
+/// How a ContractorQuote's commercial content actually arrived.
+enum ContractorQuoteSource {
+  MANUAL
+  CONTRACTOR_PORTAL
 }
 
 /// What Wasl Property asks WaslSign to execute for one quote/work order.
@@ -1101,6 +1259,321 @@ model WaslSignWebhookEvent {
   payload    Json
 
   @@map("waslsign_webhook_events")
+}
+
+// --- Organisation Approval & Acceptance Policy (M12) ---
+
+/// The organisation-owned business rule that decides whether a selected
+/// quote / Direct Work commercial commitment / variation requires Approval
+/// & Acceptance, and if so which workflow — replacing what used to be a
+/// single hard-coded env var pair (WORK_ORDER_WASLSIGN_THRESHOLD_AED /
+/// WORK_ORDER_DEFAULT_WORKFLOW_MODE). One per organisation (never per
+/// property/category in this milestone — see ApprovalPolicyService's doc
+/// comment for how the resolver is still shaped to add those dimensions
+/// later without a rewrite). OWNER/ADMIN only, at the route level — same
+/// bar as Roles & Permissions and Contractor Compliance configuration.
+model OrganisationApprovalPolicy {
+  id             String @id @default(cuid())
+  organisationId String @unique
+
+  /// The currency this policy's rule amount bands are expressed in — always
+  /// captured explicitly (from the organisation's own currencyCode at
+  /// save time) rather than re-derived live, so a later change to the
+  /// organisation's default currency can never silently reinterpret
+  /// already-configured amount bands in a different currency. See
+  /// ApprovalPolicyService for the currency-mismatch handling this enables.
+  currencyCode String
+
+  /// false = the organisation has rules configured but has switched the
+  /// whole policy off (e.g. temporarily) — treated identically to "not
+  /// configured" by the resolver (no floor enforced, manager must choose
+  /// explicitly), but the rules themselves are preserved so re-enabling
+  /// doesn't require re-entering them.
+  enabled Boolean @default(true)
+
+  createdByUserId String
+  updatedByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organisation  Organisation         @relation(fields: [organisationId], references: [id])
+  createdBy     User                 @relation("ApprovalPolicyCreatedBy", fields: [createdByUserId], references: [id])
+  updatedByUser User?                @relation("ApprovalPolicyUpdatedBy", fields: [updatedByUserId], references: [id])
+  rules         ApprovalPolicyRule[]
+
+  @@map("organisation_approval_policies")
+}
+
+/// One contiguous amount band within an OrganisationApprovalPolicy — see
+/// ApprovalPolicyService for the validation that guarantees, once a policy
+/// has at least one rule, every non-negative amount matches exactly one
+/// band (bands are contiguous and non-overlapping by construction: the
+/// lowest rule's minAmount is 0, the highest rule's maxAmount is null/
+/// open-ended, and every rule in between has minAmount == the previous
+/// rule's maxAmount + 0.01).
+model ApprovalPolicyRule {
+  id             String @id @default(cuid())
+  organisationId String
+  policyId       String
+
+  /// Inclusive lower bound, in the policy's currencyCode.
+  minAmount Decimal @db.Decimal(12, 2)
+  /// Inclusive upper bound; null = open-ended ("above X") — exactly one
+  /// rule per policy may have this null, and it must be the highest band.
+  maxAmount Decimal? @db.Decimal(12, 2)
+
+  workflowMode WorkflowMode
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation Organisation               @relation(fields: [organisationId], references: [id])
+  policy       OrganisationApprovalPolicy @relation(fields: [policyId], references: [id], onDelete: Cascade)
+
+  @@index([organisationId])
+  @@index([policyId])
+  @@map("approval_policy_rules")
+}
+
+// --- Quote Management, Procurement & Variations (M11) ---
+
+/// How a Maintenance Request's work is being arranged — chosen once, up
+/// front, so the UI (and, more importantly, the backend) never treats a
+/// contractor merely invited to quote as already selected for the work.
+/// EMERGENCY_WORK is represented cleanly but carries no special backend
+/// behaviour of its own in this milestone — no invented statutory
+/// thresholds or delegated-authority rules; it exists so a future
+/// organisation-level policy has somewhere real to hang off.
+enum ProcurementPath {
+  REQUEST_QUOTES
+  DIRECT_WORK
+  EMERGENCY_WORK
+}
+
+enum QuoteRoundStatus {
+  /// Scope defined but no invitations sent yet — reserved for a future
+  /// "save before sending" flow; today's UI always creates a round already
+  /// OPEN.
+  DRAFT
+  OPEN
+  CLOSED
+  CANCELLED
+  AWARDED
+}
+
+/// A Request for Quote — the common Scope of Works a manager defines once
+/// and issues to every invited contractor. Scope fields are a deliberate
+/// snapshot of the originating MaintenanceRequest at the moment quoting
+/// began: if the request is edited afterwards, every quote already
+/// requested against this round must keep describing the scope contractors
+/// actually saw, never silently changing under them.
+model QuoteRound {
+  id                   String  @id @default(cuid())
+  organisationId       String
+  propertyId           String
+  spaceId              String?
+  maintenanceRequestId String
+
+  category           MaintenanceCategory
+  title              String
+  scopeDescription   String
+  priority           MaintenancePriority
+  accessInstructions String?
+  desiredStartAt     DateTime?
+  dueAt              DateTime?
+  /// Snapshot of the organisation's currency at creation — never
+  /// re-derived, exactly like every other financial record in this schema.
+  currencyCode       String
+
+  status      QuoteRoundStatus @default(OPEN)
+  cancelledAt DateTime?
+
+  /// The single quote this round was awarded to, once a manager selects a
+  /// winner and it clears re-evaluated compliance — see
+  /// QuoteRoundsService.award. Null while OPEN/CLOSED/CANCELLED.
+  awardedQuoteId String?   @unique
+  awardedAt      DateTime?
+
+  createdByUserId String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organisation       Organisation       @relation(fields: [organisationId], references: [id])
+  property           Property           @relation(fields: [propertyId], references: [id])
+  space              Space?             @relation(fields: [spaceId], references: [id])
+  maintenanceRequest MaintenanceRequest @relation(fields: [maintenanceRequestId], references: [id])
+  createdBy          User               @relation("QuoteRoundCreatedBy", fields: [createdByUserId], references: [id])
+  awardedQuote       ContractorQuote?   @relation("QuoteRoundAwardedQuote", fields: [awardedQuoteId], references: [id])
+
+  invitations QuoteRoundInvitation[]
+  quotes      ContractorQuote[]      @relation("QuoteRoundQuotes")
+  workOrders  WorkOrder[]
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([maintenanceRequestId])
+  @@map("quote_rounds")
+}
+
+/// One contractor's invitation into a QuoteRound. Deliberately carries no
+/// status of its own — its lifecycle is entirely the linked
+/// ContractorQuote's status (REQUESTED = invited/awaiting, SUBMITTED =
+/// responded, DECLINED/WITHDRAWN/EXPIRED = as named), so there is exactly
+/// one state machine to reason about, never two that could drift apart.
+/// "Viewed" is deliberately not modelled — there is no reliable read-receipt
+/// signal to back it with.
+model QuoteRoundInvitation {
+  id             String @id @default(cuid())
+  organisationId String
+  quoteRoundId   String
+  contractorId   String
+  /// The ContractorQuote created alongside this invitation — 1:1, created
+  /// in the same transaction.
+  quoteId        String @unique
+
+  /// Only the sha256 hash is ever persisted — the raw token exists only in
+  /// the RFQ notification/link, exactly mirroring ContactInvite's own
+  /// token handling.
+  tokenHash      String    @unique
+  tokenExpiresAt DateTime
+  revokedAt      DateTime?
+
+  invitedByUserId String
+  createdAt       DateTime @default(now())
+
+  organisation Organisation    @relation(fields: [organisationId], references: [id])
+  quoteRound   QuoteRound      @relation(fields: [quoteRoundId], references: [id])
+  contractor   Contractor      @relation(fields: [contractorId], references: [id])
+  quote        ContractorQuote @relation(fields: [quoteId], references: [id])
+  invitedBy    User            @relation("QuoteRoundInvitationInvitedBy", fields: [invitedByUserId], references: [id])
+
+  @@unique([quoteRoundId, contractorId])
+  @@index([organisationId])
+  @@index([quoteRoundId])
+  @@index([contractorId])
+  @@map("quote_round_invitations")
+}
+
+/// A contractor's own quote document (PDF, photos of a handwritten quote,
+/// etc.) — distinct from the RFQ's own scope attachments (which are simply
+/// the originating MaintenanceRequest's existing attachments, never
+/// copied). Mirrors MaintenanceRequestAttachment exactly: bytes live in S3,
+/// only metadata + storage key live here, storageKey is never exposed to
+/// the frontend directly.
+model ContractorQuoteAttachment {
+  id                String  @id @default(cuid())
+  organisationId    String
+  contractorQuoteId String
+  uploadedByUserId  String?
+
+  storageKey  String
+  fileName    String
+  contentType String
+  fileSize    Int
+
+  createdAt DateTime @default(now())
+
+  organisation    Organisation    @relation(fields: [organisationId], references: [id])
+  contractorQuote ContractorQuote @relation(fields: [contractorQuoteId], references: [id])
+  uploadedBy      User?           @relation(fields: [uploadedByUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([contractorQuoteId])
+  @@map("contractor_quote_attachments")
+}
+
+enum WorkOrderVariationStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+/// Additional scope/cost discovered once work is already authorised — never
+/// mutates the original selected quote (that stays immutable historical
+/// evidence); the authorised total is always original amount + APPROVED
+/// variations only, computed at read time, never stored.
+model WorkOrderVariation {
+  id             String @id @default(cuid())
+  organisationId String
+  workOrderId    String
+
+  description  String
+  amountDelta  Decimal @db.Decimal(10, 2)
+  /// Always the Work Order's own currencyCode at creation — a variation can
+  /// never introduce a second currency into one Work Order's commercial
+  /// picture.
+  currencyCode String
+
+  status WorkOrderVariationStatus @default(PENDING_APPROVAL)
+
+  /// Resolved once at creation via the same ApprovalPolicyService used for
+  /// quotes, evaluating the variation amount itself (not the resulting
+  /// authorised total — see the M12 Approval Policy milestone's final
+  /// report for why). Immutable afterwards — a later organisation policy
+  /// change never rewrites an already-created variation's requirement (see
+  /// ContractorQuote.requiredWorkflowMode's identical doc comment).
+  requiredWorkflowMode   WorkflowMode?
+  approvalPolicySnapshot Json?
+
+  /// The manager's actual confirmed choice — starts as the policy's
+  /// suggestion (mirroring ContractorQuote.workflowMode exactly) but
+  /// nothing in the approval/signature machinery below acts on it until
+  /// explicitly confirmed via setWorkflowMode. Enforcement gap closed: a
+  /// variation can now only reach APPROVED once every gate this implies
+  /// has actually completed — see WorkOrderVariationsService.approve /
+  /// handleWaslSignCallback.
+  workflowMode    WorkflowMode?
+  approvalStatus  ApprovalStatus?
+  signatureStatus SignatureStatus?
+  signedAt        DateTime?
+  /// Populated only once a SIGNATURE_ONLY / APPROVAL_THEN_SIGNATURE
+  /// signature workflow has actually been started — same WaslSign
+  /// integration ContractorQuote uses, never a second implementation.
+  waslSignAgreementId String?
+  waslSignStatus      String?
+
+  recordedByUserId String
+  approvedByUserId String?
+  approvedAt       DateTime?
+  rejectedAt       DateTime?
+  cancelledAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation   Organisation                   @relation(fields: [organisationId], references: [id])
+  workOrder      WorkOrder                      @relation(fields: [workOrderId], references: [id])
+  recordedBy     User                           @relation("WorkOrderVariationRecordedBy", fields: [recordedByUserId], references: [id])
+  approvedByUser User?                          @relation("WorkOrderVariationApprovedBy", fields: [approvedByUserId], references: [id])
+  attachments    WorkOrderVariationAttachment[]
+
+  @@index([organisationId])
+  @@index([workOrderId])
+  @@index([waslSignAgreementId])
+  @@map("work_order_variations")
+}
+
+model WorkOrderVariationAttachment {
+  id                   String  @id @default(cuid())
+  organisationId       String
+  workOrderVariationId String
+  uploadedByUserId     String?
+
+  storageKey  String
+  fileName    String
+  contentType String
+  fileSize    Int
+
+  createdAt DateTime @default(now())
+
+  organisation       Organisation       @relation(fields: [organisationId], references: [id])
+  workOrderVariation WorkOrderVariation @relation(fields: [workOrderVariationId], references: [id])
+  uploadedBy         User?              @relation(fields: [uploadedByUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([workOrderVariationId])
+  @@map("work_order_variation_attachments")
 }
 
 // --- Communications & Notifications (M10) ---

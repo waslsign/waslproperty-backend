@@ -26,6 +26,13 @@ const workOrderInclude = {
     orderBy: { createdAt: 'desc' },
     include: { contractor: { select: { id: true, name: true, companyName: true, email: true } } },
   },
+  // Set only for a Work Order authorised via the M11 RFQ award flow — see
+  // WorkOrder.selectedQuoteId's own doc comment. Null for legacy/Direct
+  // Work, where the frontend falls back to `quotes[0]` exactly as before.
+  selectedQuote: {
+    include: { contractor: { select: { id: true, name: true, companyName: true, email: true } } },
+  },
+  quoteRound: { select: { id: true, title: true, dueAt: true } },
 } satisfies Prisma.WorkOrderInclude;
 
 /** Same shape as MaintenanceService's transition table — see that file's comment. */
@@ -115,6 +122,15 @@ export class WorkOrdersService {
     if (existing) {
       throw new ConflictError('This maintenance request already has a work order');
     }
+    // Direct Work and an active RFQ round are mutually exclusive for the
+    // same request — a manager who's already out for competitive quotes
+    // shouldn't be able to also bypass that with a direct work order.
+    const activeRound = await this.prisma.quoteRound.findFirst({
+      where: { maintenanceRequestId: input.maintenanceRequestId, status: { in: ['DRAFT', 'OPEN'] } },
+    });
+    if (activeRound) {
+      throw new ConflictError('This maintenance request has an active quote round');
+    }
 
     return this.prisma.$transaction(async (tx) => {
       const workOrder = await tx.workOrder.create({
@@ -131,6 +147,11 @@ export class WorkOrdersService {
           currencyCode: organisation.currencyCode,
         },
         include: workOrderInclude,
+      });
+
+      await tx.maintenanceRequest.update({
+        where: { id: request.id },
+        data: { procurementPath: request.procurementPath ?? 'DIRECT_WORK' },
       });
 
       await recordActivity(tx, {
@@ -230,6 +251,20 @@ export class WorkOrdersService {
 
     if (input.status === 'READY') {
       const governingQuote = this.governingQuote(workOrder);
+      // A governing quote with no workflowMode yet means a decision is
+      // still outstanding, never "nothing to wait for" — that's distinct
+      // from there being no governing quote at all (deriveWorkflowResult's
+      // NOT_REQUIRED case, which stays a legitimate way to release a work
+      // order that never needed a quote). Without this check, an
+      // unconfigured or currency-mismatched Approval & Acceptance policy
+      // would silently be indistinguishable from "no approval required" —
+      // exactly the accidental bypass the M12 Approval Policy milestone
+      // exists to prevent.
+      if (governingQuote && !governingQuote.workflowMode) {
+        throw new ConflictError(
+          'Cannot release this work order: choose an Approval & Acceptance workflow for its quote first',
+        );
+      }
       const result = deriveWorkflowResult(
         governingQuote?.workflowMode ?? null,
         governingQuote?.approvalStatus ?? null,

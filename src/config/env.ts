@@ -33,6 +33,12 @@ const envSchema = z.object({
   LOG_LEVEL: z.string().default('info'),
 
   INVITE_TOKEN_EXPIRES_IN_HOURS: z.coerce.number().default(72),
+  // How long a contractor's own RFQ response link stays valid — deliberately
+  // longer than a resident/staff invite (a contractor may need days to
+  // price a job), and independent of the quote round's own dueAt (the
+  // token can outlive an informal deadline; the round's status, not token
+  // expiry, is what actually closes a round to new responses).
+  RFQ_TOKEN_EXPIRES_IN_DAYS: z.coerce.number().default(21),
 
   AWS_REGION: z.string().min(1, 'AWS_REGION is required'),
   S3_BUCKET_NAME: z.string().min(1, 'S3_BUCKET_NAME is required'),
@@ -75,15 +81,18 @@ const envSchema = z.object({
   // Optional: an environment with none of these set simply can't offer
   // SIGNATURE_ONLY / APPROVAL_THEN_SIGNATURE — WaslSignService treats that
   // as "unavailable", never as a hard startup failure.
+  //
+  // NOTE: WORK_ORDER_WASLSIGN_THRESHOLD_AED / WORK_ORDER_DEFAULT_WORKFLOW_MODE
+  // used to live here, deciding whether a quote needed approval/signature
+  // purely from a hard-coded AED amount. That was wrong on two counts: it's
+  // customer business policy, not deployment config, and it ignored
+  // currency entirely. Removed as of the M12 Approval & Acceptance Policy
+  // milestone — see src/modules/approval-policy/approval-policy.service.ts,
+  // the one remaining source of truth for this decision.
   WASLSIGN_API_BASE_URL: z.string().optional(),
   WASLSIGN_SERVICE_CLIENT_ID: z.string().optional(),
   WASLSIGN_SERVICE_CLIENT_SECRET: z.string().optional(),
   WASLSIGN_WEBHOOK_SECRET: z.string().optional(),
-
-  WORK_ORDER_WASLSIGN_THRESHOLD_AED: z.coerce.number().default(5000),
-  WORK_ORDER_DEFAULT_WORKFLOW_MODE: z
-    .enum(['APPROVAL_ONLY', 'SIGNATURE_ONLY', 'APPROVAL_THEN_SIGNATURE'])
-    .default('APPROVAL_ONLY'),
 
   // --- Backoffice / Platform Operations (M10.5) ---
   // Every one of these defaults to the safe/disabled state when absent —
