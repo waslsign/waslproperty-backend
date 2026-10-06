@@ -16,8 +16,9 @@ import type { PropertyRole } from '@prisma/client';
  *
  * Deliberately NOT included (no real functionality behind them yet):
  * - documents.* — no document storage feature exists.
- * - levies.*, financials.*, funds.* — explicitly out of scope for this
- *   milestone (M11 strata levy/fund business rules are still unconfirmed).
+ * - levies.*, funds.* — explicitly out of scope for this milestone (levy
+ *   generation/UOE allocation and a standalone fund ledger belong to
+ *   M16.3+ — see financials.* below for what M16.1 actually ships).
  * - approvals.* as a standalone resource — "Approval & Acceptance" is not
  *   a separate entity/route in this codebase; it's the workflow embedded
  *   in ContractorQuote (workflowMode/approve/reject) and WorkOrder status.
@@ -65,6 +66,18 @@ export const CAPABILITIES = [
    * capability grant here never bypasses that jurisdiction check. */
   'strata.view',
   'strata.manage',
+  /** M16.1 — Strata Financial Management foundation (financial onboarding,
+   * opening position, reconciliation/activation). Mirrors strata.view/
+   * strata.manage exactly: same default grants (see
+   * DEFAULT_ROLE_CAPABILITIES — no PropertyRole holds financials.manage by
+   * default, only org OWNER/ADMIN via AuthorizationService.can's blanket
+   * bypass, until an organisation explicitly grants an override), same
+   * "narrower than property.manage" rationale. Deliberately no
+   * `financials.approve` yet — M16.1 has no approval workflow (no budgets,
+   * no levies); see the capability catalogue's doc comment above.
+   */
+  'financials.view',
+  'financials.manage',
   /** Use the Wasl AI workspace and contextual "Investigate"/"Analyse with
    * Wasl AI" entry points — see the M14 milestone. Deliberately separate
    * from every other capability: holding e.g. maintenance.view never
@@ -119,6 +132,7 @@ export const CAPABILITY_GROUPS: Array<{ label: string; capabilities: Capability[
   },
   { label: 'Visibility', capabilities: ['analytics.view', 'activity.view'] },
   { label: 'Strata', capabilities: ['strata.view', 'strata.manage'] },
+  { label: 'Financial Management', capabilities: ['financials.view', 'financials.manage'] },
   { label: 'Wasl AI', capabilities: ['ai.use'] },
 ];
 
@@ -163,6 +177,7 @@ export const DEFAULT_ROLE_CAPABILITIES: Record<PropertyRole, Capability[]> = {
     'analytics.view',
     'activity.view',
     'strata.view',
+    'financials.view',
     'ai.use',
   ],
   FACILITY_MANAGER: [
@@ -200,8 +215,16 @@ export const DEFAULT_ROLE_CAPABILITIES: Record<PropertyRole, Capability[]> = {
     'communications.view',
     'activity.view',
     'strata.view',
+    'financials.view',
   ],
-  OWNER: ['property.view', 'spaces.view', 'maintenance.view', 'activity.view', 'strata.view'],
+  OWNER: [
+    'property.view',
+    'spaces.view',
+    'maintenance.view',
+    'activity.view',
+    'strata.view',
+    'financials.view',
+  ],
   TENANT: [],
   RESIDENT: [],
 };
@@ -219,4 +242,5 @@ export const ORG_MEMBER_LEGACY_CAPABILITIES: ReadonlySet<Capability> = new Set([
   'maintenance.view',
   'activity.view',
   'strata.view',
+  'financials.view',
 ]);

@@ -48,6 +48,14 @@ export async function resetDb() {
     testPrisma.contactInvite.deleteMany(),
     testPrisma.propertyMembership.deleteMany(),
     testPrisma.propertyContact.deleteMany(),
+    // M16.1 — financial_opening_balances/lot_opening_positions must go
+    // before financial_funds/financial_configurations (which they
+    // reference), which must go before space/property (ON DELETE RESTRICT
+    // in both directions — see the schema's own doc comment).
+    testPrisma.financialOpeningBalance.deleteMany(),
+    testPrisma.lotOpeningPosition.deleteMany(),
+    testPrisma.financialFund.deleteMany(),
+    testPrisma.financialConfiguration.deleteMany(),
     testPrisma.space.deleteMany(),
     testPrisma.property.deleteMany(),
     testPrisma.session.deleteMany(),

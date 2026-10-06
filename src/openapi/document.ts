@@ -11,6 +11,7 @@ import './paths/organisations.paths.js';
 import './paths/properties.paths.js';
 import './paths/spaces.paths.js';
 import './paths/strata.paths.js';
+import './paths/financials.paths.js';
 import './paths/people.paths.js';
 import './paths/invites.paths.js';
 import './paths/maintenance.paths.js';
@@ -74,6 +75,7 @@ export function getOpenApiDocument() {
         { name: 'Organisations' },
         { name: 'Properties' },
         { name: 'Strata' },
+        { name: 'Financial Management' },
         { name: 'Lots & Areas' },
         { name: 'People' },
         { name: 'Maintenance' },

@@ -10,6 +10,16 @@ import {
   assignExistingPerson,
   listPeopleForProperty,
 } from '../people/people.controller.js';
+import {
+  activateFinancialSetup,
+  addFinancialFund,
+  bulkSetFinancialLotOpeningPositions,
+  getFinancialReconciliation,
+  getFinancialSummary,
+  startFinancialSetup,
+  updateFinancialFund,
+  updateFinancialYear,
+} from '../financials/financials.controller.js';
 import { createSpaceForProperty, listSpacesForProperty } from '../spaces/spaces.controller.js';
 import {
   bulkSetStrataLots,
@@ -142,4 +152,57 @@ propertiesRouter.post(
   resolvePropertyReference('propertyId'),
   requireCapability('strata.manage', fromParam('propertyId')),
   asyncHandler(completeStrataSetup),
+);
+
+// Financial Management (M16.1) — financial onboarding and the opening
+// financial position for an existing strata scheme. financials.view/
+// financials.manage, mirroring strata.view/strata.manage's own narrower-
+// than-property.manage rationale (see capabilities.ts).
+propertiesRouter.get(
+  '/:propertyId/financials',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getFinancialSummary),
+);
+propertiesRouter.post(
+  '/:propertyId/financials',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(startFinancialSetup),
+);
+propertiesRouter.patch(
+  '/:propertyId/financials',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(updateFinancialYear),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/funds',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(addFinancialFund),
+);
+propertiesRouter.patch(
+  '/:propertyId/financials/funds/:fundId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(updateFinancialFund),
+);
+propertiesRouter.put(
+  '/:propertyId/financials/lot-positions',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(bulkSetFinancialLotOpeningPositions),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/reconciliation',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getFinancialReconciliation),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/activate',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(activateFinancialSetup),
 );

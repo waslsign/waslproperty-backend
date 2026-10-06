@@ -138,6 +138,78 @@ export const strataSummarySchema = registry.register(
   }),
 );
 
+const financialOpeningBalanceSummarySchema = z.object({
+  id: z.string(),
+  publicReference: z.string().openapi({ example: 'FOB-K7M4Q2' }),
+  amount: z.string().openapi({ example: '12450.00' }),
+  asOfDate: z
+    .string()
+    .openapi({ example: '2026-10-01', description: 'YYYY-MM-DD, no time/timezone.' }),
+  currencyCode: z.string().openapi({ example: 'AUD' }),
+  referenceNote: z.string().nullable(),
+});
+
+const financialFundSummarySchema = z.object({
+  id: z.string(),
+  publicReference: z.string().openapi({ example: 'FUND-K7M4Q2' }),
+  fundType: z.enum(['ADMINISTRATION', 'CAPITAL_WORKS', 'OTHER']),
+  name: z.string().openapi({ example: 'Administration Fund' }),
+  currencyCode: z.string().openapi({ example: 'AUD' }),
+  openingBalance: financialOpeningBalanceSummarySchema.nullable(),
+});
+
+const lotOpeningPositionSummarySchema = z.object({
+  spaceId: z.string(),
+  spacePublicReference: z.string().openapi({ example: 'LOT-K7M4Q2' }),
+  spaceName: z.string(),
+  spaceCode: z.string(),
+  lotNumber: z.string().nullable(),
+  recorded: z.boolean().openapi({
+    description:
+      'Whether this lot has an opening position recorded yet — leaving a lot blank ' +
+      'is valid, so false is not an error state.',
+  }),
+  amountOwing: z.string().openapi({ example: '1250.00' }),
+  creditBalance: z.string().openapi({ example: '0.00' }),
+  asOfDate: z.string().nullable(),
+  currencyCode: z.string().nullable(),
+  referenceNote: z.string().nullable(),
+});
+
+export const financialSummarySchema = registry.register(
+  'FinancialSummary',
+  z.object({
+    status: z.enum(['NOT_CONFIGURED', 'SETUP_IN_PROGRESS', 'ACTIVE']),
+    publicReference: z.string().nullable().openapi({ example: 'FIN-K7M4Q2' }),
+    currencyCode: z.string().nullable().openapi({ example: 'AUD' }),
+    financialYearStartDate: z.string().nullable().openapi({ example: '2026-07-01' }),
+    financialYearEndDate: z.string().nullable().openapi({ example: '2027-06-30' }),
+    cutoverDate: z.string().nullable().openapi({ example: '2026-10-01' }),
+    activatedAt: z.string().datetime().nullable(),
+    activatedByUserId: z.string().nullable(),
+    funds: z.array(financialFundSummarySchema),
+    lotPositions: z.array(lotOpeningPositionSummarySchema),
+    lotPositionsRecordedCount: z.number().int(),
+    lotPositionsTotalCount: z.number().int(),
+  }),
+);
+
+export const financialReconciliationReportSchema = registry.register(
+  'FinancialReconciliationReport',
+  z.object({
+    errors: z
+      .array(z.object({ code: z.string(), message: z.string(), details: z.unknown().optional() }))
+      .openapi({ description: 'Each one blocks activation.' }),
+    warnings: z
+      .array(z.object({ code: z.string(), message: z.string(), details: z.unknown().optional() }))
+      .openapi({ description: 'Does not block activation, but should be reviewed.' }),
+    infos: z.array(
+      z.object({ code: z.string(), message: z.string(), details: z.unknown().optional() }),
+    ),
+    readyToActivate: z.boolean().openapi({ description: 'True iff errors is empty.' }),
+  }),
+);
+
 export const contactSummarySchema = registry.register(
   'ContactSummary',
   z.object({
