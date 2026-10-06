@@ -1,0 +1,11 @@
+-- A property must never have more than one ACTIVE budget for the same
+-- financial year (propertyId, financialYearStartDate, financialYearEndDate)
+-- — Section 6 of the M16.2 requirements. Prisma's schema DSL cannot declare
+-- a partial unique index (status isn't part of the key, only the WHERE
+-- clause), so this is a hand-written migration, same pattern as
+-- spaces_propertyId_lotNumber_key (see that migration's own doc comment).
+-- This is defense-in-depth alongside FinancialBudgetsService.activate's
+-- row-level lock on FinancialConfiguration and its own transactional
+-- supersede-then-promote step — even if those were ever bypassed, Postgres
+-- itself refuses a second concurrently-committed ACTIVE row here.
+CREATE UNIQUE INDEX "financial_budgets_property_fy_active_key" ON "financial_budgets"("propertyId", "financialYearStartDate", "financialYearEndDate") WHERE "status" = 'ACTIVE';

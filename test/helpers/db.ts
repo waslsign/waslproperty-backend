@@ -52,6 +52,12 @@ export async function resetDb() {
     // before financial_funds/financial_configurations (which they
     // reference), which must go before space/property (ON DELETE RESTRICT
     // in both directions — see the schema's own doc comment).
+    // M16.2 — financial_budget_lines reference both financial_funds and
+    // financial_budgets, and financial_budgets self-references
+    // (revisionOfBudgetId) — both must go before financial_funds/
+    // financial_configurations.
+    testPrisma.financialBudgetLine.deleteMany(),
+    testPrisma.financialBudget.deleteMany(),
     testPrisma.financialOpeningBalance.deleteMany(),
     testPrisma.lotOpeningPosition.deleteMany(),
     testPrisma.financialFund.deleteMany(),

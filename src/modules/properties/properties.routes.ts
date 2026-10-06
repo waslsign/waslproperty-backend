@@ -20,6 +20,18 @@ import {
   updateFinancialFund,
   updateFinancialYear,
 } from '../financials/financials.controller.js';
+import {
+  activateFinancialBudget,
+  addFinancialBudgetLine,
+  approveFinancialBudget,
+  createFinancialBudget,
+  deleteFinancialBudgetLine,
+  getFinancialBudget,
+  listFinancialBudgets,
+  reviseFinancialBudget,
+  updateFinancialBudgetLine,
+  updateFinancialBudgetMetadata,
+} from '../financials/budgets.controller.js';
 import { createSpaceForProperty, listSpacesForProperty } from '../spaces/spaces.controller.js';
 import {
   bulkSetStrataLots,
@@ -205,4 +217,68 @@ propertiesRouter.post(
   resolvePropertyReference('propertyId'),
   requireCapability('financials.manage', fromParam('propertyId')),
   asyncHandler(activateFinancialSetup),
+);
+
+// Budget Management (M16.2) — the authoritative planned funding requirement
+// for a financial year, broken down by fund. Same financials.view/
+// financials.manage split as the rest of this section.
+propertiesRouter.get(
+  '/:propertyId/financials/budgets',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listFinancialBudgets),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/budgets',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(createFinancialBudget),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/budgets/:budgetId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getFinancialBudget),
+);
+propertiesRouter.patch(
+  '/:propertyId/financials/budgets/:budgetId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(updateFinancialBudgetMetadata),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/budgets/:budgetId/lines',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(addFinancialBudgetLine),
+);
+propertiesRouter.patch(
+  '/:propertyId/financials/budgets/:budgetId/lines/:lineId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(updateFinancialBudgetLine),
+);
+propertiesRouter.delete(
+  '/:propertyId/financials/budgets/:budgetId/lines/:lineId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(deleteFinancialBudgetLine),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/budgets/:budgetId/approve',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(approveFinancialBudget),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/budgets/:budgetId/activate',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(activateFinancialBudget),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/budgets/:budgetId/revise',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(reviseFinancialBudget),
 );

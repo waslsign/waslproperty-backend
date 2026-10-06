@@ -49,6 +49,7 @@ model Organisation {
   memberships                      OrganisationMembership[]
   properties                       Property[]
   financialConfigurations          FinancialConfiguration[]
+  financialBudgets                 FinancialBudget[]
   activityEvents                   ActivityEvent[]
   maintenanceRequests              MaintenanceRequest[]
   maintenanceRequestAttachments    MaintenanceRequestAttachment[]
@@ -125,6 +126,8 @@ model User {
   activatedFinancialConfigurations      FinancialConfiguration[]          @relation("FinancialConfigurationActivatedBy")
   createdFinancialOpeningBalances       FinancialOpeningBalance[]         @relation("FinancialOpeningBalanceCreatedBy")
   createdLotOpeningPositions            LotOpeningPosition[]              @relation("LotOpeningPositionCreatedBy")
+  createdFinancialBudgets               FinancialBudget[]                 @relation("FinancialBudgetCreatedBy")
+  approvedFinancialBudgets              FinancialBudget[]                 @relation("FinancialBudgetApprovedBy")
 
   @@map("users")
 }
@@ -370,6 +373,10 @@ model Property {
   /// every property that hasn't started financial onboarding — never
   /// auto-created, never auto-activated (see migration doc comment).
   financialConfiguration FinancialConfiguration?
+  /// M16.2 — every budget (every version, every financial year) ever
+  /// created for this property; never deleted, see FinancialBudget's own
+  /// doc comment on why.
+  financialBudgets       FinancialBudget[]
 
   @@unique([organisationId, code])
   @@index([organisationId])
@@ -601,6 +608,7 @@ model FinancialConfiguration {
   activatedByUser User?                @relation("FinancialConfigurationActivatedBy", fields: [activatedByUserId], references: [id])
   funds           FinancialFund[]
   lotPositions    LotOpeningPosition[]
+  budgets         FinancialBudget[]
 
   @@index([organisationId])
   @@map("financial_configurations")
@@ -633,6 +641,10 @@ model FinancialFund {
 
   financialConfiguration FinancialConfiguration   @relation(fields: [financialConfigurationId], references: [id])
   openingBalance         FinancialOpeningBalance?
+  /// M16.2 — this fund's planned-amount lines across every budget/version
+  /// ever written against it; never itself a balance (see this section's
+  /// doc comment — still no mutable running total anywhere).
+  budgetLines            FinancialBudgetLine[]
 
   @@index([financialConfigurationId])
   @@index([propertyId])
@@ -704,6 +716,202 @@ model LotOpeningPosition {
   @@index([financialConfigurationId])
   @@index([propertyId])
   @@map("lot_opening_positions")
+}
+
+// --- Strata Financial Management: Budgets (M16.2) ---
+//
+// Builds directly on M16.1's FinancialConfiguration/FinancialFund — a
+// budget is the scheme's planned funding requirement for one financial
+// year, broken down by fund (Section 2's "Financial Year -> Budget -> Fund
+// -> Budget Lines" shape). Three decisions mirror M16.1's own load-bearing
+// ones exactly, for the same reasons:
+//
+// 1. No mutable running total anywhere. FinancialBudget/FinancialBudgetLine
+//    never carry a stored "totalAmount" column — totals are always summed
+//    fresh from FinancialBudgetLine.plannedAmount (Decimal-safe, never a
+//    JS float) by the service layer. See FinancialBudgetsService.
+//
+// 2. APPROVED/ACTIVE/SUPERSEDED budgets are immutable history, never
+//    edited in place. A DRAFT is freely editable; once APPROVED, a
+//    material change is a new FinancialBudget row (the next `version` for
+//    the same propertyId + financial-year pair), never a write to the old
+//    one — see FinancialBudgetsService.createRevision. SUPERSEDED exists
+//    purely so the previously-ACTIVE version stays queryable for history;
+//    nothing ever deletes a FinancialBudget row.
+//
+// 3. "Financial year" is identified by the (propertyId,
+//    financialYearStartDate, financialYearEndDate) triple, not by a
+//    separate FinancialYear entity — FinancialConfiguration itself only
+//    ever holds one current financial year (M16.1 never modelled a
+//    calendar of future years), so a budget being planned ahead of the
+//    next rollover must be able to carry its own explicit dates. This also
+//    means WaslProp never hard-codes an AU July-June cadence: whatever
+//    dates a property's FinancialConfiguration establishes, successive
+//    budgets simply carry successive non-overlapping date pairs.
+//
+// The one-ACTIVE-budget-per-financial-year invariant (Section 6 of the
+// M16.2 requirements) is enforced THREE ways, deliberately redundant:
+//   a. FinancialBudgetsService.activate locks the parent
+//      FinancialConfiguration row (`SELECT ... FOR UPDATE`) before reading
+//      or writing any budget for that property, serializing concurrent
+//      activation attempts for the same scheme.
+//   b. Within that lock, activation transactionally demotes whatever was
+//      previously ACTIVE for the same financial-year pair to SUPERSEDED
+//      before promoting the target budget.
+//   c. A hand-written partial unique index (see the migration that adds
+//      it — Prisma's schema DSL cannot express a partial index, same
+//      limitation as Space.lotNumber's own unique index) makes a second
+//      concurrently-committed ACTIVE row for the same (propertyId,
+//      financialYearStartDate, financialYearEndDate) a database-level
+//      impossibility even if (a)/(b) were ever bypassed.
+
+/// DRAFT -> APPROVED -> ACTIVE -> SUPERSEDED, strictly forward (see
+/// FinancialBudgetsService for the one legal transition out of each
+/// state). SUPERSEDED is terminal and permanent; there is no "reactivate"
+/// path back from it — create a new revision instead.
+enum FinancialBudgetStatus {
+  DRAFT
+  APPROVED
+  ACTIVE
+  SUPERSEDED
+}
+
+/// CREATED: built natively in WaslProp, start to finish (the normal path).
+/// IMPORTED: a scheme's already-approved current budget, captured during
+/// onboarding/migration — see FinancialBudget.externalApprovalDate's doc
+/// comment for why this never fabricates a WaslProp-native approval event.
+enum FinancialBudgetSource {
+  CREATED
+  IMPORTED
+}
+
+/// One financial year's planned funding requirement for a property, broken
+/// down into FinancialBudgetLine rows grouped by FinancialFund. See this
+/// section's doc comment for the three load-bearing design decisions every
+/// method on FinancialBudgetsService exists to uphold.
+model FinancialBudget {
+  id                       String @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "BUD" prefix.
+  publicReference          String @unique
+  organisationId           String
+  propertyId               String
+  financialConfigurationId String
+
+  /// Plain accounting dates, same discipline as FinancialConfiguration's
+  /// own financialYearStartDate/EndDate — see this section's doc comment on
+  /// why these live here rather than being looked up from the
+  /// configuration on every read.
+  financialYearStartDate DateTime @db.Date
+  financialYearEndDate   DateTime @db.Date
+
+  /// 1, 2, 3... per (propertyId, financialYearStartDate,
+  /// financialYearEndDate) group — assigned deterministically by
+  /// FinancialBudgetsService.createRevision (never user-entered, never
+  /// reused), with the @@unique below as the race-safety backstop: a
+  /// concurrent duplicate computation collides on the constraint and
+  /// retries with a freshly-read max, exactly like withPublicReference's
+  /// own collision-retry pattern.
+  version Int @default(1)
+
+  status FinancialBudgetStatus @default(DRAFT)
+  source FinancialBudgetSource @default(CREATED)
+
+  /// Snapshotted from FinancialConfiguration.currencyCode at creation,
+  /// same convention as FinancialFund.currencyCode — never re-read live
+  /// afterward.
+  currencyCode String
+  notes        String?
+
+  /// Set only when source = IMPORTED: the real-world date the scheme
+  /// itself (its committee/AGM, before ever touching WaslProp) approved
+  /// this budget, as attested by whoever is recording the import — NOT a
+  /// claim that WaslProp witnessed that approval. approvedAt below always
+  /// means "confirmed/recorded in WaslProp at this instant", for both
+  /// CREATED and IMPORTED budgets; externalApprovalDate is the only field
+  /// that ever represents a pre-WaslProp event, and only for IMPORTED.
+  externalApprovalDate      DateTime? @db.Date
+  externalApprovalReference String?
+
+  createdByUserId  String?
+  approvedByUserId String?
+  approvedAt       DateTime?
+  /// Set once, by the one explicit activation action — never by any other
+  /// write (mirrors FinancialConfiguration.activatedAt).
+  activatedAt      DateTime?
+  /// Set once this version is superseded by a later one reaching ACTIVE —
+  /// null for every budget that has never been displaced.
+  supersededAt     DateTime?
+
+  /// Self-reference to the version this one revises — null for a
+  /// property's very first budget in a given financial year. Always points
+  /// to exactly the immediately-preceding version (see
+  /// FinancialBudgetsService.createRevision), never an arbitrary earlier
+  /// one, so the chain can be walked back one hop at a time.
+  revisionOfBudgetId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation           Organisation           @relation(fields: [organisationId], references: [id])
+  property               Property               @relation(fields: [propertyId], references: [id])
+  financialConfiguration FinancialConfiguration @relation(fields: [financialConfigurationId], references: [id])
+  createdByUser          User?                  @relation("FinancialBudgetCreatedBy", fields: [createdByUserId], references: [id])
+  approvedByUser         User?                  @relation("FinancialBudgetApprovedBy", fields: [approvedByUserId], references: [id])
+  revisionOf             FinancialBudget?       @relation("FinancialBudgetRevision", fields: [revisionOfBudgetId], references: [id])
+  revisions              FinancialBudget[]      @relation("FinancialBudgetRevision")
+  lines                  FinancialBudgetLine[]
+
+  /// Deterministic version numbering per financial-year group — see
+  /// `version`'s doc comment. (The separate ONE-ACTIVE-BUDGET invariant is
+  /// NOT this constraint — status isn't part of this key — see the
+  /// hand-written partial unique index migration for that one.)
+  @@unique([propertyId, financialYearStartDate, financialYearEndDate, version])
+  @@index([organisationId])
+  @@index([propertyId, status])
+  @@index([financialConfigurationId])
+  @@map("financial_budgets")
+}
+
+/// One category/line item within a FinancialBudget, attributed to exactly
+/// one FinancialFund. Deliberately a flexible free-text `category` rather
+/// than a hard-coded enum of Australian strata expense types (Insurance,
+/// Cleaning, ...) — see this section's doc comment; a future reusable
+/// chart-of-accounts can be layered on top of this column later without a
+/// breaking change (e.g. an optional categoryId FK added alongside it),
+/// but WaslProp does not build that general-ledger machinery in M16.2.
+model FinancialBudgetLine {
+  id              String @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "BUDL" prefix.
+  publicReference String @unique
+  organisationId  String
+  propertyId      String
+  budgetId        String
+  financialFundId String
+
+  category      String
+  description   String?
+  /// Must be >= 0 — a deliberately-nil line (e.g. "Legal Fees: $0 expected
+  /// this year") is valid and kept, not rejected; only a negative amount
+  /// is an error. Validated at the Zod/service layer, matching the
+  /// existing FinancialOpeningBalance.amount precedent (no DB CHECK
+  /// constraint).
+  plannedAmount Decimal @db.Decimal(12, 2)
+  notes         String?
+  /// Display ordering within its fund — assigned by the service layer
+  /// (append-to-end on create), editable only by reordering, never implying
+  /// any business meaning beyond presentation.
+  sortOrder     Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  budget FinancialBudget @relation(fields: [budgetId], references: [id])
+  fund   FinancialFund   @relation(fields: [financialFundId], references: [id])
+
+  @@index([budgetId])
+  @@index([financialFundId])
+  @@index([propertyId])
+  @@map("financial_budget_lines")
 }
 
 /// A business/person record: an owner, tenant or resident on file for an
@@ -972,6 +1180,23 @@ enum ActivityEventType {
   /// NOT_CONFIGURED/SETUP_IN_PROGRESS -> ACTIVE — the explicit, deliberate
   /// activation action (never automatic). See financials.service.ts.
   FINANCIAL_SETUP_ACTIVATED
+  /// M16.2 — budget lifecycle, one coarse event per stage (never one per
+  /// line edit — see budgets.service.ts).
+  FINANCIAL_BUDGET_CREATED
+  /// Fired for a CREATED budget's approve() call — a genuine
+  /// approval-within-WaslProp action.
+  FINANCIAL_BUDGET_APPROVED
+  /// Fired for an IMPORTED budget's approve() call instead of
+  /// FINANCIAL_BUDGET_APPROVED — this records that the import was
+  /// confirmed in WaslProp, never that WaslProp witnessed the scheme's own
+  /// (pre-existing, external) approval. See FinancialBudget.source.
+  FINANCIAL_BUDGET_IMPORT_RECORDED
+  /// APPROVED -> ACTIVE, demoting whatever was previously ACTIVE for the
+  /// same financial year to SUPERSEDED in the same transaction.
+  FINANCIAL_BUDGET_ACTIVATED
+  /// A new DRAFT version was created from an APPROVED/ACTIVE budget —
+  /// fired once per revision created, not per subsequent line edit.
+  FINANCIAL_BUDGET_REVISED
 }
 
 // --- Resident invitations (Slice 2 / M6.5) ---

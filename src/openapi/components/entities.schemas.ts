@@ -210,6 +210,71 @@ export const financialReconciliationReportSchema = registry.register(
   }),
 );
 
+const financialBudgetLineSchema = z.object({
+  id: z.string(),
+  publicReference: z.string().openapi({ example: 'BUDL-K7M4Q2' }),
+  financialFundId: z.string(),
+  fundPublicReference: z.string().openapi({ example: 'FUND-K7M4Q2' }),
+  fundType: z.string().openapi({ example: 'ADMINISTRATION' }),
+  fundName: z.string().openapi({ example: 'Administration Fund' }),
+  category: z.string().openapi({ example: 'Insurance' }),
+  description: z.string().nullable(),
+  plannedAmount: z.string().openapi({ example: '8500.00' }),
+  notes: z.string().nullable(),
+  sortOrder: z.number().int(),
+});
+
+const financialBudgetFundTotalSchema = z.object({
+  financialFundId: z.string(),
+  fundPublicReference: z.string().openapi({ example: 'FUND-K7M4Q2' }),
+  fundType: z.string().openapi({ example: 'ADMINISTRATION' }),
+  fundName: z.string().openapi({ example: 'Administration Fund' }),
+  total: z.string().openapi({ example: '42500.00' }),
+});
+
+export const financialBudgetSchema = registry.register(
+  'FinancialBudget',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'BUD-K7M4Q2' }),
+    financialYearStartDate: z.string().openapi({ example: '2026-07-01' }),
+    financialYearEndDate: z.string().openapi({ example: '2027-06-30' }),
+    version: z.number().int().openapi({
+      description: 'Deterministic, server-assigned — 1 for a financial year’s first budget.',
+    }),
+    status: z.enum(['DRAFT', 'APPROVED', 'ACTIVE', 'SUPERSEDED']),
+    source: z.enum(['CREATED', 'IMPORTED']).openapi({
+      description: 'IMPORTED = the scheme’s already-approved budget, captured during onboarding.',
+    }),
+    currencyCode: z.string().openapi({ example: 'AUD' }),
+    notes: z.string().nullable(),
+    externalApprovalDate: z.string().nullable().openapi({
+      description: 'IMPORTED only — the real-world date the scheme itself approved this budget.',
+      example: '2026-05-12',
+    }),
+    externalApprovalReference: z.string().nullable(),
+    createdByUserId: z.string().nullable(),
+    approvedByUserId: z.string().nullable(),
+    approvedAt: z.string().datetime().nullable(),
+    activatedAt: z.string().datetime().nullable(),
+    supersededAt: z.string().datetime().nullable(),
+    revisionOfBudgetId: z.string().nullable(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+    totalBudget: z.string().openapi({
+      description: 'SUM(lines.plannedAmount) — always derived, never a stored column.',
+      example: '125000.00',
+    }),
+    totalsByFund: z.array(financialBudgetFundTotalSchema),
+    lines: z.array(financialBudgetLineSchema),
+  }),
+);
+
+export const financialBudgetListSchema = registry.register(
+  'FinancialBudgetList',
+  z.object({ items: z.array(financialBudgetSchema) }),
+);
+
 export const contactSummarySchema = registry.register(
   'ContactSummary',
   z.object({
