@@ -441,3 +441,156 @@ GST computation — all M16.3+, consuming this milestone's frozen posting contra
 Everything in M16.3–M16.9 (levies, lot ledger, AP, banking, arrears, statements/GST/close, AI) —
 these consume the frozen posting contract but are out of scope here. GST computation rules (ADR-018
 D6) remain unimplemented pending mandatory accountant validation.
+
+---
+
+## 8. M16.3 implementation checklist — Levy Management & UOE Allocation
+
+**Status: not started — preparation only**, produced at M16.2.2 closure (20 October 2026). Builds
+directly on the frozen M16.2.2 posting contract (`LedgerPostingService.post()`,
+`PostingProfileService`) and the already-reserved `PostingRole.LOT_LEVY_RECEIVABLE`/
+`LEVY_INCOME` roles — no ledger schema change is needed for this milestone. **No code in this
+section has been written.**
+
+### 8.1 Schema (additive; one migration)
+
+1. `LevySchedule` — property-scoped: `financialBudgetId?` (links a schedule to the budget it
+   funds, nullable so a schedule can exist independent of a budget line for a special levy),
+   `financialFundId`, `kind` (`REGULAR | SPECIAL`), `name`, `totalAmount` (the amount being raised
+   across all installments), `allocationBasis` (`UNIT_ENTITLEMENT` only for Australia at launch —
+   a versioned enum per ADR-018's jurisdiction-policy direction, never hard-coded elsewhere),
+   `status` (`DRAFT | APPROVED | ISSUED | CANCELLED`), approval evidence fields (mirroring
+   `FinancialBudget.approvedByUserId/approvedAt/externalApprovalDate` exactly — a special levy's
+   AGM/committee resolution is the same kind of external-approval fact a budget import already
+   models).
+2. `LevyInstallment` — one per due date under a schedule: `dueDate` (`@db.Date`), `amount`
+   (derived, stored for audit-trail stability once issued — never recomputed retroactively if the
+   schedule's entitlement data later changes), `status` (`PENDING | ISSUED | CANCELLED`).
+3. `LotLevyCharge` — one per (lot, installment): `spaceId`, `financialFundId`, `amount` (exact
+   cent allocation — see 8.2), `dueDate`, `status` (`ISSUED | PART_PAID | PAID | OVERDUE |
+   CANCELLED` — `PART_PAID`/`PAID`/`OVERDUE` only become meaningful once M16.4 receipts exist;
+   this milestone sets `ISSUED` and leaves the rest for M16.4 to drive), `journalEntryId` (links
+   to the posted receivable/income journal — never a separate unlinked total). Immutable once
+   `ISSUED`: a correction is `LevyAdjustment`, never an edit.
+4. `LevyAdjustment` — `lotLevyChargeId`, `amount` (signed), `reason`, `approvedByUserId`,
+   `journalEntryId` (the adjustment's own reversal/correction journal). Mirrors the
+   reversal-not-edit discipline already established for `JournalEntry`.
+5. New `ActivityEventType` members: `LEVY_SCHEDULE_CREATED/APPROVED/ISSUED/CANCELLED`,
+   `LEVY_CHARGE_ADJUSTED`, `LEVY_NOTICE_SENT`.
+6. **No new ledger tables.** Every levy posting uses the existing `JournalEntry`/`JournalLine`
+   via `LedgerPostingService.post()` with `sourceType: 'LEVY_REGULAR' | 'LEVY_SPECIAL'`,
+   `sourceId: levyInstallment.id` (exactly-once per installment, for free, from the existing
+   idempotency mechanism).
+
+### 8.2 UOE allocation and deterministic rounding
+
+7. Reuse `Space.entitlementValue` (already modeled, M11-A) and
+   `Property.strataPlanDeclaredUnitsOfEntitlement` (already the reconciliation target for
+   `SUM(Space.entitlementValue)`, per that field's own doc comment) — **do not** introduce a
+   second entitlement concept for levies.
+8. Per-lot amount = `scheduleTotal × (lot.entitlementValue / SUM(entitlementValue))`, computed
+   with `Prisma.Decimal`, rounded to cents with a **deterministic residual-distribution** rule
+   (e.g. largest-remainder method, stable lot ordering by `publicReference`) so
+   `SUM(LotLevyCharge.amount) === scheduleTotal` exactly, every time, with no manual fudge line —
+   per the blueprint's own "deterministic cent allocation with residual distribution and stable
+   tie-breaking" requirement. Decide and document the exact tie-break rule once in `LevyService`;
+   never re-derive it ad hoc per call site.
+9. Reject schedule creation if `SUM(Space.entitlementValue)` doesn't reconcile to
+   `strataPlanDeclaredUnitsOfEntitlement` (warn, per the existing strata reconciliation pattern,
+   not necessarily block — confirm with the client/accountant whether a mismatch should be a hard
+   block for levies specifically, since money is now at stake, unlike the current advisory-only
+   strata check).
+
+### 8.3 Regular vs. special levies
+
+10. `LevyService.createRegularSchedule(financialBudgetId, installments[])` — derives
+    `totalAmount` from the **linked budget's REVENUE lines for the matching fund** (ties FIN-005's
+    typed budget lines to real levy issuance for the first time) — never a free-typed total
+    disconnected from the approved budget.
+11. `LevyService.createSpecialLevy(...)` — requires explicit approval evidence (AGM/committee
+    resolution reference + date), same non-fabrication discipline as `FinancialBudget.source =
+    'IMPORTED'`'s `externalApprovalDate`.
+12. Both paths converge on the same `issue()` method once `APPROVED`: generates `LotLevyCharge`
+    rows, posts one `JournalEntry` per installment (debit `LOT_LEVY_RECEIVABLE` per lot — modeled
+    as one line per lot, or an aggregated receivable control-account line with a subledger detail
+    table, per D-TBD below — credit `LEVY_INCOME`), using the posting profile already built in
+    M16.2.2. **Never allow silent edit of an issued charge** — matches FIN-012's acceptance
+    criterion verbatim.
+
+### 8.4 Due dates and status
+
+13. `LevyInstallment.dueDate` drives `LotLevyCharge.status` transitions only in combination with
+    M16.4 (receipts) — this milestone issues charges and leaves `PART_PAID`/`PAID`/`OVERDUE` as
+    unreachable states until M16.4 ships, documented explicitly so a reviewer doesn't expect
+    working arrears tracking from M16.3 alone.
+14. Jurisdiction policy (NSW SSMA 2015, confirmed in ADR-018) sets the admin-fund annual-budget
+    cadence context; this milestone does not hard-code a due-date cadence — `LevySchedule` takes
+    explicit installment dates from the caller, consistent with "jurisdiction-aware without
+    premature abstraction."
+
+### 8.5 Owner notices
+
+15. Reuse the **existing Communications module** (already in this codebase, M-series) to send levy
+    notices — do not build a parallel notification pipeline. `LEVY_NOTICE_SENT` activity event
+    records when a notice was dispatched per installment/lot, linked to the `Communication`/
+    `CommunicationRecipient` row it rode on.
+16. Notice content/PDF generation itself is scoped to M16.3 only if the Communications module
+    already supports attaching a generated document; otherwise, split notice *generation* into a
+    small follow-up rather than blocking levy issuance on it — issuance (the financial event) and
+    notice delivery (the communication event) are already separable in this codebase's existing
+    module boundaries.
+
+### 8.6 API / OpenAPI contracts
+
+17. Routes under `/properties/:propertyId/financials/levies` (schedules),
+    `/levies/:id/installments`, `/levies/:id/issue`, `/lot-levy-charges` (read, filterable by
+    space), `/lot-levy-charges/:id/adjust` — same `resolvePropertyReference` +
+    `requireCapability` pattern as every existing financial route.
+18. New capability decision needed: does issuing a levy require `financials.approve` (it posts to
+    the immutable ledger, same bar as a manual journal) or a narrower `financials.manage`? **Decision:
+    `financials.approve`**, for consistency with "every write that touches posted history" from
+    M16.2.2's own capability doc comment — levy issuance posts a journal, so it belongs with
+    reversal/period-close, not with budget/account editing.
+19. `src/openapi/paths/financial-levies.paths.ts` + new entity schemas, verified by
+    `openapi-route-coverage.test.ts`.
+
+### 8.7 Automated tests (minimum)
+
+20. Deterministic rounding: `SUM(LotLevyCharge.amount) === scheduleTotal` exactly, across an
+    odd-entitlement-count scheme that doesn't divide evenly (the real stress case for residual
+    distribution).
+21. Immutability: issued charge rejects direct edit; correction only via `LevyAdjustment`.
+22. Idempotency: re-issuing the same installment is a no-op (inherited for free from
+    `LedgerPostingService`, but still worth a dedicated test at this layer).
+23. Cross-property/organisation isolation (same IDOR-style tests as every prior milestone).
+24. Special levy requires approval evidence; regular levy derives its total from the linked
+    budget and rejects drift from it.
+25. Posting correctness: the posted journal's receivable total equals the schedule total; fund
+    attribution matches the schedule's fund.
+
+### 8.8 Documentation required for M16.3
+
+26. ADR-022 (levy rounding/residual-distribution rule — the one genuinely novel algorithm this
+    milestone introduces) and ADR-023 (regular-vs-special levy posting contract, and the
+    `financials.approve` capability decision in 8.6.18).
+27. Traceability matrix: FIN-011/FIN-012/FIN-013(partial, lot subledger read model)/FIN-005(linked
+    to real issuance) move to Done/Partial as appropriate.
+28. Business Confluence (or in-repo equivalent): how a regular levy run ties to the approved
+    budget, how a special levy differs, what "issued and immutable" means for a manager. Technical
+    Confluence: the rounding algorithm, the posting shape, the Communications-module reuse for
+    notices.
+
+### 8.9 UI — Stitch-first (mandatory, not yet done)
+
+29. If M16.3 needs UI (a Levy Schedule setup wizard, a per-lot charge preview before issuance, a
+    levy history list) it must be **designed in Stitch first** (project `17365736688974073408`),
+    inspected, then implemented — per the permanent policy in `CLAUDE.md`. **No Stitch screens
+    have been generated for M16.3** — this is a reminder for when implementation starts, not a
+    deliverable of this preparation pass.
+
+### 8.10 Explicit non-goals for M16.3
+
+Receipt allocation and arrears/interest (M16.4/M16.7) are **not** in scope — `LotLevyCharge`
+issuance and the `PART_PAID`/`OVERDUE` states it anticipates are the hook those milestones attach
+to, not functionality this milestone implements itself. GST on levies is deferred to M16.8/ADR-018
+D6 (mandatory accountant validation still outstanding).
