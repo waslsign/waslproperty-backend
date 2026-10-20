@@ -222,3 +222,174 @@ Product design (our call, recorded for transparency):
 18. FIN-ID traceability rows for FIN-003, FIN-004, FIN-005, FIN-007.
 
 **Out of scope for M16.2.1:** journals, periods, posting, tax computation, actuals. Deliberately — this milestone must be shippable and reversible without a ledger.
+
+---
+
+## 7. M16.2.2 implementation checklist — General Ledger & Posting Engine
+
+**Status: not started.** This is preparation only, produced at M16.2.1 closure (20 October 2026),
+per ADR-018's working assumptions (D4/D5/D8/D9) and the frozen domain boundaries in the
+architecture blueprint §4–§9. **No code in this section has been written.**
+
+### 7.1 Schema (additive; one migration)
+
+1. `accounting_periods` — `propertyId`, `startDate`/`endDate` (`@db.Date`, same discipline as
+   `FinancialConfiguration`'s own date fields), `status` (`OPEN|SOFT_CLOSED|CLOSED`),
+   `closedByUserId/At`, `reopenedByUserId/At`. Non-overlap enforced by a hand-written exclusion
+   constraint in raw SQL within the migration (Prisma's DSL can't express it — same precedent as
+   the `financial_budgets` one-active-per-FY partial index).
+2. `posting_profiles` / `posting_profile_rules` — property-scoped, versioned; maps semantic roles
+   (`LEVY_RECEIVABLE`, `LEVY_INCOME`, `FUND_CASH`, `ACCOUNTS_PAYABLE`, `GST_PAYABLE`,
+   `GST_RECEIVABLE`, `UNAPPLIED_CASH`, `SUSPENSE`, `INTER_FUND_TRANSFER`) to an `AccountingAccount`
+   id, optionally scoped to one `FinancialFund`. Resolved only by the posting service, never read
+   directly by a business module.
+3. `journal_entries` — `propertyId`, `organisationId`, `financialConfigurationId`,
+   `accountingPeriodId`, `publicReference` (`JRN`), `effectiveDate` (`@db.Date`), `postedAt`,
+   `currencyCode`, `sourceType`, `sourceId`, `sourceEventVersion`, `narration`, `postedByUserId`,
+   `reversalOfJournalId?`, `reversedByJournalId?`. **No `DRAFT` status** — a row's existence is
+   posted state; correction is always a linked reversal (per ADR-018 and the blueprint's
+   immutable-history principle).
+4. `journal_lines` — `journalEntryId`, `accountId`, `financialFundId`, `debit`/`credit`
+   `Decimal(14,2)` (resolves the existing 10,2/12,2 mix — see §7.6), exactly one side non-zero per
+   row, optional `spaceId`/`contractorId`/`taxCodeId`/`lineNarration`.
+5. `@@unique([propertyId, sourceType, sourceId, sourceEventVersion])` on `journal_entries` —
+   exactly-once posting, mirroring the proven `WaslSignWebhookEvent.eventId` idempotency pattern
+   already in this codebase (`integrations/waslsign/waslsign.controller.ts`).
+6. New `ActivityEventType` members: `FINANCIAL_PERIOD_OPENED/CLOSED/REOPENED`,
+   `FINANCIAL_JOURNAL_POSTED`, `FINANCIAL_JOURNAL_REVERSED`, `FINANCIAL_POSTING_PROFILE_UPDATED`.
+7. New capability: `financials.approve` (granted to no `PropertyRole` by default, same as
+   `financials.manage`'s introduction) — gates period close/reopen, reversal, and posting-profile
+   changes as maker-checker actions.
+
+### 7.2 Double-entry structure, balancing, Decimal precision
+
+8. `LedgerPostingService.post(command)` is the **only** code path permitted to insert
+   `journal_entries`/`journal_lines` — every other module (future levies/AP/banking) calls it with
+   a typed command, never writes ledger tables directly. Enforce via code review + a lint-level
+   check (e.g. a dependency-boundary ESLint rule) if practical, documented as a hard rule otherwise.
+9. Balance invariant `SUM(debit) = SUM(credit)` per journal, per currency: checked in the service
+   **and** by a deferred DB `CHECK`/trigger as the backstop (same "two independent layers" pattern
+   already used for the one-active-budget invariant — see `budgets.service.ts`'s own doc comment).
+10. All money `Prisma.Decimal` only, `Decimal(14,2)` on ledger tables — never a raw JS number
+    through monetary arithmetic (`.toFixed(2)` only at the API boundary, exactly as
+    `budgets.service.ts`/`accounts.service.ts` already do).
+
+### 7.3 Scheme and fund segregation
+
+11. Every `accountId`/`financialFundId`/`spaceId` on a line is re-validated as belonging to the
+    same `propertyId` at posting time — never trusted from the caller. Reuse the
+    `getOwnedAccount`/`assertAccountAssignable` pattern from `budgets.service.ts` and
+    `accounts.service.ts`.
+12. Cross-property and cross-organisation posting attempts are integration-tested explicitly (IDOR
+    style, matching `financial-budgets.test.ts`'s existing `multi-tenancy / IDOR` describe block).
+
+### 7.4 Accounting periods and posting-date validation
+
+13. Posting resolves `effectiveDate` → `AccountingPeriod`; missing or non-`OPEN` period → rejected
+    (409), never auto-created. Late entries require an explicit, `financials.approve`-gated
+    adjustment path (out of scope to design in full this milestone — stub the rejection only).
+14. Period close/reopen: `financials.approve`-only; close runs a pre-close checklist (open
+    sub-ledger items — none exist yet in M16.2.2 alone, so this is largely a placeholder hook for
+    M16.4/M16.5 to extend) before flipping status; reopen is a separate, audited action, never a
+    silent undo.
+
+### 7.5 Transactional posting engine, idempotency, concurrency
+
+15. One `$transaction` per post: lock the property's `financial_configurations` row
+    (`SELECT ... FOR UPDATE`) for the duration — identical lock discipline to
+    `FinancialBudgetsService.activate`'s own already-proven pattern — before resolving the period
+    and inserting lines.
+16. Idempotency: a duplicate `(propertyId, sourceType, sourceId, sourceEventVersion)` is a
+    guaranteed no-op that returns the original `journalReference`, never a second posting, never an
+    error. Integration-tested with a literal duplicate-request retry.
+17. Concurrency test: two simultaneous posts for the same source key resolve to exactly one
+    journal (mirrors the existing `financial-budgets.test.ts` "concurrent activation" test
+    structure).
+
+### 7.6 Reversals and corrections
+
+18. Reversal is a new `JournalEntry` with every line's debit/credit swapped, linked via
+    `reversalOfJournalId`/`reversedByJournalId`, carrying a required reason and actor. The original
+    is never updated in place. `financials.approve` required.
+19. A reversal into a `CLOSED` period is rejected — must go through the period-adjustment path
+    (stubbed per 7.4.13) or wait for reopen.
+
+### 7.7 Audit history and authorization
+
+20. Every posting, reversal, period close/reopen, and posting-profile change is recorded via
+    `recordActivity` inside the same transaction (same convention as every other financial
+    service). `financials.view`/`financials.manage`/`financials.approve` cover read/manage/approve
+    respectively — no new role is introduced.
+
+### 7.8 Opening balance transition from M16.1
+
+21. `OpeningJournalService.generate(propertyId, fundSplit)` — takes the **existing, immutable**
+    `FinancialOpeningBalance`/`LotOpeningPosition` rows (M16.1) plus an **explicit, operator-
+    supplied fund split** for lot receivables (per ADR-018 D8 — M16.1 snapshots have no fund
+    dimension and are never rewritten) and produces one balanced opening `JournalEntry`.
+22. Validate opening debits = credits, and that fund-level opening balances reconcile to
+    `FinancialOpeningBalance.amount` per fund, before allowing the journal to post. Idempotent:
+    re-running for an already-posted opening journal is a no-op (same source-key mechanism as 7.5).
+23. `FinancialConfiguration.status` gains no new value — opening-journal generation is a distinct,
+    later action, not folded into M16.1's own `activate()`.
+
+### 7.9 API / OpenAPI contracts
+
+24. New routes under `/properties/:propertyId/financials/periods`, `/journals`,
+    `/journals/:id/reverse`, `/posting-profile`, `/opening-journal`, following the exact
+    `resolvePropertyReference` + `requireCapability` pattern every existing financial route uses.
+25. `src/openapi/paths/financial-ledger.paths.ts` (new file, following `financial-accounts.paths.ts`'s
+    structure) + corresponding `entities.schemas.ts` additions (`JournalEntry`, `JournalLine`,
+    `AccountingPeriod`, `PostingProfile`). Verify with the existing
+    `test/unit/openapi-route-coverage.test.ts` (already proved it fails loudly on an undocumented
+    route — keep relying on it).
+
+### 7.10 Integration contracts for future consumers (levies, procurement, banking, payments)
+
+26. Define `PostingCommand` as a plain TypeScript type (not yet a real producer) with
+    `organisationId`, `propertyId`, `sourceType`, `sourceId`, `sourceEventVersion`, `effectiveDate`,
+    `currencyCode`, `actor`, and semantic role references (not raw account IDs — resolved via the
+    posting profile) — this is the contract M16.3 (levies) and M16.5 (AP) build against. Document it
+    explicitly so those milestones don't each invent a slightly different shape.
+27. `PurchaseCommitment` (encumbrance, M16.5) is explicitly **not** posted through this engine
+    unless a later decision changes that — document this boundary now so M16.5 doesn't assume
+    otherwise.
+
+### 7.11 Automated accounting-invariant tests
+
+28. Golden ledger fixtures: a handful of hand-verified posting scenarios (issued levy, receipt,
+    supplier invoice, reversal) with expected balances, run as snapshot-style assertions.
+29. Negative/edge cases: unbalanced journal rejected; posting into a closed period rejected;
+    duplicate source key no-ops; cross-property reference rejected; reversal of a reversal
+    (should reverse the original's effect, not double-reverse); concurrent posting race.
+30. Per-worker test schema isolation — scheduled now rather than deferred again (ADR corrects
+    blueprint §9's claim that this was already an open concurrency *correctness* flake; it is a
+    throughput constraint — `vitest.config.ts`'s `fileParallelism: false` already handles
+    correctness). Needed before the ledger suite grows large enough to make sequential runs slow.
+
+### 7.12 Documentation required for M16.2.2
+
+31. ADR-020 (posting engine architecture: no `DRAFT` state, role-based posting profile resolution,
+    lock discipline) and ADR-021 (idempotency key shape and retry semantics).
+32. Update `docs/architecture/financial-requirements-traceability.md`: FIN-008/009/010 move from
+    Planned to Done; FIN-007 moves from Partial to Done once the opening-balance-aware funding
+    bridge is possible.
+33. Business Confluence (or in-repo equivalent, per the same fallback as M16.2.1): what a journal
+    is, how periods close, how a reversal looks to a property manager. Technical Confluence: the
+    posting contract, lock discipline, idempotency guarantee, and extension points for M16.3+.
+34. OpenAPI regenerated and route-coverage test passing before the milestone is called done (same
+    bar as M16.2.1).
+
+### 7.13 UI
+
+35. If M16.2.2 needs any UI (a trial balance view, an accounting-periods settings screen, a journal
+    detail/reversal view) it must be **designed in Stitch first** (project `17365736688974073408`),
+    per the permanent policy now in `CLAUDE.md` — not designed independently. No UI has been
+    designed for M16.2.2 yet; this is a reminder for when implementation starts, not a deliverable
+    of this preparation pass.
+
+### 7.14 Explicit non-goals for M16.2.2
+
+Everything in M16.3–M16.9 (levies, lot ledger, AP, banking, arrears, statements/GST/close, AI) —
+these consume the frozen posting contract but are out of scope here. GST computation rules (ADR-018
+D6) remain unimplemented pending mandatory accountant validation.
