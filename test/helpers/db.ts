@@ -15,6 +15,14 @@ export async function resetDb() {
     // circular pair — a confirmed document points at the property it
     // created, so the link is broken before either side is deleted.
     testPrisma.propertyDocument.updateMany({ data: { createdPropertyId: null } }),
+    // M16.2.1 — AccountingAccount.parentAccountId is a self-reference, and
+    // sourceTemplateLineId/sourceImportBatchId each point at a row (an
+    // AccountTemplateLine / AccountImportBatch) that must itself be
+    // deletable without first checking every account that might reference
+    // it — same cycle-breaking shape as the pairs above.
+    testPrisma.accountingAccount.updateMany({
+      data: { parentAccountId: null, sourceTemplateLineId: null, sourceImportBatchId: null },
+    }),
   ]);
 
   await testPrisma.$transaction([
@@ -58,6 +66,15 @@ export async function resetDb() {
     // financial_configurations.
     testPrisma.financialBudgetLine.deleteMany(),
     testPrisma.financialBudget.deleteMany(),
+    // M16.2.1 — accounting_accounts references financial_funds/
+    // financial_configurations (and, after the cycle-break above, no
+    // longer references itself or account_template_lines/
+    // account_import_batches), so it must go before all of those; the
+    // template/import tables themselves go before property/organisation.
+    testPrisma.accountingAccount.deleteMany(),
+    testPrisma.accountImportBatch.deleteMany(),
+    testPrisma.accountTemplateLine.deleteMany(),
+    testPrisma.accountTemplate.deleteMany(),
     testPrisma.financialOpeningBalance.deleteMany(),
     testPrisma.lotOpeningPosition.deleteMany(),
     testPrisma.financialFund.deleteMany(),

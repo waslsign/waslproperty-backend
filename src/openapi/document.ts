@@ -13,6 +13,7 @@ import './paths/spaces.paths.js';
 import './paths/strata.paths.js';
 import './paths/financials.paths.js';
 import './paths/financial-budgets.paths.js';
+import './paths/financial-accounts.paths.js';
 import './paths/people.paths.js';
 import './paths/invites.paths.js';
 import './paths/maintenance.paths.js';

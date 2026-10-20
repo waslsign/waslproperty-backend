@@ -125,7 +125,10 @@ registry.registerPath({
   description:
     'Requires `financials.manage`. financialFundId must belong to this same property (409 ' +
     'otherwise — cross-property fund references are always rejected). plannedAmount must be >= ' +
-    '0; a $0 line is valid. Rejected (409) once the budget is no longer DRAFT.',
+    '0; a $0 line is valid. accountId, if supplied, must belong to this same property AND be ' +
+    'currently active (409 otherwise — a deactivated account can never be newly assigned, though ' +
+    'an existing line that already references one keeps that reference). Rejected (409) once the ' +
+    'budget is no longer DRAFT.',
   security: SECURITY_CUSTOMER,
   request: {
     params: budgetIdPathParam,
@@ -149,7 +152,10 @@ registry.registerPath({
   summary: 'Updates a line on a DRAFT budget.',
   description:
     'Requires `financials.manage`. financialFundId is never changed by update — move the ' +
-    'amount by deleting and re-adding instead. Rejected (409) once the budget is no longer DRAFT.',
+    'amount by deleting and re-adding instead. Setting accountId to a new value is rejected ' +
+    '(409) if that account is inactive or belongs to a different property; leaving accountId ' +
+    'untouched never re-checks it, so a line that already references a since-deactivated ' +
+    'account is unaffected by unrelated edits. Rejected (409) once the budget is no longer DRAFT.',
   security: SECURITY_CUSTOMER,
   request: {
     params: budgetLineIdPathParam,

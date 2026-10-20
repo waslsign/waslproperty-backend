@@ -217,11 +217,19 @@ const financialBudgetLineSchema = z.object({
   fundPublicReference: z.string().openapi({ example: 'FUND-K7M4Q2' }),
   fundType: z.string().openapi({ example: 'ADMINISTRATION' }),
   fundName: z.string().openapi({ example: 'Administration Fund' }),
+  lineType: z.enum(['REVENUE', 'EXPENDITURE', 'TRANSFER', 'RESERVE_CONTRIBUTION', 'OTHER']).openapi({
+    description: 'M16.2.1. Drives totalBudgetedRevenue/totalBudgetedExpenditure below.',
+  }),
   category: z.string().openapi({ example: 'Insurance' }),
   description: z.string().nullable(),
   plannedAmount: z.string().openapi({ example: '8500.00' }),
   notes: z.string().nullable(),
   sortOrder: z.number().int(),
+  accountId: z.string().nullable().openapi({
+    description: 'M16.2.1 — optional chart-of-accounts reference, same property only.',
+  }),
+  accountCode: z.string().nullable(),
+  accountName: z.string().nullable(),
 });
 
 const financialBudgetFundTotalSchema = z.object({
@@ -229,7 +237,8 @@ const financialBudgetFundTotalSchema = z.object({
   fundPublicReference: z.string().openapi({ example: 'FUND-K7M4Q2' }),
   fundType: z.string().openapi({ example: 'ADMINISTRATION' }),
   fundName: z.string().openapi({ example: 'Administration Fund' }),
-  total: z.string().openapi({ example: '42500.00' }),
+  totalRevenue: z.string().openapi({ example: '12000.00' }),
+  totalExpenditure: z.string().openapi({ example: '30500.00' }),
 });
 
 export const financialBudgetSchema = registry.register(
@@ -261,9 +270,23 @@ export const financialBudgetSchema = registry.register(
     revisionOfBudgetId: z.string().nullable(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
-    totalBudget: z.string().openapi({
-      description: 'SUM(lines.plannedAmount) — always derived, never a stored column.',
-      example: '125000.00',
+    totalBudgetedRevenue: z.string().openapi({
+      description:
+        'M16.2.1 — SUM(lines.plannedAmount) where lineType = REVENUE. Always derived, never a ' +
+        'stored column. Replaces the removed `totalBudget` field (no deprecated alias — see the ' +
+        'M16.2.1 ADR).',
+      example: '42000.00',
+    }),
+    totalBudgetedExpenditure: z.string().openapi({
+      description: 'SUM(lines.plannedAmount) where lineType = EXPENDITURE.',
+      example: '58400.00',
+    }),
+    budgetedSurplusDeficit: z.string().openapi({
+      description:
+        'totalBudgetedRevenue - totalBudgetedExpenditure. TRANSFER/RESERVE_CONTRIBUTION/OTHER ' +
+        'lines are excluded from this headline figure (reported per-line only) until a full ' +
+        'funding bridge ships — see FIN-007.',
+      example: '-16400.00',
     }),
     totalsByFund: z.array(financialBudgetFundTotalSchema),
     lines: z.array(financialBudgetLineSchema),
@@ -273,6 +296,87 @@ export const financialBudgetSchema = registry.register(
 export const financialBudgetListSchema = registry.register(
   'FinancialBudgetList',
   z.object({ items: z.array(financialBudgetSchema) }),
+);
+
+export const accountClassificationEnumSchema = z.enum([
+  'ASSET',
+  'LIABILITY',
+  'EQUITY',
+  'INCOME',
+  'EXPENSE',
+]);
+
+export const accountingAccountSchema = registry.register(
+  'AccountingAccount',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'ACC-K7M4Q2' }),
+    code: z.string().openapi({ example: '159100' }),
+    name: z.string().openapi({ example: 'Insurance--Premiums' }),
+    description: z.string().nullable(),
+    classification: accountClassificationEnumSchema,
+    parentAccountId: z.string().nullable(),
+    restrictedToFundId: z.string().nullable().openapi({
+      description: 'Null = usable against any fund — see the M16.2.1 ADR (D2).',
+    }),
+    restrictedToFundName: z.string().nullable(),
+    isActive: z.boolean().openapi({
+      description: 'Accounts are deactivated, never deleted — see the Chart of Accounts ADR.',
+    }),
+    externalCode: z.string().nullable(),
+    sourceTemplateLineId: z.string().nullable(),
+    sourceImportBatchId: z.string().nullable(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  }),
+);
+
+export const accountingAccountListSchema = registry.register(
+  'AccountingAccountList',
+  z.object({ items: z.array(accountingAccountSchema) }),
+);
+
+const accountImportRowSchema = z.object({
+  rowNumber: z.number().int(),
+  code: z.string(),
+  name: z.string(),
+  codeType: z.string().nullable(),
+  suggestedClassification: accountClassificationEnumSchema.nullable(),
+  suggestionConfidence: z.enum(['explicit', 'heuristic', 'none']).openapi({
+    description:
+      'explicit = stated in the file’s own Code type column; heuristic = a non-authoritative ' +
+      'name-keyword guess that must be confirmed; none = no suggestion, a classification must be ' +
+      'supplied via rowClassifications before this row can be applied.',
+  }),
+  resolvedClassification: accountClassificationEnumSchema.nullable(),
+  status: z.enum(['READY', 'WARNING', 'ERROR']),
+  issues: z.array(z.string()),
+});
+
+export const accountImportPreviewSchema = registry.register(
+  'AccountImportPreview',
+  z.object({
+    fileName: z.string().nullable(),
+    totalRows: z.number().int(),
+    readyCount: z.number().int(),
+    warningCount: z.number().int(),
+    errorCount: z.number().int(),
+    rows: z.array(accountImportRowSchema),
+  }),
+);
+
+export const accountImportApplyResultSchema = registry.register(
+  'AccountImportApplyResult',
+  z.object({
+    batch: z.object({
+      id: z.string(),
+      publicReference: z.string().openapi({ example: 'IMP-K7M4Q2' }),
+      totalRows: z.number().int(),
+      createdCount: z.number().int(),
+      skippedCount: z.number().int(),
+    }),
+    accounts: z.array(accountingAccountSchema),
+  }),
 );
 
 export const contactSummarySchema = registry.register(

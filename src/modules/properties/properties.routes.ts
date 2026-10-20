@@ -32,6 +32,17 @@ import {
   updateFinancialBudgetLine,
   updateFinancialBudgetMetadata,
 } from '../financials/budgets.controller.js';
+import {
+  applyAccountsImport,
+  createAccount,
+  deactivateAccount,
+  exportAccountsCsv,
+  listAccounts,
+  previewAccountsImport,
+  reactivateAccount,
+  updateAccount,
+} from '../financials/accounts.controller.js';
+import { provisionAccountsFromTemplate } from '../financials/account-templates.controller.js';
 import { createSpaceForProperty, listSpacesForProperty } from '../spaces/spaces.controller.js';
 import {
   bulkSetStrataLots,
@@ -217,6 +228,66 @@ propertiesRouter.post(
   resolvePropertyReference('propertyId'),
   requireCapability('financials.manage', fromParam('propertyId')),
   asyncHandler(activateFinancialSetup),
+);
+
+// Chart of Accounts (M16.2.1) — see prisma/schema.prisma's "Strata
+// Financial Management: Chart of Accounts" section doc comment. Same
+// financials.view/financials.manage split as the rest of this section;
+// deliberately no separate capability (mirrors how financials.manage
+// already covers funds/budgets — see M16.2.1 ADR D-capability).
+propertiesRouter.get(
+  '/:propertyId/financials/accounts',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listAccounts),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/accounts',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(createAccount),
+);
+propertiesRouter.patch(
+  '/:propertyId/financials/accounts/:accountId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(updateAccount),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/accounts/:accountId/deactivate',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(deactivateAccount),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/accounts/:accountId/reactivate',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(reactivateAccount),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/accounts/export',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(exportAccountsCsv),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/accounts/import/preview',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(previewAccountsImport),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/accounts/import/apply',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(applyAccountsImport),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/accounts/provision-from-template',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(provisionAccountsFromTemplate),
 );
 
 // Budget Management (M16.2) — the authoritative planned funding requirement

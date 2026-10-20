@@ -50,6 +50,15 @@ model Organisation {
   properties                       Property[]
   financialConfigurations          FinancialConfiguration[]
   financialBudgets                 FinancialBudget[]
+  /// M16.2.1 — this organisation's scheme-specific chart-of-accounts rows
+  /// across every property; see AccountingAccount's own doc comment on why
+  /// accounts are per-property, not shared live across schemes.
+  accountingAccounts               AccountingAccount[]
+  /// M16.2.1 — versioned templates this organisation can provision a new
+  /// scheme's chart of accounts from (copy-on-provision, never a live
+  /// shared catalog — see AccountTemplate's doc comment).
+  accountTemplates                 AccountTemplate[]
+  accountImportBatches             AccountImportBatch[]
   activityEvents                   ActivityEvent[]
   maintenanceRequests              MaintenanceRequest[]
   maintenanceRequestAttachments    MaintenanceRequestAttachment[]
@@ -128,6 +137,9 @@ model User {
   createdLotOpeningPositions            LotOpeningPosition[]              @relation("LotOpeningPositionCreatedBy")
   createdFinancialBudgets               FinancialBudget[]                 @relation("FinancialBudgetCreatedBy")
   approvedFinancialBudgets              FinancialBudget[]                 @relation("FinancialBudgetApprovedBy")
+  createdAccountingAccounts             AccountingAccount[]               @relation("AccountingAccountCreatedBy")
+  createdAccountTemplates               AccountTemplate[]                 @relation("AccountTemplateCreatedBy")
+  appliedAccountImportBatches           AccountImportBatch[]              @relation("AccountImportBatchAppliedBy")
 
   @@map("users")
 }
@@ -377,6 +389,10 @@ model Property {
   /// created for this property; never deleted, see FinancialBudget's own
   /// doc comment on why.
   financialBudgets       FinancialBudget[]
+  /// M16.2.1 — this property's own scheme-specific chart of accounts; see
+  /// AccountingAccount's doc comment.
+  accountingAccounts     AccountingAccount[]
+  accountImportBatches   AccountImportBatch[]
 
   @@unique([organisationId, code])
   @@index([organisationId])
@@ -609,6 +625,9 @@ model FinancialConfiguration {
   funds           FinancialFund[]
   lotPositions    LotOpeningPosition[]
   budgets         FinancialBudget[]
+  /// M16.2.1 — this scheme's chart of accounts, one row per provisioned or
+  /// manually-added account; see AccountingAccount's doc comment.
+  accounts        AccountingAccount[]
 
   @@index([organisationId])
   @@map("financial_configurations")
@@ -645,6 +664,12 @@ model FinancialFund {
   /// ever written against it; never itself a balance (see this section's
   /// doc comment — still no mutable running total anywhere).
   budgetLines            FinancialBudgetLine[]
+  /// M16.2.1 — accounts restricted to this fund only (AccountingAccount.
+  /// restrictedToFundId) — see that field's doc comment on why most
+  /// accounts leave this null (fund is carried on the ledger line, not the
+  /// account) and only a minority (e.g. a fund's own cash account) pin to
+  /// one fund.
+  restrictedAccounts     AccountingAccount[]
 
   @@index([financialConfigurationId])
   @@index([propertyId])
@@ -872,13 +897,26 @@ model FinancialBudget {
   @@map("financial_budgets")
 }
 
+/// REVENUE | EXPENDITURE | TRANSFER | RESERVE_CONTRIBUTION | OTHER — see
+/// FinancialBudgetLine.lineType's doc comment. Added in M16.2.1; every
+/// pre-existing row backfills to EXPENDITURE (the default), so historical
+/// expenditure totals are unchanged by this migration — see
+/// FinancialBudgetsService.toView and the M16.2.1 ADR on the
+/// totalBudget -> totalBudgetedRevenue/totalBudgetedExpenditure/
+/// budgetedSurplusDeficit split this type makes meaningful.
+enum FinancialBudgetLineType {
+  REVENUE
+  EXPENDITURE
+  TRANSFER
+  RESERVE_CONTRIBUTION
+  OTHER
+}
+
 /// One category/line item within a FinancialBudget, attributed to exactly
-/// one FinancialFund. Deliberately a flexible free-text `category` rather
-/// than a hard-coded enum of Australian strata expense types (Insurance,
-/// Cleaning, ...) — see this section's doc comment; a future reusable
-/// chart-of-accounts can be layered on top of this column later without a
-/// breaking change (e.g. an optional categoryId FK added alongside it),
-/// but WaslProp does not build that general-ledger machinery in M16.2.
+/// one FinancialFund. `category` remains free text (never removed — see
+/// below); `accountId` is the M16.2.1 addition that lets a line reference
+/// the scheme's chart of accounts without forcing every historical line to
+/// have one (nullable, additive — see the CoA ADR).
 model FinancialBudgetLine {
   id              String @id @default(cuid())
   /// See Property.publicReference's doc comment — same system, "BUDL" prefix.
@@ -888,6 +926,16 @@ model FinancialBudgetLine {
   budgetId        String
   financialFundId String
 
+  /// M16.2.1 — whether this line is planned income, planned spend, an
+  /// inter-fund transfer, or a reserve/capital-works contribution. Drives
+  /// the funding-bridge totals in FinancialBudgetsService.toView
+  /// (totalBudgetedRevenue vs totalBudgetedExpenditure); never inferred
+  /// from the account's classification alone (a line can reference no
+  /// account yet, same as `category` always could).
+  lineType      FinancialBudgetLineType @default(EXPENDITURE)
+  /// Still free text, same as before M16.2.1 — the historical label kept
+  /// verbatim on every pre-existing line, and still the only categorisation
+  /// available for a line with no `accountId`.
   category      String
   description   String?
   /// Must be >= 0 — a deliberately-nil line (e.g. "Legal Fees: $0 expected
@@ -895,23 +943,217 @@ model FinancialBudgetLine {
   /// is an error. Validated at the Zod/service layer, matching the
   /// existing FinancialOpeningBalance.amount precedent (no DB CHECK
   /// constraint).
-  plannedAmount Decimal @db.Decimal(12, 2)
+  plannedAmount Decimal                 @db.Decimal(12, 2)
   notes         String?
   /// Display ordering within its fund — assigned by the service layer
   /// (append-to-end on create), editable only by reordering, never implying
   /// any business meaning beyond presentation.
-  sortOrder     Int     @default(0)
+  sortOrder     Int                     @default(0)
+  /// M16.2.1 — optional reference into this property's chart of accounts.
+  /// Nullable: every line created before M16.2.1 has none, and a manager
+  /// may still add a line before the CoA is fully built out. When set, the
+  /// service layer validates it belongs to the same property (never a
+  /// cross-property account) — see FinancialBudgetsService.addLine.
+  accountId     String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  budget FinancialBudget @relation(fields: [budgetId], references: [id])
-  fund   FinancialFund   @relation(fields: [financialFundId], references: [id])
+  budget  FinancialBudget    @relation(fields: [budgetId], references: [id])
+  fund    FinancialFund      @relation(fields: [financialFundId], references: [id])
+  account AccountingAccount? @relation(fields: [accountId], references: [id])
 
   @@index([budgetId])
   @@index([financialFundId])
   @@index([propertyId])
+  @@index([accountId])
   @@map("financial_budget_lines")
+}
+
+// --- Strata Financial Management: Chart of Accounts (M16.2.1) ---
+//
+// Additive to M16.1/M16.2 — no existing financial table is rewritten.
+// Three decisions mirror the rest of this section (see its own doc
+// comment above FinancialConfiguration) for the same reasons:
+//
+// 1. Accounts are scheme-specific (one row per property), never a live
+//    shared catalog across schemes — see D1 in the M16.2.1 ADR. They may
+//    be provisioned from an AccountTemplate, but that template is only
+//    ever COPIED at provisioning time, never read live afterward (same
+//    snapshot convention as FinancialFund.currencyCode and friends).
+//
+// 2. An account may serve more than one fund — the fund is carried on the
+//    ledger line (future M16.2.2 JournalLine), not pinned to the account —
+//    see D2. `restrictedToFundId` is the deliberately narrow exception for
+//    an account that genuinely belongs to one fund only (e.g. that fund's
+//    own cash account), left null for every general-purpose account.
+//
+// 3. Deactivate, never delete. An account referenced by any
+//    FinancialBudgetLine (and, from M16.2.2, any JournalLine) cannot be
+//    deleted — only `isActive = false` — preserving every historical
+//    reference exactly like LotOpeningPosition/FinancialOpeningBalance's
+//    own "never rewrite history" discipline.
+
+enum AccountClassification {
+  ASSET
+  LIABILITY
+  EQUITY
+  INCOME
+  EXPENSE
+}
+
+/// Property-scoped chart-of-accounts row. See this section's doc comment
+/// for the three load-bearing decisions (scheme-specific, fund-flexible,
+/// deactivate-not-delete) AccountsService exists to uphold.
+model AccountingAccount {
+  id                       String @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "ACC" prefix.
+  publicReference          String @unique
+  organisationId           String
+  propertyId               String
+  financialConfigurationId String
+
+  /// Unique per property (not globally) — see @@unique below. Free text,
+  /// not validated against any particular numbering scheme: the CSV
+  /// evidence (expense_codes_336684074.csv) shows real schemes use
+  /// inconsistent numbering, and WaslProp never assumes one.
+  code           String
+  name           String
+  description    String?
+  classification AccountClassification
+
+  /// Self-reference for a simple one-level (or deeper, if ever needed)
+  /// account hierarchy — e.g. grouping several cleaning-related expense
+  /// accounts under one parent for reporting. Optional; most accounts have
+  /// none.
+  parentAccountId    String?
+  /// Null = usable against any fund (the common case — the fund is chosen
+  /// per ledger line, not per account, per D2). Set only for an account
+  /// that genuinely belongs to exactly one fund (e.g. that fund's own cash
+  /// account) — never used to simulate a multi-fund restriction list.
+  restrictedToFundId String?
+
+  /// Deactivate, never delete (see this section's doc comment). Checked by
+  /// AccountsService before every deactivate and before any reference is
+  /// attached to an inactive account.
+  isActive Boolean @default(true)
+
+  /// Set only when this account was provisioned by copying an
+  /// AccountTemplateLine — never re-read live from the template afterward
+  /// (see this section's doc comment, point 1). Null for an account added
+  /// directly or via CSV import.
+  sourceTemplateLineId String?
+  /// Set only when this account was created by an applied CSV import batch
+  /// — informational provenance only, same spirit as
+  /// ContractorQuote.source.
+  sourceImportBatchId  String?
+  /// Carried through from the import source row for traceability (e.g. the
+  /// original "Code type" column value) — display-only, never
+  /// authoritative; `classification` above is the one real field.
+  externalCode         String?
+
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organisation           Organisation           @relation(fields: [organisationId], references: [id])
+  property               Property               @relation(fields: [propertyId], references: [id])
+  financialConfiguration FinancialConfiguration @relation(fields: [financialConfigurationId], references: [id])
+  parentAccount          AccountingAccount?     @relation("AccountingAccountParent", fields: [parentAccountId], references: [id])
+  childAccounts          AccountingAccount[]    @relation("AccountingAccountParent")
+  restrictedToFund       FinancialFund?         @relation(fields: [restrictedToFundId], references: [id])
+  sourceImportBatch      AccountImportBatch?    @relation(fields: [sourceImportBatchId], references: [id])
+  createdByUser          User?                  @relation("AccountingAccountCreatedBy", fields: [createdByUserId], references: [id])
+  budgetLines            FinancialBudgetLine[]
+
+  /// Code uniqueness is per property, not global — the same code (e.g.
+  /// "150200") may legitimately exist on two different schemes.
+  @@unique([propertyId, code])
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([parentAccountId])
+  @@index([restrictedToFundId])
+  @@index([sourceImportBatchId])
+  @@map("accounting_accounts")
+}
+
+/// Organisation-level, versioned starting point for a new scheme's chart
+/// of accounts — copied, never read live (see this section's doc comment,
+/// point 1). A new version never edits an older one in place, same
+/// immutable-history discipline as FinancialBudget's own versioning.
+model AccountTemplate {
+  id              String  @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "ACCT" prefix.
+  publicReference String  @unique
+  organisationId  String
+  name            String
+  version         Int     @default(1)
+  isActive        Boolean @default(true)
+  createdByUserId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation  Organisation          @relation(fields: [organisationId], references: [id])
+  createdByUser User?                 @relation("AccountTemplateCreatedBy", fields: [createdByUserId], references: [id])
+  lines         AccountTemplateLine[]
+
+  @@unique([organisationId, name, version])
+  @@index([organisationId])
+  @@map("account_templates")
+}
+
+/// One row of a template — copied verbatim into a new AccountingAccount at
+/// provisioning time (code, name, classification). `parentCode` resolves
+/// to a sibling line's `code` within the same template at provisioning
+/// time, never a cross-template reference.
+model AccountTemplateLine {
+  id                String                @id @default(cuid())
+  accountTemplateId String
+  code              String
+  name              String
+  classification    AccountClassification
+  parentCode        String?
+  sortOrder         Int                   @default(0)
+
+  createdAt DateTime @default(now())
+
+  accountTemplate AccountTemplate @relation(fields: [accountTemplateId], references: [id])
+
+  @@unique([accountTemplateId, code])
+  @@index([accountTemplateId])
+  @@map("account_template_lines")
+}
+
+/// One audit record per applied (never per previewed/dry-run) CSV import —
+/// written only by AccountImportService.apply, inside the same transaction
+/// that creates the resulting AccountingAccount rows. Per-row dry-run
+/// detail is deliberately NOT persisted (see the M16.2.1 ADR on import
+/// scope): a preview is a pure read computed fresh from the uploaded file
+/// each time, never stored, so there is nothing stale to reconcile if the
+/// scheme's accounts change between a preview and a later apply — apply
+/// always re-validates against current data regardless of what an earlier
+/// preview showed.
+model AccountImportBatch {
+  id              String   @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "IMP" prefix.
+  publicReference String   @unique
+  organisationId  String
+  propertyId      String
+  fileName        String
+  totalRows       Int
+  createdCount    Int
+  skippedCount    Int
+  appliedByUserId String
+  appliedAt       DateTime @default(now())
+
+  organisation    Organisation        @relation(fields: [organisationId], references: [id])
+  property        Property            @relation(fields: [propertyId], references: [id])
+  appliedByUser   User                @relation("AccountImportBatchAppliedBy", fields: [appliedByUserId], references: [id])
+  createdAccounts AccountingAccount[]
+
+  @@index([propertyId])
+  @@map("account_import_batches")
 }
 
 /// A business/person record: an owner, tenant or resident on file for an
@@ -1197,6 +1439,13 @@ enum ActivityEventType {
   /// A new DRAFT version was created from an APPROVED/ACTIVE budget —
   /// fired once per revision created, not per subsequent line edit.
   FINANCIAL_BUDGET_REVISED
+  /// M16.2.1 — chart of accounts. One event per account created/
+  /// deactivated (never per field edit); one per applied import batch
+  /// (never per row).
+  FINANCIAL_ACCOUNT_CREATED
+  FINANCIAL_ACCOUNT_UPDATED
+  FINANCIAL_ACCOUNT_DEACTIVATED
+  FINANCIAL_ACCOUNTS_IMPORTED
 }
 
 // --- Resident invitations (Slice 2 / M6.5) ---
