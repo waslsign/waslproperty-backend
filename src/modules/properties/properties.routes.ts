@@ -43,6 +43,24 @@ import {
   updateAccount,
 } from '../financials/accounts.controller.js';
 import { provisionAccountsFromTemplate } from '../financials/account-templates.controller.js';
+import {
+  closeAccountingPeriod,
+  createAccountingPeriod,
+  listAccountingPeriods,
+  reopenAccountingPeriod,
+} from '../financials/accounting-periods.controller.js';
+import {
+  listPostingProfileRules,
+  upsertPostingProfileRule,
+} from '../financials/posting-profile.controller.js';
+import {
+  generateOpeningJournal,
+  getJournal,
+  getTrialBalance,
+  listJournals,
+  postManualJournal,
+  reverseJournal,
+} from '../financials/ledger.controller.js';
 import { createSpaceForProperty, listSpacesForProperty } from '../spaces/spaces.controller.js';
 import {
   bulkSetStrataLots,
@@ -352,4 +370,93 @@ propertiesRouter.post(
   resolvePropertyReference('propertyId'),
   requireCapability('financials.manage', fromParam('propertyId')),
   asyncHandler(reviseFinancialBudget),
+);
+
+// General Ledger & Posting Engine (M16.2.2) — see prisma/schema.prisma's
+// "Strata Financial Management: General Ledger & Posting Engine" section
+// doc comment. Read access is financials.view; every write that touches
+// posted history, period status, or the posting profile requires
+// financials.approve (never financials.manage alone — see that
+// capability's own doc comment on why it's deliberately separate).
+
+// Accounting Periods.
+propertiesRouter.get(
+  '/:propertyId/financials/periods',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listAccountingPeriods),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/periods',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(createAccountingPeriod),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/periods/:periodId/close',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(closeAccountingPeriod),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/periods/:periodId/reopen',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(reopenAccountingPeriod),
+);
+
+// Posting Profile.
+propertiesRouter.get(
+  '/:propertyId/financials/posting-profile',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listPostingProfileRules),
+);
+propertiesRouter.put(
+  '/:propertyId/financials/posting-profile',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(upsertPostingProfileRule),
+);
+
+// Journals.
+propertiesRouter.get(
+  '/:propertyId/financials/journals',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listJournals),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/journals',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(postManualJournal),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/journals/:journalId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getJournal),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/journals/:journalId/reverse',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(reverseJournal),
+);
+
+// Trial balance (read model over posted journals, never a stored total).
+propertiesRouter.get(
+  '/:propertyId/financials/trial-balance',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getTrialBalance),
+);
+
+// Opening journal (M16.1 -> ledger transition).
+propertiesRouter.post(
+  '/:propertyId/financials/opening-journal',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(generateOpeningJournal),
 );

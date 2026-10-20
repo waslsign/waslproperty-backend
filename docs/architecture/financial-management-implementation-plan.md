@@ -1,8 +1,8 @@
 # Financial Management — Architecture Validation & Implementation Plan
 
-**Version:** 1.2 | **Date:** 20 October 2026 | **Status:** M16.2.1 implemented and verified-closed; architecture for M16.2.2+ proposed
+**Version:** 1.3 | **Date:** 20 October 2026 | **Status:** M16.2.1 and M16.2.2 implemented and verified; M16.3+ remain proposed
 **Scope:** Validates `WaslProp_Financial_Architecture_Blueprint_Option_B.md` and `WaslProp_Complete_Financial_Requirements_Option_B.md` against the repository, and defines the roadmap from M16.2.1 onward.
-**Authority:** Section 6 (M16.2.1) is now implemented — see the M16.2.1 Implementation Report below. Sections on M16.2.2+ remain a proposal pending architecture/client confirmation per ADR-018.
+**Authority:** Sections 6 (M16.2.1) and 7 (M16.2.2) are now implemented — see each section's own Implementation Report. M16.3+ remain a proposal pending architecture/client confirmation per ADR-018.
 
 ---
 
@@ -227,9 +227,57 @@ Product design (our call, recorded for transparency):
 
 ## 7. M16.2.2 implementation checklist — General Ledger & Posting Engine
 
-**Status: not started.** This is preparation only, produced at M16.2.1 closure (20 October 2026),
-per ADR-018's working assumptions (D4/D5/D8/D9) and the frozen domain boundaries in the
-architecture blueprint §4–§9. **No code in this section has been written.**
+**Status: Implemented and verified-closed, 20 October 2026.** Closure verification found and
+fixed two real defects (a reversal-concurrency race and a float-tolerance validation gap — see
+`docs/architecture/financial-requirements-traceability.md`'s closure-verification section and
+ADR-018/ADR-021's addenda). Final: 831/831 backend tests, 222/222 frontend tests. Built against
+ADR-018's working assumptions (D4/D5/D8/D9)
+and the frozen domain boundaries in the architecture blueprint §4–§9, following the checklist
+below (each item's disposition is unchanged from the original preparation — nothing here was
+descoped). See the **M16.2.2 Implementation Report** immediately below for what was actually
+delivered, and ADR-020/ADR-021 for the architecture decisions made while building it.
+
+### 7.0 M16.2.2 Implementation Report (20 October 2026)
+
+**Schema** (additive migration `20261020091338_m16_2_2_general_ledger`): `AccountingPeriod`,
+`PostingProfileRule` (+ `PostingRole` enum), `JournalEntry`, `JournalLine`. New capability
+`financials.approve` (gates every write that touches posted history, period status, or the
+posting profile — never `financials.manage` alone).
+
+**Services:** `AccountingPeriodsService` (open/close/reopen, non-overlap validated under the
+`FinancialConfiguration` row lock), `PostingProfileService` (role→account resolution, never a
+hard-coded account identity), `LedgerPostingService` (`post()`/`reverse()`/`get()`/`list()`/
+`trialBalance()` — the sole writer of `journal_entries`/`journal_lines`), `OpeningJournalService`
+(M16.1 → ledger transition with mandatory, exact, per-lot fund-split input — never fabricated).
+
+**APIs:** 10 new endpoints under `/properties/:propertyId/financials/{periods,posting-profile,
+journals,trial-balance,opening-journal}`. OpenAPI (`financial-ledger.paths.ts` + 7 new entity
+schemas) verified by `openapi-route-coverage.test.ts` and a live document-build check.
+
+**Frontend:** General Ledger Settings (accounting periods + posting profile) and Journals & Trial
+Balance pages — both designed in Stitch (project `17365736688974073408`: "Wasl Property — General
+Ledger Settings (Desktop)" and "... Journals & Trial Balance (Desktop)") before implementation,
+reusing existing shared components (`Tabs`, `Badge`, `Select`) and the established modal/form
+pattern from the M16.2.1 pages.
+
+**Accounting invariants enforced** (all integration-tested): balanced debit=credit per journal;
+per-fund balance unless explicitly flagged a transfer (never exposed on the public manual-journal
+endpoint); exactly-once posting via `(propertyId, sourceType, sourceId, sourceEventVersion)`;
+concurrency-safe via a `FinancialConfiguration` row lock (true `Promise.all` race test passes);
+no posting into a missing or `CLOSED` period; reversal is an exact sign-swapped linked entry,
+blocked a second time; no update/delete route exists for a posted journal; cross-org/property
+references rejected (404); `Decimal(14,2)` throughout, verified with a fractional-cent accumulation
+test (`0.1 × 3 = 0.30` exactly).
+
+**Tests:** 21 new backend integration tests (`financial-ledger.test.ts`). **Backend: 823/823
+tests pass (59 files). Frontend: 222/222 tests pass (40 files).** Typecheck and lint clean on
+both. One real defect was caught and fixed during implementation, before any test ran against it:
+`reverse()` originally called the public `post()` and then linked `reversalOfJournalId` in a
+*separate* transaction — fixed by factoring a shared `postInTransaction()` core so posting +
+linking + the audit record are atomic (see ADR-020).
+
+**Not implemented (explicitly out of scope, per the original checklist):** levies, AP, banking,
+GST computation — all M16.3+, consuming this milestone's frozen posting contract.
 
 ### 7.1 Schema (additive; one migration)
 

@@ -95,6 +95,18 @@ checker on close/reversal/write-off, and append-only history with linked reversa
 is introduced by this ADR beyond what the blueprint already specifies; this ADR only resolves
 *which* account/fund/tax rule those controls apply to.
 
+## M16.2.2 closure verification addendum (20 October 2026)
+
+D8's opening-journal fund-split validation, as first implemented, summed each lot's allocation
+amounts with plain JS floating-point addition and compared against the recorded M16.1 snapshot
+using an arbitrary `±0.001` tolerance band — a violation, in spirit, of the nonfunctional
+requirement "no arbitrary floating-point monetary calculations," even though it was validation
+logic rather than the posting itself. Fixed during M16.2.2 closure verification:
+`OpeningJournalService` now sums allocations as `Prisma.Decimal` and requires exact equality to
+the recorded `Decimal` snapshot value, with no tolerance band at all. This matches how the posting
+engine itself already validates balance (`totalDebit.equals(totalCredit)`), and is strictly more
+correct with no loss of legitimate functionality.
+
 ## Status and next step
 
 This ADR is a **documented recommendation**, not an implementation. M16.2.2 (General Ledger)

@@ -71,6 +71,18 @@ export async function resetDb() {
     // longer references itself or account_template_lines/
     // account_import_batches), so it must go before all of those; the
     // template/import tables themselves go before property/organisation.
+    // M16.2.2 — journal_lines reference journal_entries/accounting_accounts/
+    // financial_funds; journal_entries self-reference (reversalOfJournalId)
+    // but one single deleteMany on the whole table is safe (Postgres checks
+    // the FK after the statement, by which point every row in it is
+    // already gone); posting_profile_rules reference accounting_accounts/
+    // financial_funds; accounting_periods reference financial_configurations.
+    // All four must go before accounting_accounts/financial_funds/
+    // financial_configurations below.
+    testPrisma.journalLine.deleteMany(),
+    testPrisma.journalEntry.deleteMany(),
+    testPrisma.postingProfileRule.deleteMany(),
+    testPrisma.accountingPeriod.deleteMany(),
     testPrisma.accountingAccount.deleteMany(),
     testPrisma.accountImportBatch.deleteMany(),
     testPrisma.accountTemplateLine.deleteMany(),

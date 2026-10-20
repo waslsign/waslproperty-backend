@@ -59,6 +59,10 @@ model Organisation {
   /// shared catalog — see AccountTemplate's doc comment).
   accountTemplates                 AccountTemplate[]
   accountImportBatches             AccountImportBatch[]
+  /// M16.2.2 — General Ledger & Posting Engine.
+  accountingPeriods                AccountingPeriod[]
+  postingProfileRules              PostingProfileRule[]
+  journalEntries                   JournalEntry[]
   activityEvents                   ActivityEvent[]
   maintenanceRequests              MaintenanceRequest[]
   maintenanceRequestAttachments    MaintenanceRequestAttachment[]
@@ -140,6 +144,10 @@ model User {
   createdAccountingAccounts             AccountingAccount[]               @relation("AccountingAccountCreatedBy")
   createdAccountTemplates               AccountTemplate[]                 @relation("AccountTemplateCreatedBy")
   appliedAccountImportBatches           AccountImportBatch[]              @relation("AccountImportBatchAppliedBy")
+  closedAccountingPeriods               AccountingPeriod[]                @relation("AccountingPeriodClosedBy")
+  reopenedAccountingPeriods             AccountingPeriod[]                @relation("AccountingPeriodReopenedBy")
+  createdPostingProfileRules            PostingProfileRule[]              @relation("PostingProfileRuleCreatedBy")
+  postedJournalEntries                  JournalEntry[]                    @relation("JournalEntryPostedBy")
 
   @@map("users")
 }
@@ -393,6 +401,10 @@ model Property {
   /// AccountingAccount's doc comment.
   accountingAccounts     AccountingAccount[]
   accountImportBatches   AccountImportBatch[]
+  /// M16.2.2 — General Ledger & Posting Engine.
+  accountingPeriods      AccountingPeriod[]
+  postingProfileRules    PostingProfileRule[]
+  journalEntries         JournalEntry[]
 
   @@unique([organisationId, code])
   @@index([organisationId])
@@ -619,15 +631,19 @@ model FinancialConfiguration {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  organisation    Organisation         @relation(fields: [organisationId], references: [id])
-  property        Property             @relation(fields: [propertyId], references: [id])
-  activatedByUser User?                @relation("FinancialConfigurationActivatedBy", fields: [activatedByUserId], references: [id])
-  funds           FinancialFund[]
-  lotPositions    LotOpeningPosition[]
-  budgets         FinancialBudget[]
+  organisation        Organisation         @relation(fields: [organisationId], references: [id])
+  property            Property             @relation(fields: [propertyId], references: [id])
+  activatedByUser     User?                @relation("FinancialConfigurationActivatedBy", fields: [activatedByUserId], references: [id])
+  funds               FinancialFund[]
+  lotPositions        LotOpeningPosition[]
+  budgets             FinancialBudget[]
   /// M16.2.1 — this scheme's chart of accounts, one row per provisioned or
   /// manually-added account; see AccountingAccount's doc comment.
-  accounts        AccountingAccount[]
+  accounts            AccountingAccount[]
+  /// M16.2.2 — General Ledger & Posting Engine.
+  accountingPeriods   AccountingPeriod[]
+  postingProfileRules PostingProfileRule[]
+  journalEntries      JournalEntry[]
 
   @@index([organisationId])
   @@map("financial_configurations")
@@ -670,6 +686,9 @@ model FinancialFund {
   /// account) and only a minority (e.g. a fund's own cash account) pin to
   /// one fund.
   restrictedAccounts     AccountingAccount[]
+  /// M16.2.2 — General Ledger & Posting Engine.
+  postingProfileRules    PostingProfileRule[]
+  journalLines           JournalLine[]
 
   @@index([financialConfigurationId])
   @@index([propertyId])
@@ -1065,6 +1084,9 @@ model AccountingAccount {
   sourceImportBatch      AccountImportBatch?    @relation(fields: [sourceImportBatchId], references: [id])
   createdByUser          User?                  @relation("AccountingAccountCreatedBy", fields: [createdByUserId], references: [id])
   budgetLines            FinancialBudgetLine[]
+  /// M16.2.2 — General Ledger & Posting Engine.
+  postingProfileRules    PostingProfileRule[]
+  journalLines           JournalLine[]
 
   /// Code uniqueness is per property, not global — the same code (e.g.
   /// "150200") may legitimately exist on two different schemes.
@@ -1154,6 +1176,247 @@ model AccountImportBatch {
 
   @@index([propertyId])
   @@map("account_import_batches")
+}
+
+// --- Strata Financial Management: General Ledger & Posting Engine (M16.2.2) ---
+//
+// Builds on M16.1 (FinancialConfiguration/FinancialFund/opening snapshots) and
+// M16.2.1 (AccountingAccount) — see docs/architecture/financial-management-
+// implementation-plan.md §7 and ADR-020/ADR-021 for the full design. Five
+// decisions are load-bearing for every method in LedgerPostingService:
+//
+// 1. A JournalEntry is POSTED the instant it exists — there is no DRAFT
+//    status (unlike FinancialBudget). Correction is always a new, linked
+//    reversal entry; nothing posted is ever updated or deleted. This is the
+//    single most important invariant in this milestone.
+//
+// 2. Only LedgerPostingService may create a JournalEntry/JournalLine row.
+//    Every other module (levies, AP, banking — all still M16.3+) calls it
+//    with a typed command; none of them touch these tables directly. This
+//    file's models have no other write path by convention — enforced by
+//    code review, same as every other "one service owns this table" rule
+//    already in this codebase.
+//
+// 3. Exactly-once posting: @@unique([propertyId, sourceType, sourceId,
+//    sourceEventVersion]) on JournalEntry is the same idempotency-ledger
+//    pattern already proven by WaslSignWebhookEvent.eventId — a retried or
+//    concurrently-duplicated posting request is a no-op returning the
+//    original journal, never a second posting.
+//
+// 4. Money is Decimal(14,2) here, not the Decimal(12,2)/Decimal(10,2) mix
+//    already in use elsewhere (FinancialBudgetLine/FinancialOpeningBalance
+//    vs. WorkOrder.estimatedCost) — see the implementation plan's §1 note
+//    on why ledger tables need one deliberately chosen, larger scale.
+//
+// 5. Fund is carried on JournalLine, not forced onto JournalEntry — a single
+//    posting event (e.g. an inter-fund transfer) can legitimately touch more
+//    than one fund in one balanced journal. "No silent cross-fund
+//    accounting" (the safeguard from the M16.2.2 brief) is enforced in the
+//    service layer: a posting command's lines are grouped by fund, and
+//    LedgerPostingService rejects any command whose fund subtotals don't
+//    each independently balance UNLESS the command is explicitly flagged as
+//    an inter-fund transfer (sourceType = 'INTER_FUND_TRANSFER') — see
+//    ledger-posting.service.ts for the exact rule.
+
+enum AccountingPeriodStatus {
+  OPEN
+  CLOSED
+}
+
+/// One property's accounting-period calendar entry — posting is only ever
+/// allowed into an OPEN period (see LedgerPostingService.post). Non-overlap
+/// across a property's periods is validated in the service layer under the
+/// same FinancialConfiguration row lock FinancialBudgetsService.activate
+/// already uses, not a DB exclusion constraint (no btree_gist dependency
+/// introduced for this) — see AccountingPeriodsService.
+model AccountingPeriod {
+  id                       String                 @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "PER" prefix.
+  publicReference          String                 @unique
+  organisationId           String
+  propertyId               String
+  financialConfigurationId String
+  startDate                DateTime               @db.Date
+  endDate                  DateTime               @db.Date
+  status                   AccountingPeriodStatus @default(OPEN)
+  /// Set together, only by the explicit close action — never by any other
+  /// write. financials.approve required (see AccountingPeriodsService).
+  closedByUserId           String?
+  closedAt                 DateTime?
+  /// Set together, only by the explicit reopen action — a separate,
+  /// equally-audited action from close, never an automatic undo.
+  reopenedByUserId         String?
+  reopenedAt               DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation           Organisation           @relation(fields: [organisationId], references: [id])
+  property               Property               @relation(fields: [propertyId], references: [id])
+  financialConfiguration FinancialConfiguration @relation(fields: [financialConfigurationId], references: [id])
+  closedByUser           User?                  @relation("AccountingPeriodClosedBy", fields: [closedByUserId], references: [id])
+  reopenedByUser         User?                  @relation("AccountingPeriodReopenedBy", fields: [reopenedByUserId], references: [id])
+  journalEntries         JournalEntry[]
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@map("accounting_periods")
+}
+
+/// The semantic roles LedgerPostingService and OpeningJournalService
+/// resolve to a concrete AccountingAccount via PostingProfileRule — never
+/// hard-coded account codes anywhere in the generic posting engine (the
+/// safeguard "no hardcoded Australian rules in the generic posting
+/// engine" applies equally to hard-coded account identities). Deliberately
+/// a fixed enum, not free text: every role here is actually consumed by
+/// code in this milestone or the next (OPENING_BALANCE_EQUITY and
+/// FUND_CASH/LOT_LEVY_RECEIVABLE/UNAPPLIED_CASH by OpeningJournalService
+/// this milestone; LEVY_INCOME/ACCOUNTS_PAYABLE/GST_*/SUSPENSE/
+/// INTER_FUND_TRANSFER reserved for M16.3+ producers that will call the
+/// same LedgerPostingService).
+enum PostingRole {
+  FUND_CASH
+  LOT_LEVY_RECEIVABLE
+  LEVY_INCOME
+  UNAPPLIED_CASH
+  ACCOUNTS_PAYABLE
+  GST_PAYABLE
+  GST_RECEIVABLE
+  SUSPENSE
+  OPENING_BALANCE_EQUITY
+  INTER_FUND_TRANSFER
+}
+
+/// One (role, fund) -> account mapping. `financialFundId = null` means the
+/// rule applies regardless of fund context (e.g. a single shared
+/// OPENING_BALANCE_EQUITY or SUSPENSE account) — a role scoped to a
+/// specific fund (e.g. FUND_CASH for the Administration Fund vs. the
+/// Capital Works Fund separately) sets it. At most one rule may exist per
+/// (role, fund) pair — Postgres does not enforce this across NULL values,
+/// so PostingProfileService validates it explicitly at write time (the
+/// same "service-level dedup, not a DB constraint" precedent as
+/// FinancialFund's own duplicate-Administration/Capital-Works rule).
+/// Plain configuration metadata, not financial history — updated in
+/// place, not versioned; every change is still recorded via ActivityEvent.
+model PostingProfileRule {
+  id                       String      @id @default(cuid())
+  organisationId           String
+  propertyId               String
+  financialConfigurationId String
+  role                     PostingRole
+  financialFundId          String?
+  accountId                String
+  createdByUserId          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation           Organisation           @relation(fields: [organisationId], references: [id])
+  property               Property               @relation(fields: [propertyId], references: [id])
+  financialConfiguration FinancialConfiguration @relation(fields: [financialConfigurationId], references: [id])
+  fund                   FinancialFund?         @relation(fields: [financialFundId], references: [id])
+  account                AccountingAccount      @relation(fields: [accountId], references: [id])
+  createdByUser          User?                  @relation("PostingProfileRuleCreatedBy", fields: [createdByUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([accountId])
+  @@map("posting_profile_rules")
+}
+
+/// One posted, balanced double-entry event. See this section's doc
+/// comment for the five load-bearing decisions this model exists to
+/// uphold — above all, POSTED the instant it exists; no DRAFT, no in-place
+/// edit. `sourceType`/`sourceId`/`sourceEventVersion` identify the
+/// business event that caused this posting (e.g. "MANUAL"/a generated id/1
+/// for a manual journal, "OPENING_BALANCE"/financialConfigurationId/1 for
+/// the opening journal — see OpeningJournalService) and are the exactly-
+/// once idempotency key (see this section's doc comment, point 3).
+model JournalEntry {
+  id                       String @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "JRN" prefix.
+  publicReference          String @unique
+  organisationId           String
+  propertyId               String
+  financialConfigurationId String
+  accountingPeriodId       String
+
+  /// Plain accounting date, same @db.Date/dateOnly.ts discipline as every
+  /// other financial date column in this schema.
+  effectiveDate DateTime @db.Date
+  postedAt      DateTime @default(now())
+  currencyCode  String
+
+  sourceType         String
+  sourceId           String
+  /// Lets a source event repost a logically-new effect under the same
+  /// sourceId without colliding with its own prior posting (mirrors
+  /// FinancialBudget.version's reasoning) — almost always 1 in this
+  /// milestone, since no producer other than OpeningJournalService exists
+  /// yet.
+  sourceEventVersion Int    @default(1)
+
+  narration      String
+  postedByUserId String
+
+  /// Set only on a reversal entry, pointing back at the journal it
+  /// reverses — unique, so a given journal can be reversed at most once
+  /// (post a fresh correcting journal for anything further, never a
+  /// reversal of a reversal that tries to re-net the same effect twice).
+  /// Null for every ordinary posting.
+  reversalOfJournalId String? @unique
+  reversalReason      String?
+
+  createdAt DateTime @default(now())
+
+  organisation           Organisation           @relation(fields: [organisationId], references: [id])
+  property               Property               @relation(fields: [propertyId], references: [id])
+  financialConfiguration FinancialConfiguration @relation(fields: [financialConfigurationId], references: [id])
+  accountingPeriod       AccountingPeriod       @relation(fields: [accountingPeriodId], references: [id])
+  postedByUser           User                   @relation("JournalEntryPostedBy", fields: [postedByUserId], references: [id])
+  reversalOf             JournalEntry?          @relation("JournalEntryReversal", fields: [reversalOfJournalId], references: [id])
+  /// The reversal entry that reverses THIS journal, if any — the reverse
+  /// direction of `reversalOf`. Null until/unless this journal is reversed.
+  reversedBy             JournalEntry?          @relation("JournalEntryReversal")
+  lines                  JournalLine[]
+
+  @@unique([propertyId, sourceType, sourceId, sourceEventVersion])
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([accountingPeriodId])
+  @@map("journal_entries")
+}
+
+/// One debit-or-credit side of a JournalEntry. Exactly one of debit/credit
+/// is non-zero per row (validated in LedgerPostingService, not a DB CHECK
+/// constraint — same precedent as every other Decimal invariant in this
+/// schema); SUM(debit) = SUM(credit) across every line of one
+/// JournalEntry is the core double-entry invariant, also enforced in the
+/// service layer at posting time inside the same transaction that writes
+/// these rows.
+model JournalLine {
+  id              String  @id @default(cuid())
+  journalEntryId  String
+  organisationId  String
+  propertyId      String
+  accountId       String
+  financialFundId String
+  debit           Decimal @default(0) @db.Decimal(14, 2)
+  credit          Decimal @default(0) @db.Decimal(14, 2)
+  lineNarration   String?
+  sortOrder       Int     @default(0)
+
+  createdAt DateTime @default(now())
+
+  journalEntry JournalEntry      @relation(fields: [journalEntryId], references: [id])
+  account      AccountingAccount @relation(fields: [accountId], references: [id])
+  fund         FinancialFund     @relation(fields: [financialFundId], references: [id])
+
+  @@index([journalEntryId])
+  @@index([accountId])
+  @@index([financialFundId])
+  @@index([propertyId])
+  @@map("journal_lines")
 }
 
 /// A business/person record: an owner, tenant or resident on file for an
@@ -1446,6 +1709,14 @@ enum ActivityEventType {
   FINANCIAL_ACCOUNT_UPDATED
   FINANCIAL_ACCOUNT_DEACTIVATED
   FINANCIAL_ACCOUNTS_IMPORTED
+  /// M16.2.2 — General Ledger & Posting Engine.
+  FINANCIAL_PERIOD_OPENED
+  FINANCIAL_PERIOD_CLOSED
+  FINANCIAL_PERIOD_REOPENED
+  FINANCIAL_POSTING_PROFILE_UPDATED
+  FINANCIAL_JOURNAL_POSTED
+  FINANCIAL_JOURNAL_REVERSED
+  FINANCIAL_OPENING_JOURNAL_POSTED
 }
 
 // --- Resident invitations (Slice 2 / M6.5) ---

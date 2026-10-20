@@ -72,12 +72,23 @@ export const CAPABILITIES = [
    * DEFAULT_ROLE_CAPABILITIES — no PropertyRole holds financials.manage by
    * default, only org OWNER/ADMIN via AuthorizationService.can's blanket
    * bypass, until an organisation explicitly grants an override), same
-   * "narrower than property.manage" rationale. Deliberately no
-   * `financials.approve` yet — M16.1 has no approval workflow (no budgets,
-   * no levies); see the capability catalogue's doc comment above.
+   * "narrower than property.manage" rationale.
    */
   'financials.view',
   'financials.manage',
+  /** M16.2.2 — General Ledger & Posting Engine. Gates the maker-checker
+   * actions on posted financial history: closing/reopening an accounting
+   * period, reversing a posted journal, generating the opening journal,
+   * and editing the posting profile (account/fund role mappings). Not
+   * granted to any PropertyRole by default (same convention as
+   * financials.manage's own introduction) — only org OWNER/ADMIN hold it
+   * via AuthorizationService.can's blanket bypass until an organisation
+   * explicitly grants an override. Deliberately separate from
+   * financials.manage: manage covers budgets/accounts/funds (reversible,
+   * pre-posting data); approve covers actions on the immutable ledger
+   * itself.
+   */
+  'financials.approve',
   /** Use the Wasl AI workspace and contextual "Investigate"/"Analyse with
    * Wasl AI" entry points — see the M14 milestone. Deliberately separate
    * from every other capability: holding e.g. maintenance.view never
@@ -132,7 +143,10 @@ export const CAPABILITY_GROUPS: Array<{ label: string; capabilities: Capability[
   },
   { label: 'Visibility', capabilities: ['analytics.view', 'activity.view'] },
   { label: 'Strata', capabilities: ['strata.view', 'strata.manage'] },
-  { label: 'Financial Management', capabilities: ['financials.view', 'financials.manage'] },
+  {
+    label: 'Financial Management',
+    capabilities: ['financials.view', 'financials.manage', 'financials.approve'],
+  },
   { label: 'Wasl AI', capabilities: ['ai.use'] },
 ];
 

@@ -379,6 +379,119 @@ export const accountImportApplyResultSchema = registry.register(
   }),
 );
 
+export const accountingPeriodSchema = registry.register(
+  'AccountingPeriod',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'PER-K7M4Q2' }),
+    startDate: z.string().openapi({ example: '2026-07-01' }),
+    endDate: z.string().openapi({ example: '2027-06-30' }),
+    status: z.enum(['OPEN', 'CLOSED']),
+    closedByUserId: z.string().nullable(),
+    closedAt: z.string().datetime().nullable(),
+    reopenedByUserId: z.string().nullable(),
+    reopenedAt: z.string().datetime().nullable(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  }),
+);
+
+export const accountingPeriodListSchema = registry.register(
+  'AccountingPeriodList',
+  z.object({ items: z.array(accountingPeriodSchema) }),
+);
+
+const postingRoleEnumSchema = z.enum([
+  'FUND_CASH',
+  'LOT_LEVY_RECEIVABLE',
+  'LEVY_INCOME',
+  'UNAPPLIED_CASH',
+  'ACCOUNTS_PAYABLE',
+  'GST_PAYABLE',
+  'GST_RECEIVABLE',
+  'SUSPENSE',
+  'OPENING_BALANCE_EQUITY',
+  'INTER_FUND_TRANSFER',
+]);
+
+export const postingProfileRuleSchema = registry.register(
+  'PostingProfileRule',
+  z.object({
+    id: z.string(),
+    role: postingRoleEnumSchema,
+    financialFundId: z.string().nullable().openapi({
+      description: 'Null = applies regardless of fund context.',
+    }),
+    accountId: z.string(),
+    accountCode: z.string(),
+    accountName: z.string(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  }),
+);
+
+export const postingProfileRuleListSchema = registry.register(
+  'PostingProfileRuleList',
+  z.object({ items: z.array(postingProfileRuleSchema) }),
+);
+
+const journalLineSchema = z.object({
+  id: z.string(),
+  accountId: z.string(),
+  accountCode: z.string(),
+  accountName: z.string(),
+  financialFundId: z.string(),
+  fundName: z.string(),
+  debit: z.string().openapi({ example: '500.00' }),
+  credit: z.string().openapi({ example: '0.00' }),
+  lineNarration: z.string().nullable(),
+  sortOrder: z.number().int(),
+});
+
+export const journalEntrySchema = registry.register(
+  'JournalEntry',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'JRN-K7M4Q2' }),
+    accountingPeriodId: z.string(),
+    effectiveDate: z.string().openapi({ example: '2026-10-20' }),
+    postedAt: z.string().datetime(),
+    currencyCode: z.string().openapi({ example: 'AUD' }),
+    sourceType: z.string().openapi({ example: 'MANUAL' }),
+    sourceId: z.string(),
+    sourceEventVersion: z.number().int(),
+    narration: z.string(),
+    postedByUserId: z.string(),
+    reversalOfJournalId: z.string().nullable(),
+    reversalReason: z.string().nullable(),
+    totalDebit: z.string().openapi({
+      description: 'SUM(lines.debit) — always derived, never a stored column. Equal to SUM(lines.credit).',
+      example: '500.00',
+    }),
+    lines: z.array(journalLineSchema),
+  }),
+);
+
+export const journalEntryListSchema = registry.register(
+  'JournalEntryList',
+  z.object({ items: z.array(journalEntrySchema) }),
+);
+
+export const trialBalanceRowSchema = z.object({
+  accountId: z.string(),
+  accountCode: z.string(),
+  accountName: z.string(),
+  classification: z.string(),
+  totalDebit: z.string(),
+  totalCredit: z.string(),
+  netBalance: z.string(),
+});
+
+export const trialBalanceListSchema = registry.register(
+  'TrialBalanceList',
+  z.object({ items: z.array(trialBalanceRowSchema) }),
+);
+
 export const contactSummarySchema = registry.register(
   'ContactSummary',
   z.object({
