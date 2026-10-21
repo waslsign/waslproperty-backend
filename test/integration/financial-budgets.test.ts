@@ -309,7 +309,7 @@ describe('M16.2 Budget Management', () => {
       expect(res.body.version).toBe(1);
       expect(res.body.source).toBe('CREATED');
       expect(res.body.currencyCode).toBe('AUD');
-      expect(res.body.totalBudget).toBe('0.00');
+      expect(res.body.totalBudgetedExpenditure).toBe('0.00');
       expect(res.body.publicReference).toMatch(/^BUD-/);
     });
 
@@ -447,18 +447,18 @@ describe('M16.2 Budget Management', () => {
         plannedAmount: 1250.33,
       });
       expect(added.status).toBe(201);
-      expect(added.body.totalBudget).toBe('1250.33');
+      expect(added.body.totalBudgetedExpenditure).toBe('1250.33');
       const lineId = added.body.lines[0].id as string;
 
       const updated = await updateLine(accessToken, property.id, budgetId, lineId, {
         plannedAmount: 1300.67,
       });
       expect(updated.status).toBe(200);
-      expect(updated.body.totalBudget).toBe('1300.67');
+      expect(updated.body.totalBudgetedExpenditure).toBe('1300.67');
 
       const deleted = await deleteLine(accessToken, property.id, budgetId, lineId);
       expect(deleted.status).toBe(200);
-      expect(deleted.body.totalBudget).toBe('0.00');
+      expect(deleted.body.totalBudgetedExpenditure).toBe('0.00');
       expect(deleted.body.lines).toHaveLength(0);
     });
 
@@ -476,7 +476,7 @@ describe('M16.2 Budget Management', () => {
           plannedAmount: 0.1,
         });
       }
-      expect(last!.body.totalBudget).toBe('1.00');
+      expect(last!.body.totalBudgetedExpenditure).toBe('1.00');
     });
 
     it('allows a $0 line', async () => {
@@ -542,15 +542,223 @@ describe('M16.2 Budget Management', () => {
         plannedAmount: 15000,
       });
 
-      expect(res.body.totalBudget).toBe('25000.00');
+      expect(res.body.totalBudgetedExpenditure).toBe('25000.00');
       const adminTotal = res.body.totalsByFund.find(
         (t: { financialFundId: string }) => t.financialFundId === administrationFundId,
       );
       const capitalTotal = res.body.totalsByFund.find(
         (t: { financialFundId: string }) => t.financialFundId === capitalWorksFundId,
       );
-      expect(adminTotal.total).toBe('10000.00');
-      expect(capitalTotal.total).toBe('15000.00');
+      expect(adminTotal.totalExpenditure).toBe('10000.00');
+      expect(capitalTotal.totalExpenditure).toBe('15000.00');
+    });
+  });
+
+  describe('revenue/expenditure/surplus calculations', () => {
+    it('computes a positive surplus when revenue exceeds expenditure', async () => {
+      const { accessToken } = await registerAuOrg();
+      const { property, administrationFundId } = await createActiveFinancialProperty(accessToken);
+      const created = await createBudget(accessToken, property.id);
+      const budgetId = created.body.id as string;
+
+      await addLine(accessToken, property.id, budgetId, {
+        financialFundId: administrationFundId,
+        lineType: 'REVENUE',
+        category: 'Levies Due',
+        plannedAmount: 50000,
+      });
+      const res = await addLine(accessToken, property.id, budgetId, {
+        financialFundId: administrationFundId,
+        lineType: 'EXPENDITURE',
+        category: 'Insurance',
+        plannedAmount: 30000,
+      });
+
+      expect(res.body.totalBudgetedRevenue).toBe('50000.00');
+      expect(res.body.totalBudgetedExpenditure).toBe('30000.00');
+      expect(res.body.budgetedSurplusDeficit).toBe('20000.00');
+    });
+
+    it('computes a negative surplus (deficit) when expenditure exceeds revenue', async () => {
+      const { accessToken } = await registerAuOrg();
+      const { property, administrationFundId } = await createActiveFinancialProperty(accessToken);
+      const created = await createBudget(accessToken, property.id);
+      const budgetId = created.body.id as string;
+
+      await addLine(accessToken, property.id, budgetId, {
+        financialFundId: administrationFundId,
+        lineType: 'REVENUE',
+        category: 'Levies Due',
+        plannedAmount: 1000,
+      });
+      const res = await addLine(accessToken, property.id, budgetId, {
+        financialFundId: administrationFundId,
+        lineType: 'EXPENDITURE',
+        category: 'Insurance',
+        plannedAmount: 5600,
+      });
+
+      expect(res.body.totalBudgetedRevenue).toBe('1000.00');
+      expect(res.body.totalBudgetedExpenditure).toBe('5600.00');
+      expect(res.body.budgetedSurplusDeficit).toBe('-4600.00');
+    });
+
+    it('computes a zero surplus for a budget with no lines, and when revenue exactly equals expenditure', async () => {
+      const { accessToken } = await registerAuOrg();
+      const { property, administrationFundId } = await createActiveFinancialProperty(accessToken);
+      const created = await createBudget(accessToken, property.id);
+      const budgetId = created.body.id as string;
+
+      expect(created.body.totalBudgetedRevenue).toBe('0.00');
+      expect(created.body.totalBudgetedExpenditure).toBe('0.00');
+      expect(created.body.budgetedSurplusDeficit).toBe('0.00');
+
+      await addLine(accessToken, property.id, budgetId, {
+        financialFundId: administrationFundId,
+        lineType: 'REVENUE',
+        category: 'Levies Due',
+        plannedAmount: 2000,
+      });
+      const res = await addLine(accessToken, property.id, budgetId, {
+        financialFundId: administrationFundId,
+        lineType: 'EXPENDITURE',
+        category: 'Insurance',
+        plannedAmount: 2000,
+      });
+      expect(res.body.budgetedSurplusDeficit).toBe('0.00');
+    });
+
+    it('excludes TRANSFER and RESERVE_CONTRIBUTION lines from the headline surplus/deficit', async () => {
+      const { accessToken } = await registerAuOrg();
+      const { property, administrationFundId, capitalWorksFundId } =
+        await createActiveFinancialProperty(accessToken);
+      const created = await createBudget(accessToken, property.id);
+      const budgetId = created.body.id as string;
+
+      await addLine(accessToken, property.id, budgetId, {
+        financialFundId: administrationFundId,
+        lineType: 'REVENUE',
+        category: 'Levies Due',
+        plannedAmount: 10000,
+      });
+      await addLine(accessToken, property.id, budgetId, {
+        financialFundId: administrationFundId,
+        lineType: 'TRANSFER',
+        category: 'Transfer to Capital Works',
+        plannedAmount: 4000,
+      });
+      const res = await addLine(accessToken, property.id, budgetId, {
+        financialFundId: capitalWorksFundId,
+        lineType: 'RESERVE_CONTRIBUTION',
+        category: 'Lift reserve contribution',
+        plannedAmount: 4000,
+      });
+
+      expect(res.body.totalBudgetedRevenue).toBe('10000.00');
+      expect(res.body.totalBudgetedExpenditure).toBe('0.00');
+      expect(res.body.budgetedSurplusDeficit).toBe('10000.00');
+    });
+  });
+
+  describe('account assignment on budget lines', () => {
+    async function createAccount(
+      accessToken: string,
+      propertyId: string,
+      body: Record<string, unknown>,
+    ) {
+      return request(app)
+        .post(`/api/v1/properties/${propertyId}/financials/accounts`)
+        .set(authHeader(accessToken))
+        .send(body);
+    }
+
+    it('rejects assigning an inactive account to a new budget line', async () => {
+      const { accessToken } = await registerAuOrg();
+      const { property, administrationFundId } = await createActiveFinancialProperty(accessToken);
+      const account = await createAccount(accessToken, property.id, {
+        code: '159100',
+        name: 'Insurance--Premiums',
+        classification: 'EXPENSE',
+      });
+      await request(app)
+        .post(`/api/v1/properties/${property.id}/financials/accounts/${account.body.id}/deactivate`)
+        .set(authHeader(accessToken));
+
+      const created = await createBudget(accessToken, property.id);
+      const res = await addLine(accessToken, property.id, created.body.id, {
+        financialFundId: administrationFundId,
+        category: 'Insurance',
+        plannedAmount: 100,
+        accountId: account.body.id,
+      });
+      expect(res.status).toBe(409);
+    });
+
+    it('rejects updating a line to reference an inactive account', async () => {
+      const { accessToken } = await registerAuOrg();
+      const { property, administrationFundId } = await createActiveFinancialProperty(accessToken);
+      const account = await createAccount(accessToken, property.id, {
+        code: '159100',
+        name: 'Insurance--Premiums',
+        classification: 'EXPENSE',
+      });
+
+      const created = await createBudget(accessToken, property.id);
+      const added = await addLine(accessToken, property.id, created.body.id, {
+        financialFundId: administrationFundId,
+        category: 'Insurance',
+        plannedAmount: 100,
+      });
+      const lineId = added.body.lines[0].id as string;
+
+      await request(app)
+        .post(`/api/v1/properties/${property.id}/financials/accounts/${account.body.id}/deactivate`)
+        .set(authHeader(accessToken));
+
+      const res = await updateLine(accessToken, property.id, created.body.id, lineId, {
+        accountId: account.body.id,
+      });
+      expect(res.status).toBe(409);
+    });
+
+    it('preserves a line’s existing account reference after that account is deactivated', async () => {
+      const { accessToken } = await registerAuOrg();
+      const { property, administrationFundId } = await createActiveFinancialProperty(accessToken);
+      const account = await createAccount(accessToken, property.id, {
+        code: '159100',
+        name: 'Insurance--Premiums',
+        classification: 'EXPENSE',
+      });
+
+      const created = await createBudget(accessToken, property.id);
+      const added = await addLine(accessToken, property.id, created.body.id, {
+        financialFundId: administrationFundId,
+        category: 'Insurance',
+        plannedAmount: 100,
+        accountId: account.body.id,
+      });
+      expect(added.body.lines[0].accountId).toBe(account.body.id);
+
+      await request(app)
+        .post(`/api/v1/properties/${property.id}/financials/accounts/${account.body.id}/deactivate`)
+        .set(authHeader(accessToken));
+
+      // Reading the budget (not writing to it) must still resolve the
+      // historical reference exactly as it was — deactivation never
+      // rewrites or hides history.
+      const refreshed = await getBudget(accessToken, property.id, created.body.id);
+      expect(refreshed.body.lines[0].accountId).toBe(account.body.id);
+      expect(refreshed.body.lines[0].accountCode).toBe('159100');
+      expect(refreshed.body.lines[0].accountName).toBe('Insurance--Premiums');
+
+      // Editing an unrelated field on the same line (never touching
+      // accountId) must not be blocked by the account's new inactive
+      // status either.
+      const edited = await updateLine(accessToken, property.id, created.body.id, added.body.lines[0].id, {
+        plannedAmount: 150,
+      });
+      expect(edited.status).toBe(200);
+      expect(edited.body.lines[0].accountId).toBe(account.body.id);
     });
   });
 
@@ -772,6 +980,78 @@ describe('M16.2 Budget Management', () => {
       expect(activeBudgets[0].id).toBe(v2Id);
     });
 
+    it('closure fix: activating v2 also supersedes an APPROVED-but-never-activated v1 in its own revision chain', async () => {
+      const { accessToken } = await registerAuOrg();
+      const { property, administrationFundId, capitalWorksFundId } =
+        await createActiveFinancialProperty(accessToken);
+      const v1Id = await createDraftBudgetWithLines(
+        accessToken,
+        property.id,
+        administrationFundId,
+        capitalWorksFundId,
+      );
+      // v1 is approved but deliberately never activated — the real-world
+      // case: a committee approves a draft, then a correction is needed
+      // before it ever goes live, so a revision is approved and activated
+      // directly instead.
+      await approveBudget(accessToken, property.id, v1Id);
+
+      const revised = await reviseBudget(accessToken, property.id, v1Id);
+      const v2Id = revised.body.id as string;
+      await approveBudget(accessToken, property.id, v2Id);
+      const activateV2 = await activateBudget(accessToken, property.id, v2Id);
+      expect(activateV2.status).toBe(200);
+      expect(activateV2.body.status).toBe('ACTIVE');
+
+      // v1 never passed through ACTIVE, so before this fix it stayed
+      // APPROVED forever — misrepresenting it as still a live candidate.
+      const v1After = await getBudget(accessToken, property.id, v1Id);
+      expect(v1After.body.status).toBe('SUPERSEDED');
+      expect(v1After.body.supersededAt).toBeTruthy();
+      // Its real historical approval record is untouched.
+      expect(v1After.body.approvedAt).toBeTruthy();
+      expect(v1After.body.lines).toHaveLength(2);
+
+      const list = await listBudgets(accessToken, property.id);
+      const activeBudgets = list.body.items.filter((b: { status: string }) => b.status === 'ACTIVE');
+      expect(activeBudgets).toHaveLength(1);
+      expect(activeBudgets[0].id).toBe(v2Id);
+    });
+
+    it('does not supersede an APPROVED budget for a different financial year (no revision-chain relationship)', async () => {
+      const { accessToken } = await registerAuOrg();
+      const { property, administrationFundId, capitalWorksFundId } =
+        await createActiveFinancialProperty(accessToken);
+      // create() itself blocks a second non-revision budget for the SAME
+      // financial year, so the only real way for an unrelated APPROVED
+      // budget to coexist is a different (e.g. next) financial year —
+      // planned ahead of the next rollover, per FinancialBudget's own doc
+      // comment on why a budget carries its own explicit FY dates.
+      const budgetAId = await createDraftBudgetWithLines(
+        accessToken,
+        property.id,
+        administrationFundId,
+        capitalWorksFundId,
+      );
+      await approveBudget(accessToken, property.id, budgetAId);
+      const budgetBId = await createDraftBudgetWithLines(
+        accessToken,
+        property.id,
+        administrationFundId,
+        capitalWorksFundId,
+        { financialYearStartDate: '2027-07-01', financialYearEndDate: '2028-06-30' },
+      );
+      await approveBudget(accessToken, property.id, budgetBId);
+
+      await activateBudget(accessToken, property.id, budgetBId);
+
+      // budgetA has no revision-chain relationship to budgetB (and is a
+      // different financial year entirely) — activating B must never
+      // touch it.
+      const budgetAAfter = await getBudget(accessToken, property.id, budgetAId);
+      expect(budgetAAfter.body.status).toBe('APPROVED');
+    });
+
     it('concurrent activation of two approved versions for the same financial year ends with exactly one ACTIVE', async () => {
       const { accessToken } = await registerAuOrg();
       const { property, administrationFundId, capitalWorksFundId } =
@@ -791,7 +1071,24 @@ describe('M16.2 Budget Management', () => {
         activateBudget(accessToken, property.id, v1Id),
         activateBudget(accessToken, property.id, v2Id),
       ]);
-      expect([first.status, second.status]).toEqual([200, 200]);
+      // Closure fix side effect (an improvement, not a regression):
+      // whichever of v1/v2 wins the row lock first now also immediately
+      // supersedes any still-APPROVED ancestor in its own revision chain.
+      // If v2 (the descendant) wins first, v1 is superseded under it and
+      // v1's own call then correctly 409s instead of the old "last call
+      // silently wins and clobbers the first" race (which used to let v1
+      // and v2 flicker ACTIVE back and forth with both calls reporting
+      // 200 regardless of order). If v1 (the ancestor) wins first
+      // instead, v2 — a descendant, never touched by the ancestor-only
+      // walk — is still a legitimate pending alternative and its own
+      // call still succeeds by the pre-existing currentlyActive-supersede
+      // path. Both outcomes are correct; only the exact pairing is
+      // inherently lock-order-dependent, so assert the invariant that
+      // actually matters rather than one specific race outcome.
+      expect([first.status, second.status]).toContain(200);
+      for (const status of [first.status, second.status]) {
+        expect([200, 409]).toContain(status);
+      }
 
       const list = await listBudgets(accessToken, property.id);
       const activeBudgets = list.body.items.filter(

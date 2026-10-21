@@ -4,6 +4,7 @@ import { asyncHandler } from '../../middlewares/asyncHandler.js';
 import { rolePermissionsRouter } from '../role-permissions/role-permissions.routes.js';
 import { contractorComplianceRequirementsRouter } from '../contractors/compliance/compliance-requirements.routes.js';
 import { approvalPolicyRouter } from '../approval-policy/approval-policy.routes.js';
+import { accountTemplatesRouter } from '../financials/account-templates.routes.js';
 import { getCurrentOrganisation, updateOrganisation } from './organisations.controller.js';
 
 export const organisationsRouter = Router();
@@ -27,3 +28,6 @@ organisationsRouter.use(
 
 // Organisation Settings -> Approval & Acceptance.
 organisationsRouter.use('/me/approval-policy', approvalPolicyRouter);
+
+// Organisation Settings -> Chart of Accounts Templates (M16.2.1).
+organisationsRouter.use('/me/account-templates', accountTemplatesRouter);

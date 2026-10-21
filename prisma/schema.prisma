@@ -50,6 +50,30 @@ model Organisation {
   properties                       Property[]
   financialConfigurations          FinancialConfiguration[]
   financialBudgets                 FinancialBudget[]
+  /// M16.2.1 — this organisation's scheme-specific chart-of-accounts rows
+  /// across every property; see AccountingAccount's own doc comment on why
+  /// accounts are per-property, not shared live across schemes.
+  accountingAccounts               AccountingAccount[]
+  /// M16.2.1 — versioned templates this organisation can provision a new
+  /// scheme's chart of accounts from (copy-on-provision, never a live
+  /// shared catalog — see AccountTemplate's doc comment).
+  accountTemplates                 AccountTemplate[]
+  accountImportBatches             AccountImportBatch[]
+  /// M16.2.2 — General Ledger & Posting Engine.
+  accountingPeriods                AccountingPeriod[]
+  postingProfileRules              PostingProfileRule[]
+  journalEntries                   JournalEntry[]
+  /// M16.3 — Levy Management & UOE Allocation.
+  levySchedules                    LevySchedule[]
+  lotLevyCharges                   LotLevyCharge[]
+  levyAdjustments                  LevyAdjustment[]
+  /// M16.5 — Receipts & Payment Allocation.
+  receipts                         Receipt[]
+  paymentAllocations               PaymentAllocation[]
+  /// M16.6 — Arrears Management.
+  collectionCases                  CollectionCase[]
+  collectionNotes                  CollectionNote[]
+  paymentReminders                 PaymentReminder[]
   activityEvents                   ActivityEvent[]
   maintenanceRequests              MaintenanceRequest[]
   maintenanceRequestAttachments    MaintenanceRequestAttachment[]
@@ -128,6 +152,31 @@ model User {
   createdLotOpeningPositions            LotOpeningPosition[]              @relation("LotOpeningPositionCreatedBy")
   createdFinancialBudgets               FinancialBudget[]                 @relation("FinancialBudgetCreatedBy")
   approvedFinancialBudgets              FinancialBudget[]                 @relation("FinancialBudgetApprovedBy")
+  createdAccountingAccounts             AccountingAccount[]               @relation("AccountingAccountCreatedBy")
+  createdAccountTemplates               AccountTemplate[]                 @relation("AccountTemplateCreatedBy")
+  appliedAccountImportBatches           AccountImportBatch[]              @relation("AccountImportBatchAppliedBy")
+  closedAccountingPeriods               AccountingPeriod[]                @relation("AccountingPeriodClosedBy")
+  reopenedAccountingPeriods             AccountingPeriod[]                @relation("AccountingPeriodReopenedBy")
+  createdPostingProfileRules            PostingProfileRule[]              @relation("PostingProfileRuleCreatedBy")
+  postedJournalEntries                  JournalEntry[]                    @relation("JournalEntryPostedBy")
+  createdLevySchedules                  LevySchedule[]                    @relation("LevyScheduleCreatedBy")
+  approvedLevySchedules                 LevySchedule[]                    @relation("LevyScheduleApprovedBy")
+  issuedLevySchedules                   LevySchedule[]                    @relation("LevyScheduleIssuedBy")
+  cancelledLevySchedules                LevySchedule[]                    @relation("LevyScheduleCancelledBy")
+  reversedLevySchedules                 LevySchedule[]                    @relation("LevyScheduleReversedBy")
+  issuedLevyInstallments                LevyInstallment[]                 @relation("LevyInstallmentIssuedBy")
+  reversedLevyInstallments              LevyInstallment[]                 @relation("LevyInstallmentReversedBy")
+  createdLevyAdjustments                LevyAdjustment[]                  @relation("LevyAdjustmentCreatedBy")
+  createdReceipts                       Receipt[]                         @relation("ReceiptCreatedBy")
+  reversedReceipts                      Receipt[]                         @relation("ReceiptReversedBy")
+  createdPaymentAllocations             PaymentAllocation[]               @relation("PaymentAllocationCreatedBy")
+  reversedPaymentAllocations            PaymentAllocation[]               @relation("PaymentAllocationReversedBy")
+  assignedCollectionCases               CollectionCase[]                  @relation("CollectionCaseAssignedTo")
+  openedCollectionCases                 CollectionCase[]                  @relation("CollectionCaseOpenedBy")
+  closedCollectionCases                 CollectionCase[]                  @relation("CollectionCaseClosedBy")
+  createdCollectionNotes                CollectionNote[]                  @relation("CollectionNoteCreatedBy")
+  generatedPaymentReminders             PaymentReminder[]                 @relation("PaymentReminderGeneratedBy")
+  cancelledPaymentReminders             PaymentReminder[]                 @relation("PaymentReminderCancelledBy")
 
   @@map("users")
 }
@@ -377,6 +426,25 @@ model Property {
   /// created for this property; never deleted, see FinancialBudget's own
   /// doc comment on why.
   financialBudgets       FinancialBudget[]
+  /// M16.2.1 — this property's own scheme-specific chart of accounts; see
+  /// AccountingAccount's doc comment.
+  accountingAccounts     AccountingAccount[]
+  accountImportBatches   AccountImportBatch[]
+  /// M16.2.2 — General Ledger & Posting Engine.
+  accountingPeriods      AccountingPeriod[]
+  postingProfileRules    PostingProfileRule[]
+  journalEntries         JournalEntry[]
+  /// M16.3 — Levy Management & UOE Allocation.
+  levySchedules          LevySchedule[]
+  lotLevyCharges         LotLevyCharge[]
+  levyAdjustments        LevyAdjustment[]
+  /// M16.5 — Receipts & Payment Allocation.
+  receipts               Receipt[]
+  paymentAllocations     PaymentAllocation[]
+  /// M16.6 — Arrears Management.
+  collectionCases        CollectionCase[]
+  collectionNotes        CollectionNote[]
+  paymentReminders       PaymentReminder[]
 
   @@unique([organisationId, code])
   @@index([organisationId])
@@ -474,6 +542,14 @@ model Space {
   /// Always null for COMMON_PROPERTY/UNCLASSIFIED spaces — see
   /// LotOpeningPosition's own doc comment for how that's enforced.
   lotOpeningPosition  LotOpeningPosition?
+  /// M16.3 — every levy charge ever raised against this lot, across every
+  /// schedule/installment; never deleted (see LotLevyCharge's doc comment).
+  lotLevyCharges      LotLevyCharge[]
+  /// M16.5 — every receipt ever recorded against this lot.
+  receipts            Receipt[]
+  /// M16.6 — collection workflow history for this lot.
+  collectionCases     CollectionCase[]
+  paymentReminders    PaymentReminder[]
 
   /// A strata lot number must be unique within its Property (never
   /// enforced across properties) — distinct from `code` above, which is
@@ -603,12 +679,23 @@ model FinancialConfiguration {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  organisation    Organisation         @relation(fields: [organisationId], references: [id])
-  property        Property             @relation(fields: [propertyId], references: [id])
-  activatedByUser User?                @relation("FinancialConfigurationActivatedBy", fields: [activatedByUserId], references: [id])
-  funds           FinancialFund[]
-  lotPositions    LotOpeningPosition[]
-  budgets         FinancialBudget[]
+  organisation        Organisation         @relation(fields: [organisationId], references: [id])
+  property            Property             @relation(fields: [propertyId], references: [id])
+  activatedByUser     User?                @relation("FinancialConfigurationActivatedBy", fields: [activatedByUserId], references: [id])
+  funds               FinancialFund[]
+  lotPositions        LotOpeningPosition[]
+  budgets             FinancialBudget[]
+  /// M16.2.1 — this scheme's chart of accounts, one row per provisioned or
+  /// manually-added account; see AccountingAccount's doc comment.
+  accounts            AccountingAccount[]
+  /// M16.2.2 — General Ledger & Posting Engine.
+  accountingPeriods   AccountingPeriod[]
+  postingProfileRules PostingProfileRule[]
+  journalEntries      JournalEntry[]
+  /// M16.3 — Levy Management & UOE Allocation.
+  levySchedules       LevySchedule[]
+  /// M16.5 — Receipts & Payment Allocation.
+  receipts            Receipt[]
 
   @@index([organisationId])
   @@map("financial_configurations")
@@ -645,6 +732,20 @@ model FinancialFund {
   /// ever written against it; never itself a balance (see this section's
   /// doc comment — still no mutable running total anywhere).
   budgetLines            FinancialBudgetLine[]
+  /// M16.2.1 — accounts restricted to this fund only (AccountingAccount.
+  /// restrictedToFundId) — see that field's doc comment on why most
+  /// accounts leave this null (fund is carried on the ledger line, not the
+  /// account) and only a minority (e.g. a fund's own cash account) pin to
+  /// one fund.
+  restrictedAccounts     AccountingAccount[]
+  /// M16.2.2 — General Ledger & Posting Engine.
+  postingProfileRules    PostingProfileRule[]
+  journalLines           JournalLine[]
+  /// M16.3 — Levy Management & UOE Allocation.
+  levySchedules          LevySchedule[]
+  lotLevyCharges         LotLevyCharge[]
+  /// M16.5 — Receipts & Payment Allocation.
+  receipts               Receipt[]
 
   @@index([financialConfigurationId])
   @@index([propertyId])
@@ -767,7 +868,14 @@ model LotOpeningPosition {
 
 /// DRAFT -> APPROVED -> ACTIVE -> SUPERSEDED, strictly forward (see
 /// FinancialBudgetsService for the one legal transition out of each
-/// state). SUPERSEDED is terminal and permanent; there is no "reactivate"
+/// state) — with one closure-pass exception: activating a budget also
+/// walks its own `revisionOfBudgetId` chain and moves any still-APPROVED
+/// ancestor (one that was approved but never itself activated, e.g. v1
+/// approved then skipped straight to v2) to SUPERSEDED too, so "APPROVED"
+/// never misrepresents a budget as still a live candidate once a later
+/// revision in its own lineage has gone ACTIVE. An APPROVED budget
+/// outside the activated one's lineage is never touched by this. Either
+/// way, SUPERSEDED is terminal and permanent; there is no "reactivate"
 /// path back from it — create a new revision instead.
 enum FinancialBudgetStatus {
   DRAFT
@@ -860,6 +968,9 @@ model FinancialBudget {
   revisionOf             FinancialBudget?       @relation("FinancialBudgetRevision", fields: [revisionOfBudgetId], references: [id])
   revisions              FinancialBudget[]      @relation("FinancialBudgetRevision")
   lines                  FinancialBudgetLine[]
+  /// M16.3 — regular levy schedules whose total is derived from this
+  /// budget's LEVY_INCOME-linked revenue lines.
+  levySchedules          LevySchedule[]
 
   /// Deterministic version numbering per financial-year group — see
   /// `version`'s doc comment. (The separate ONE-ACTIVE-BUDGET invariant is
@@ -872,13 +983,26 @@ model FinancialBudget {
   @@map("financial_budgets")
 }
 
+/// REVENUE | EXPENDITURE | TRANSFER | RESERVE_CONTRIBUTION | OTHER — see
+/// FinancialBudgetLine.lineType's doc comment. Added in M16.2.1; every
+/// pre-existing row backfills to EXPENDITURE (the default), so historical
+/// expenditure totals are unchanged by this migration — see
+/// FinancialBudgetsService.toView and the M16.2.1 ADR on the
+/// totalBudget -> totalBudgetedRevenue/totalBudgetedExpenditure/
+/// budgetedSurplusDeficit split this type makes meaningful.
+enum FinancialBudgetLineType {
+  REVENUE
+  EXPENDITURE
+  TRANSFER
+  RESERVE_CONTRIBUTION
+  OTHER
+}
+
 /// One category/line item within a FinancialBudget, attributed to exactly
-/// one FinancialFund. Deliberately a flexible free-text `category` rather
-/// than a hard-coded enum of Australian strata expense types (Insurance,
-/// Cleaning, ...) — see this section's doc comment; a future reusable
-/// chart-of-accounts can be layered on top of this column later without a
-/// breaking change (e.g. an optional categoryId FK added alongside it),
-/// but WaslProp does not build that general-ledger machinery in M16.2.
+/// one FinancialFund. `category` remains free text (never removed — see
+/// below); `accountId` is the M16.2.1 addition that lets a line reference
+/// the scheme's chart of accounts without forcing every historical line to
+/// have one (nullable, additive — see the CoA ADR).
 model FinancialBudgetLine {
   id              String @id @default(cuid())
   /// See Property.publicReference's doc comment — same system, "BUDL" prefix.
@@ -888,6 +1012,16 @@ model FinancialBudgetLine {
   budgetId        String
   financialFundId String
 
+  /// M16.2.1 — whether this line is planned income, planned spend, an
+  /// inter-fund transfer, or a reserve/capital-works contribution. Drives
+  /// the funding-bridge totals in FinancialBudgetsService.toView
+  /// (totalBudgetedRevenue vs totalBudgetedExpenditure); never inferred
+  /// from the account's classification alone (a line can reference no
+  /// account yet, same as `category` always could).
+  lineType      FinancialBudgetLineType @default(EXPENDITURE)
+  /// Still free text, same as before M16.2.1 — the historical label kept
+  /// verbatim on every pre-existing line, and still the only categorisation
+  /// available for a line with no `accountId`.
   category      String
   description   String?
   /// Must be >= 0 — a deliberately-nil line (e.g. "Legal Fees: $0 expected
@@ -895,23 +1029,1104 @@ model FinancialBudgetLine {
   /// is an error. Validated at the Zod/service layer, matching the
   /// existing FinancialOpeningBalance.amount precedent (no DB CHECK
   /// constraint).
-  plannedAmount Decimal @db.Decimal(12, 2)
+  plannedAmount Decimal                 @db.Decimal(12, 2)
   notes         String?
   /// Display ordering within its fund — assigned by the service layer
   /// (append-to-end on create), editable only by reordering, never implying
   /// any business meaning beyond presentation.
-  sortOrder     Int     @default(0)
+  sortOrder     Int                     @default(0)
+  /// M16.2.1 — optional reference into this property's chart of accounts.
+  /// Nullable: every line created before M16.2.1 has none, and a manager
+  /// may still add a line before the CoA is fully built out. When set, the
+  /// service layer validates it belongs to the same property (never a
+  /// cross-property account) — see FinancialBudgetsService.addLine.
+  accountId     String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  budget FinancialBudget @relation(fields: [budgetId], references: [id])
-  fund   FinancialFund   @relation(fields: [financialFundId], references: [id])
+  budget  FinancialBudget    @relation(fields: [budgetId], references: [id])
+  fund    FinancialFund      @relation(fields: [financialFundId], references: [id])
+  account AccountingAccount? @relation(fields: [accountId], references: [id])
 
   @@index([budgetId])
   @@index([financialFundId])
   @@index([propertyId])
+  @@index([accountId])
   @@map("financial_budget_lines")
+}
+
+// --- Strata Financial Management: Chart of Accounts (M16.2.1) ---
+//
+// Additive to M16.1/M16.2 — no existing financial table is rewritten.
+// Three decisions mirror the rest of this section (see its own doc
+// comment above FinancialConfiguration) for the same reasons:
+//
+// 1. Accounts are scheme-specific (one row per property), never a live
+//    shared catalog across schemes — see D1 in the M16.2.1 ADR. They may
+//    be provisioned from an AccountTemplate, but that template is only
+//    ever COPIED at provisioning time, never read live afterward (same
+//    snapshot convention as FinancialFund.currencyCode and friends).
+//
+// 2. An account may serve more than one fund — the fund is carried on the
+//    ledger line (future M16.2.2 JournalLine), not pinned to the account —
+//    see D2. `restrictedToFundId` is the deliberately narrow exception for
+//    an account that genuinely belongs to one fund only (e.g. that fund's
+//    own cash account), left null for every general-purpose account.
+//
+// 3. Deactivate, never delete. An account referenced by any
+//    FinancialBudgetLine (and, from M16.2.2, any JournalLine) cannot be
+//    deleted — only `isActive = false` — preserving every historical
+//    reference exactly like LotOpeningPosition/FinancialOpeningBalance's
+//    own "never rewrite history" discipline.
+
+enum AccountClassification {
+  ASSET
+  LIABILITY
+  EQUITY
+  INCOME
+  EXPENSE
+}
+
+/// Property-scoped chart-of-accounts row. See this section's doc comment
+/// for the three load-bearing decisions (scheme-specific, fund-flexible,
+/// deactivate-not-delete) AccountsService exists to uphold.
+model AccountingAccount {
+  id                       String @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "ACC" prefix.
+  publicReference          String @unique
+  organisationId           String
+  propertyId               String
+  financialConfigurationId String
+
+  /// Unique per property (not globally) — see @@unique below. Free text,
+  /// not validated against any particular numbering scheme: the CSV
+  /// evidence (expense_codes_336684074.csv) shows real schemes use
+  /// inconsistent numbering, and WaslProp never assumes one.
+  code           String
+  name           String
+  description    String?
+  classification AccountClassification
+
+  /// Self-reference for a simple one-level (or deeper, if ever needed)
+  /// account hierarchy — e.g. grouping several cleaning-related expense
+  /// accounts under one parent for reporting. Optional; most accounts have
+  /// none.
+  parentAccountId    String?
+  /// Null = usable against any fund (the common case — the fund is chosen
+  /// per ledger line, not per account, per D2). Set only for an account
+  /// that genuinely belongs to exactly one fund (e.g. that fund's own cash
+  /// account) — never used to simulate a multi-fund restriction list.
+  restrictedToFundId String?
+
+  /// Deactivate, never delete (see this section's doc comment). Checked by
+  /// AccountsService before every deactivate and before any reference is
+  /// attached to an inactive account.
+  isActive Boolean @default(true)
+
+  /// Set only when this account was provisioned by copying an
+  /// AccountTemplateLine — never re-read live from the template afterward
+  /// (see this section's doc comment, point 1). Null for an account added
+  /// directly or via CSV import.
+  sourceTemplateLineId String?
+  /// Set only when this account was created by an applied CSV import batch
+  /// — informational provenance only, same spirit as
+  /// ContractorQuote.source.
+  sourceImportBatchId  String?
+  /// Carried through from the import source row for traceability (e.g. the
+  /// original "Code type" column value) — display-only, never
+  /// authoritative; `classification` above is the one real field.
+  externalCode         String?
+
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organisation           Organisation           @relation(fields: [organisationId], references: [id])
+  property               Property               @relation(fields: [propertyId], references: [id])
+  financialConfiguration FinancialConfiguration @relation(fields: [financialConfigurationId], references: [id])
+  parentAccount          AccountingAccount?     @relation("AccountingAccountParent", fields: [parentAccountId], references: [id])
+  childAccounts          AccountingAccount[]    @relation("AccountingAccountParent")
+  restrictedToFund       FinancialFund?         @relation(fields: [restrictedToFundId], references: [id])
+  sourceImportBatch      AccountImportBatch?    @relation(fields: [sourceImportBatchId], references: [id])
+  createdByUser          User?                  @relation("AccountingAccountCreatedBy", fields: [createdByUserId], references: [id])
+  budgetLines            FinancialBudgetLine[]
+  /// M16.2.2 — General Ledger & Posting Engine.
+  postingProfileRules    PostingProfileRule[]
+  journalLines           JournalLine[]
+  /// M16.5 — every Receipt whose cash landed in this account.
+  receiptsAsDestination  Receipt[]
+
+  /// Code uniqueness is per property, not global — the same code (e.g.
+  /// "150200") may legitimately exist on two different schemes.
+  @@unique([propertyId, code])
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([parentAccountId])
+  @@index([restrictedToFundId])
+  @@index([sourceImportBatchId])
+  @@map("accounting_accounts")
+}
+
+/// Organisation-level, versioned starting point for a new scheme's chart
+/// of accounts — copied, never read live (see this section's doc comment,
+/// point 1). A new version never edits an older one in place, same
+/// immutable-history discipline as FinancialBudget's own versioning.
+model AccountTemplate {
+  id              String  @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "ACCT" prefix.
+  publicReference String  @unique
+  organisationId  String
+  name            String
+  version         Int     @default(1)
+  isActive        Boolean @default(true)
+  createdByUserId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation  Organisation          @relation(fields: [organisationId], references: [id])
+  createdByUser User?                 @relation("AccountTemplateCreatedBy", fields: [createdByUserId], references: [id])
+  lines         AccountTemplateLine[]
+
+  @@unique([organisationId, name, version])
+  @@index([organisationId])
+  @@map("account_templates")
+}
+
+/// One row of a template — copied verbatim into a new AccountingAccount at
+/// provisioning time (code, name, classification). `parentCode` resolves
+/// to a sibling line's `code` within the same template at provisioning
+/// time, never a cross-template reference.
+model AccountTemplateLine {
+  id                String                @id @default(cuid())
+  accountTemplateId String
+  code              String
+  name              String
+  classification    AccountClassification
+  parentCode        String?
+  sortOrder         Int                   @default(0)
+
+  createdAt DateTime @default(now())
+
+  accountTemplate AccountTemplate @relation(fields: [accountTemplateId], references: [id])
+
+  @@unique([accountTemplateId, code])
+  @@index([accountTemplateId])
+  @@map("account_template_lines")
+}
+
+/// One audit record per applied (never per previewed/dry-run) CSV import —
+/// written only by AccountImportService.apply, inside the same transaction
+/// that creates the resulting AccountingAccount rows. Per-row dry-run
+/// detail is deliberately NOT persisted (see the M16.2.1 ADR on import
+/// scope): a preview is a pure read computed fresh from the uploaded file
+/// each time, never stored, so there is nothing stale to reconcile if the
+/// scheme's accounts change between a preview and a later apply — apply
+/// always re-validates against current data regardless of what an earlier
+/// preview showed.
+model AccountImportBatch {
+  id              String   @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "IMP" prefix.
+  publicReference String   @unique
+  organisationId  String
+  propertyId      String
+  fileName        String
+  totalRows       Int
+  createdCount    Int
+  skippedCount    Int
+  appliedByUserId String
+  appliedAt       DateTime @default(now())
+
+  organisation    Organisation        @relation(fields: [organisationId], references: [id])
+  property        Property            @relation(fields: [propertyId], references: [id])
+  appliedByUser   User                @relation("AccountImportBatchAppliedBy", fields: [appliedByUserId], references: [id])
+  createdAccounts AccountingAccount[]
+
+  @@index([propertyId])
+  @@map("account_import_batches")
+}
+
+// --- Strata Financial Management: General Ledger & Posting Engine (M16.2.2) ---
+//
+// Builds on M16.1 (FinancialConfiguration/FinancialFund/opening snapshots) and
+// M16.2.1 (AccountingAccount) — see docs/architecture/financial-management-
+// implementation-plan.md §7 and ADR-020/ADR-021 for the full design. Five
+// decisions are load-bearing for every method in LedgerPostingService:
+//
+// 1. A JournalEntry is POSTED the instant it exists — there is no DRAFT
+//    status (unlike FinancialBudget). Correction is always a new, linked
+//    reversal entry; nothing posted is ever updated or deleted. This is the
+//    single most important invariant in this milestone.
+//
+// 2. Only LedgerPostingService may create a JournalEntry/JournalLine row.
+//    Every other module (levies, AP, banking — all still M16.3+) calls it
+//    with a typed command; none of them touch these tables directly. This
+//    file's models have no other write path by convention — enforced by
+//    code review, same as every other "one service owns this table" rule
+//    already in this codebase.
+//
+// 3. Exactly-once posting: @@unique([propertyId, sourceType, sourceId,
+//    sourceEventVersion]) on JournalEntry is the same idempotency-ledger
+//    pattern already proven by WaslSignWebhookEvent.eventId — a retried or
+//    concurrently-duplicated posting request is a no-op returning the
+//    original journal, never a second posting.
+//
+// 4. Money is Decimal(14,2) here, not the Decimal(12,2)/Decimal(10,2) mix
+//    already in use elsewhere (FinancialBudgetLine/FinancialOpeningBalance
+//    vs. WorkOrder.estimatedCost) — see the implementation plan's §1 note
+//    on why ledger tables need one deliberately chosen, larger scale.
+//
+// 5. Fund is carried on JournalLine, not forced onto JournalEntry — a single
+//    posting event (e.g. an inter-fund transfer) can legitimately touch more
+//    than one fund in one balanced journal. "No silent cross-fund
+//    accounting" (the safeguard from the M16.2.2 brief) is enforced in the
+//    service layer: a posting command's lines are grouped by fund, and
+//    LedgerPostingService rejects any command whose fund subtotals don't
+//    each independently balance UNLESS the command is explicitly flagged as
+//    an inter-fund transfer (sourceType = 'INTER_FUND_TRANSFER') — see
+//    ledger-posting.service.ts for the exact rule.
+
+enum AccountingPeriodStatus {
+  OPEN
+  CLOSED
+}
+
+/// One property's accounting-period calendar entry — posting is only ever
+/// allowed into an OPEN period (see LedgerPostingService.post). Non-overlap
+/// across a property's periods is validated in the service layer under the
+/// same FinancialConfiguration row lock FinancialBudgetsService.activate
+/// already uses, not a DB exclusion constraint (no btree_gist dependency
+/// introduced for this) — see AccountingPeriodsService.
+model AccountingPeriod {
+  id                       String                 @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "PER" prefix.
+  publicReference          String                 @unique
+  organisationId           String
+  propertyId               String
+  financialConfigurationId String
+  startDate                DateTime               @db.Date
+  endDate                  DateTime               @db.Date
+  status                   AccountingPeriodStatus @default(OPEN)
+  /// Set together, only by the explicit close action — never by any other
+  /// write. financials.approve required (see AccountingPeriodsService).
+  closedByUserId           String?
+  closedAt                 DateTime?
+  /// Set together, only by the explicit reopen action — a separate,
+  /// equally-audited action from close, never an automatic undo.
+  reopenedByUserId         String?
+  reopenedAt               DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation           Organisation           @relation(fields: [organisationId], references: [id])
+  property               Property               @relation(fields: [propertyId], references: [id])
+  financialConfiguration FinancialConfiguration @relation(fields: [financialConfigurationId], references: [id])
+  closedByUser           User?                  @relation("AccountingPeriodClosedBy", fields: [closedByUserId], references: [id])
+  reopenedByUser         User?                  @relation("AccountingPeriodReopenedBy", fields: [reopenedByUserId], references: [id])
+  journalEntries         JournalEntry[]
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@map("accounting_periods")
+}
+
+/// The semantic roles LedgerPostingService and OpeningJournalService
+/// resolve to a concrete AccountingAccount via PostingProfileRule — never
+/// hard-coded account codes anywhere in the generic posting engine (the
+/// safeguard "no hardcoded Australian rules in the generic posting
+/// engine" applies equally to hard-coded account identities). Deliberately
+/// a fixed enum, not free text: every role here is actually consumed by
+/// code in this milestone or the next (OPENING_BALANCE_EQUITY and
+/// FUND_CASH/LOT_LEVY_RECEIVABLE/UNAPPLIED_CASH by OpeningJournalService
+/// this milestone; LEVY_INCOME/ACCOUNTS_PAYABLE/GST_*/SUSPENSE/
+/// INTER_FUND_TRANSFER reserved for M16.3+ producers that will call the
+/// same LedgerPostingService).
+enum PostingRole {
+  FUND_CASH
+  LOT_LEVY_RECEIVABLE
+  LEVY_INCOME
+  UNAPPLIED_CASH
+  ACCOUNTS_PAYABLE
+  GST_PAYABLE
+  GST_RECEIVABLE
+  SUSPENSE
+  OPENING_BALANCE_EQUITY
+  INTER_FUND_TRANSFER
+}
+
+/// One (role, fund) -> account mapping. `financialFundId = null` means the
+/// rule applies regardless of fund context (e.g. a single shared
+/// OPENING_BALANCE_EQUITY or SUSPENSE account) — a role scoped to a
+/// specific fund (e.g. FUND_CASH for the Administration Fund vs. the
+/// Capital Works Fund separately) sets it. At most one rule may exist per
+/// (role, fund) pair — Postgres does not enforce this across NULL values,
+/// so PostingProfileService validates it explicitly at write time (the
+/// same "service-level dedup, not a DB constraint" precedent as
+/// FinancialFund's own duplicate-Administration/Capital-Works rule).
+/// Plain configuration metadata, not financial history — updated in
+/// place, not versioned; every change is still recorded via ActivityEvent.
+model PostingProfileRule {
+  id                       String      @id @default(cuid())
+  organisationId           String
+  propertyId               String
+  financialConfigurationId String
+  role                     PostingRole
+  financialFundId          String?
+  accountId                String
+  createdByUserId          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation           Organisation           @relation(fields: [organisationId], references: [id])
+  property               Property               @relation(fields: [propertyId], references: [id])
+  financialConfiguration FinancialConfiguration @relation(fields: [financialConfigurationId], references: [id])
+  fund                   FinancialFund?         @relation(fields: [financialFundId], references: [id])
+  account                AccountingAccount      @relation(fields: [accountId], references: [id])
+  createdByUser          User?                  @relation("PostingProfileRuleCreatedBy", fields: [createdByUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([accountId])
+  @@map("posting_profile_rules")
+}
+
+/// One posted, balanced double-entry event. See this section's doc
+/// comment for the five load-bearing decisions this model exists to
+/// uphold — above all, POSTED the instant it exists; no DRAFT, no in-place
+/// edit. `sourceType`/`sourceId`/`sourceEventVersion` identify the
+/// business event that caused this posting (e.g. "MANUAL"/a generated id/1
+/// for a manual journal, "OPENING_BALANCE"/financialConfigurationId/1 for
+/// the opening journal — see OpeningJournalService) and are the exactly-
+/// once idempotency key (see this section's doc comment, point 3).
+model JournalEntry {
+  id                       String @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "JRN" prefix.
+  publicReference          String @unique
+  organisationId           String
+  propertyId               String
+  financialConfigurationId String
+  accountingPeriodId       String
+
+  /// Plain accounting date, same @db.Date/dateOnly.ts discipline as every
+  /// other financial date column in this schema.
+  effectiveDate DateTime @db.Date
+  postedAt      DateTime @default(now())
+  currencyCode  String
+
+  sourceType         String
+  sourceId           String
+  /// Lets a source event repost a logically-new effect under the same
+  /// sourceId without colliding with its own prior posting (mirrors
+  /// FinancialBudget.version's reasoning) — almost always 1 in this
+  /// milestone, since no producer other than OpeningJournalService exists
+  /// yet.
+  sourceEventVersion Int    @default(1)
+
+  narration      String
+  postedByUserId String
+
+  /// Set only on a reversal entry, pointing back at the journal it
+  /// reverses — unique, so a given journal can be reversed at most once
+  /// (post a fresh correcting journal for anything further, never a
+  /// reversal of a reversal that tries to re-net the same effect twice).
+  /// Null for every ordinary posting.
+  reversalOfJournalId String? @unique
+  reversalReason      String?
+
+  createdAt DateTime @default(now())
+
+  organisation           Organisation           @relation(fields: [organisationId], references: [id])
+  property               Property               @relation(fields: [propertyId], references: [id])
+  financialConfiguration FinancialConfiguration @relation(fields: [financialConfigurationId], references: [id])
+  accountingPeriod       AccountingPeriod       @relation(fields: [accountingPeriodId], references: [id])
+  postedByUser           User                   @relation("JournalEntryPostedBy", fields: [postedByUserId], references: [id])
+  reversalOf             JournalEntry?          @relation("JournalEntryReversal", fields: [reversalOfJournalId], references: [id])
+  /// The reversal entry that reverses THIS journal, if any — the reverse
+  /// direction of `reversalOf`. Null until/unless this journal is reversed.
+  reversedBy             JournalEntry?          @relation("JournalEntryReversal")
+  lines                  JournalLine[]
+  /// M16.3 — the schedule this journal is the issuance posting for, if any
+  /// (reverse of LevySchedule.journalEntryId) — null for every other kind
+  /// of journal (manual, opening balance, reversal).
+  levySchedule           LevySchedule?
+  /// ADR-024 — every instalment THIS journal is the issuance (or
+  /// reversal) posting for. Exactly one for every journal posted going
+  /// forward; more than one only for a journal that predates ADR-024 and
+  /// was shared across a whole schedule's instalments (preserved by
+  /// migration).
+  levyInstallments       LevyInstallment[]
+  /// The adjustment this journal is the correction posting for, if any.
+  levyAdjustment         LevyAdjustment?
+  /// M16.5 — the receipt this journal is the cash posting for, if any.
+  receipt                Receipt?
+  /// M16.5 — the allocation this journal is the application posting for, if any.
+  paymentAllocation      PaymentAllocation?
+
+  @@unique([propertyId, sourceType, sourceId, sourceEventVersion])
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([accountingPeriodId])
+  @@map("journal_entries")
+}
+
+/// One debit-or-credit side of a JournalEntry. Exactly one of debit/credit
+/// is non-zero per row (validated in LedgerPostingService, not a DB CHECK
+/// constraint — same precedent as every other Decimal invariant in this
+/// schema); SUM(debit) = SUM(credit) across every line of one
+/// JournalEntry is the core double-entry invariant, also enforced in the
+/// service layer at posting time inside the same transaction that writes
+/// these rows.
+model JournalLine {
+  id              String  @id @default(cuid())
+  journalEntryId  String
+  organisationId  String
+  propertyId      String
+  accountId       String
+  financialFundId String
+  debit           Decimal @default(0) @db.Decimal(14, 2)
+  credit          Decimal @default(0) @db.Decimal(14, 2)
+  lineNarration   String?
+  sortOrder       Int     @default(0)
+
+  createdAt DateTime @default(now())
+
+  journalEntry JournalEntry      @relation(fields: [journalEntryId], references: [id])
+  account      AccountingAccount @relation(fields: [accountId], references: [id])
+  fund         FinancialFund     @relation(fields: [financialFundId], references: [id])
+
+  @@index([journalEntryId])
+  @@index([accountId])
+  @@index([financialFundId])
+  @@index([propertyId])
+  @@map("journal_lines")
+}
+
+// --- Strata Financial Management: Levy Management & UOE Allocation (M16.3) ---
+//
+// Builds on M16.2.2's posting contract (LedgerPostingService) — no new ledger
+// table, every levy posts through the existing JournalEntry/JournalLine via
+// LedgerPostingService.postWithinTransaction. Load-bearing decisions (see
+// docs/architecture/adr/ADR-022, ADR-023, ADR-024):
+//
+// 1. One fund per schedule. A scheme's Administrative and Capital Works
+//    levies are always separate LevySchedule rows, matching standard
+//    Australian strata practice and keeping every schedule's own posting
+//    trivially fund-balanced (same "tag both lines of a pair with the same
+//    fund" discipline OpeningJournalService already established).
+//
+// 2. One posted JournalEntry per INSTALMENT issuance (ADR-024, replacing
+//    this milestone's original "one aggregated journal per whole-schedule
+//    issuance" design) — one DEBIT LOT_LEVY_RECEIVABLE + one CREDIT
+//    LEVY_INCOME line per fund, posted when that specific instalment is
+//    struck, not when the schedule is approved. This matches NSW Strata
+//    Schemes Management Act 2015 s.81/s.85 practice: a scheme's annual
+//    contribution is determined once, but each instalment is separately
+//    levied (and separately due, separately interest-bearing on arrears)
+//    at its own date — never all struck simultaneously regardless of how
+//    far in the future they fall. LotLevyCharge rows for an instalment are
+//    created only when THAT instalment is issued. SUM(LotLevyCharge.amount)
+//    for an instalment reconciles exactly to its own receivable line
+//    (FIN-013); SUM across a schedule's issued instalments reconciles to
+//    the schedule's totalAmount only once every instalment is issued.
+//    LevySchedule.journalEntryId/issuedAt/issuedByUserId are now populated
+//    only for schedules that were fully issued under the pre-ADR-024
+//    whole-schedule model (preserved by migration, never rewritten) — a
+//    schedule issued under this model instead carries that detail per
+//    LevyInstallment.
+//
+// 3. Issued is immutable, now at the instalment level. LotLevyCharge.amount
+//    is never edited after issuance; a correction is either a
+//    LevyAdjustment (a small posted delta against one charge) or reversing
+//    that ONE instalment's own journal via
+//    LedgerPostingService.reverseWithinTransaction (LevyInstallment.status
+//    -> REVERSED) — never a direct UPDATE on a charge row, and never a
+//    whole-schedule reversal (there is no longer one journal to reverse at
+//    that level — see LevySchedule.status's PARTIALLY_ISSUED/ISSUED notes).
+
+enum LevyKind {
+  REGULAR
+  SPECIAL
+}
+
+/// Schedule-level status now derives from its instalments' own statuses
+/// (ADR-024) rather than being independently set by a whole-schedule
+/// issue/reverse action — LevyService recomputes it after every
+/// instalment-level change.
+enum LevyScheduleStatus {
+  DRAFT
+  APPROVED
+  /// At least one instalment ISSUED, at least one still PENDING.
+  PARTIALLY_ISSUED
+  /// Every instalment ISSUED (none PENDING, none REVERSED-and-not-reissued
+  /// — a REVERSED instalment with no later reissue drops the schedule back
+  /// to PARTIALLY_ISSUED or APPROVED, never leaves it at ISSUED).
+  ISSUED
+  /// Cancelled before any instalment was ever issued — nothing was posted,
+  /// so this is a simple terminal state, not a reversal. Blocked once any
+  /// instalment has ever been issued, even if later reversed (real
+  /// financial history exists by then).
+  CANCELLED
+  /// Pre-ADR-024 legacy terminal state: a schedule fully reversed under
+  /// the old whole-schedule model (LevySchedule.journalEntryId/
+  /// reversedAt/reversedByUserId/reversalReason set). No schedule reaches
+  /// this status going forward — reversal is per-instalment now, so a
+  /// schedule's status instead moves back to PARTIALLY_ISSUED/APPROVED.
+  REVERSED
+}
+
+enum LevyChargeStatus {
+  /// The only status this milestone ever sets. PART_PAID/PAID/OVERDUE are
+  /// modelled now so M16.4 (receipts) can drive them without a schema
+  /// change, but nothing in M16.3 ever sets them.
+  ISSUED
+  PART_PAID
+  PAID
+  OVERDUE
+  /// Set only when the owning INSTALMENT is reversed (ADR-024) — the
+  /// charge itself is never deleted (see this section's doc comment,
+  /// point 3).
+  CANCELLED
+}
+
+/// ADR-024 — the instalment, not the schedule, is now the real issuance
+/// unit. See LevyInstallment.
+enum LevyInstallmentStatus {
+  PENDING
+  ISSUED
+  /// Reversed via LedgerPostingService.reverseWithinTransaction — the
+  /// original posting and every LotLevyCharge for this instalment stay
+  /// exactly as issued; only this status and the linked reversal journal
+  /// record the correction. Terminal — same "never a reversal of a
+  /// reversal" discipline as JournalEntry.reversalOfJournalId; a further
+  /// correction is a LevyAdjustment or a fresh special levy, never
+  /// re-issuing this instalment.
+  REVERSED
+}
+
+/// One levy assessment for one fund — the unit of approval and issuance.
+/// See this section's doc comment for why it's always single-fund and why
+/// issuance posts one aggregated journal rather than one line per lot.
+model LevySchedule {
+  id                       String             @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "LEVY" prefix.
+  publicReference          String             @unique
+  organisationId           String
+  propertyId               String
+  financialConfigurationId String
+  financialFundId          String
+  /// Required for REGULAR (the schedule's total is derived from this
+  /// budget's own LEVY_INCOME-linked revenue lines — see
+  /// LevyService.deriveRegularTotal); always null for SPECIAL.
+  financialBudgetId        String?
+  kind                     LevyKind
+  name                     String
+  /// SUM of every installment's amount — validated exactly equal at
+  /// creation (see LevyInstallment.amount), never independently entered.
+  totalAmount              Decimal            @db.Decimal(14, 2)
+  status                   LevyScheduleStatus @default(DRAFT)
+
+  /// Required for SPECIAL — the real-world committee/AGM resolution this
+  /// levy was raised under, never fabricated by WaslProp. Same
+  /// non-fabrication discipline as FinancialBudget.externalApprovalDate.
+  rationale                 String?
+  externalApprovalDate      DateTime? @db.Date
+  externalApprovalReference String?
+
+  createdByUserId   String?
+  approvedByUserId  String?
+  approvedAt        DateTime?
+  /// ADR-024: these five fields (issuedByUserId/issuedAt/journalEntryId/
+  /// reversedByUserId/reversedAt/reversalReason, plus status REVERSED) are
+  /// now written only by the migration that backfilled pre-ADR-024
+  /// whole-schedule issuances — a schedule issued going forward carries
+  /// this detail per LevyInstallment instead, since each instalment posts
+  /// (and may be reversed) independently. Left in place, never rewritten,
+  /// so a schedule issued under the old model keeps its original history
+  /// exactly as it happened.
+  issuedByUserId    String?
+  issuedAt          DateTime?
+  journalEntryId    String?   @unique
+  cancelledByUserId String?
+  cancelledAt       DateTime?
+  cancelReason      String?
+  reversedByUserId  String?
+  reversedAt        DateTime?
+  reversalReason    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation           Organisation           @relation(fields: [organisationId], references: [id])
+  property               Property               @relation(fields: [propertyId], references: [id])
+  financialConfiguration FinancialConfiguration @relation(fields: [financialConfigurationId], references: [id])
+  fund                   FinancialFund          @relation(fields: [financialFundId], references: [id])
+  budget                 FinancialBudget?       @relation(fields: [financialBudgetId], references: [id])
+  createdByUser          User?                  @relation("LevyScheduleCreatedBy", fields: [createdByUserId], references: [id])
+  approvedByUser         User?                  @relation("LevyScheduleApprovedBy", fields: [approvedByUserId], references: [id])
+  issuedByUser           User?                  @relation("LevyScheduleIssuedBy", fields: [issuedByUserId], references: [id])
+  cancelledByUser        User?                  @relation("LevyScheduleCancelledBy", fields: [cancelledByUserId], references: [id])
+  reversedByUser         User?                  @relation("LevyScheduleReversedBy", fields: [reversedByUserId], references: [id])
+  journalEntry           JournalEntry?          @relation(fields: [journalEntryId], references: [id])
+  installments           LevyInstallment[]
+  charges                LotLevyCharge[]
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([financialFundId])
+  @@index([financialBudgetId])
+  @@map("levy_schedules")
+}
+
+/// One due date under a schedule. `amount` is explicit, caller-supplied
+/// input (never auto-derived by an equal-split policy this milestone
+/// doesn't invent — see ADR-022) — validated to sum exactly to the
+/// schedule's totalAmount.
+model LevyInstallment {
+  id             String                @id @default(cuid())
+  levyScheduleId String
+  dueDate        DateTime              @db.Date
+  amount         Decimal               @db.Decimal(14, 2)
+  sortOrder      Int                   @default(0)
+  /// ADR-024 — this instalment's own issuance state, independent of its
+  /// siblings. See LevyInstallmentStatus.
+  status         LevyInstallmentStatus @default(PENDING)
+
+  issuedByUserId   String?
+  issuedAt         DateTime?
+  /// The one JournalEntry THIS instalment's issuance produced — null until
+  /// ISSUED. Deliberately NOT @unique: every instalment issued under
+  /// ADR-024 gets its own distinct journal (so uniqueness holds in
+  /// practice going forward), but the migration that introduced this
+  /// column backfilled every instalment of a pre-ADR-024 whole-schedule
+  /// issuance with that SAME shared journal — accurately reflecting that
+  /// they really were posted together as one journal, which a unique
+  /// constraint would reject.
+  journalEntryId   String?
+  reversedByUserId String?
+  reversedAt       DateTime?
+  reversalReason   String?
+
+  createdAt DateTime @default(now())
+
+  levySchedule   LevySchedule    @relation(fields: [levyScheduleId], references: [id])
+  issuedByUser   User?           @relation("LevyInstallmentIssuedBy", fields: [issuedByUserId], references: [id])
+  reversedByUser User?           @relation("LevyInstallmentReversedBy", fields: [reversedByUserId], references: [id])
+  journalEntry   JournalEntry?   @relation(fields: [journalEntryId], references: [id])
+  charges        LotLevyCharge[]
+
+  @@index([levyScheduleId])
+  @@index([journalEntryId])
+  @@map("levy_installments")
+}
+
+/// One lot's charge for one installment — the real per-lot subledger
+/// (FIN-013). `amount` is immutable once created (issuance is the only
+/// writer, never edited — see this section's doc comment, point 3).
+/// `status` is the one mutable field, written by two independent
+/// mechanisms that never conflict: reversal (ADR-024, -> CANCELLED,
+/// terminal) and, from M16.5, PaymentAllocation applying/unwinding against
+/// this charge (-> PART_PAID/PAID and back, never touching a CANCELLED
+/// charge — see ReceiptsService). This is exactly what ADR-024's own
+/// LevyChargeStatus doc comment anticipated ("modelled now so M16.4
+/// (receipts) can drive them without a schema change").
+model LotLevyCharge {
+  id                String           @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "LVC" prefix.
+  publicReference   String           @unique
+  organisationId    String
+  propertyId        String
+  levyScheduleId    String
+  levyInstallmentId String
+  spaceId           String
+  financialFundId   String
+  amount            Decimal          @db.Decimal(14, 2)
+  status            LevyChargeStatus @default(ISSUED)
+
+  createdAt DateTime @default(now())
+
+  levySchedule    LevySchedule        @relation(fields: [levyScheduleId], references: [id])
+  levyInstallment LevyInstallment     @relation(fields: [levyInstallmentId], references: [id])
+  space           Space               @relation(fields: [spaceId], references: [id])
+  fund            FinancialFund       @relation(fields: [financialFundId], references: [id])
+  adjustments     LevyAdjustment[]
+  /// M16.5 — every PaymentAllocation ever applied against this charge
+  /// (including later-reversed ones, never deleted).
+  allocations     PaymentAllocation[]
+  organisation    Organisation        @relation(fields: [organisationId], references: [id])
+  property        Property            @relation(fields: [propertyId], references: [id])
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([levyScheduleId])
+  @@index([levyInstallmentId])
+  @@index([spaceId])
+  @@map("lot_levy_charges")
+}
+
+/// A controlled correction to one lot's charge, posted as its own small
+/// journal — never a direct edit of LotLevyCharge.amount. The charge's
+/// effective amount is always `amount + SUM(adjustments.amount)`, derived
+/// fresh, never stored.
+model LevyAdjustment {
+  id              String  @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "LVA" prefix.
+  publicReference String  @unique
+  organisationId  String
+  propertyId      String
+  lotLevyChargeId String
+  /// Signed — positive increases the lot's receivable, negative reduces
+  /// it (e.g. an entitlement-data correction or a documented waiver).
+  amount          Decimal @db.Decimal(14, 2)
+  reason          String
+  journalEntryId  String  @unique
+
+  createdByUserId String
+  createdAt       DateTime @default(now())
+
+  lotLevyCharge LotLevyCharge @relation(fields: [lotLevyChargeId], references: [id])
+  journalEntry  JournalEntry  @relation(fields: [journalEntryId], references: [id])
+  createdByUser User          @relation("LevyAdjustmentCreatedBy", fields: [createdByUserId], references: [id])
+  organisation  Organisation  @relation(fields: [organisationId], references: [id])
+  property      Property      @relation(fields: [propertyId], references: [id])
+
+  @@index([lotLevyChargeId])
+  @@index([propertyId])
+  @@map("levy_adjustments")
+}
+
+// --- Strata Financial Management: Receipts & Payment Allocation (M16.5) ---
+//
+// Extends the existing General Ledger and Lot Ledger — never a second
+// accounting system. Two models, mirroring the real-world distinction
+// between a cash EVENT and its APPLICATION:
+//
+// 1. Receipt — "money arrived." Always posts exactly ONE journal at
+//    creation time, unconditionally: Dr FUND_CASH / Cr UNAPPLIED_CASH (the
+//    PostingRole M16.1 already modelled for exactly this, unused until
+//    now). This is the ONLY way cash enters the books from a receipt —
+//    recording a receipt is itself a posted ledger event, not a draft, so
+//    it requires financials.approve like issue()/reverseInstallment() do.
+//    A receipt with zero allocations against it IS an unapplied credit /
+//    advance payment — no separate model for that state; it is simply
+//    what an un-allocated Receipt already means.
+//
+// 2. PaymentAllocation — "this part of that money was applied to this
+//    specific receivable." Posts its own journal: Dr UNAPPLIED_CASH / Cr
+//    LOT_LEVY_RECEIVABLE, for the allocation's own amount only — never
+//    combined with the Receipt's own cash posting into one journal, even
+//    when allocated immediately at receipt time, so the two real events
+//    stay independently traceable and independently reversible.
+//
+// Never a single "amount paid" column anywhere, and never an editable
+// running balance — the lot's net balance is always derived fresh by
+// LotLedgerService from these rows plus LotLevyCharge/LevyAdjustment/
+// LotOpeningPosition, exactly as M16.4 established (ADR-025). Cross-fund
+// allocation (a receipt posted into one fund's cash account, allocated
+// against another fund's receivable) is deliberately NOT supported here —
+// ReceiptsService rejects it outright rather than silently netting across
+// funds (ADR-020) or inventing an inter-fund-transfer leg this milestone
+// didn't design; see ADR-026.
+
+/// How a receipt arrived. A fixed enum, not an organisation-configurable
+/// list — M16.5 does not build settings UI for custom payment methods;
+/// OTHER covers anything the fixed list doesn't name.
+enum ReceiptPaymentMethod {
+  BANK_TRANSFER
+  CASH
+  CHEQUE
+  OTHER
+}
+
+/// RECORDED -> REVERSED, terminal (mirrors LevyInstallmentStatus's own
+/// discipline). A Receipt with any still-APPLIED PaymentAllocation cannot
+/// be reversed directly — every allocation against it must be reversed
+/// first (see ReceiptsService.reverseReceipt).
+enum ReceiptStatus {
+  RECORDED
+  REVERSED
+}
+
+/// APPLIED -> REVERSED, terminal. Reversing an allocation never edits
+/// `amount`; it posts the exact opposite journal and flips this status,
+/// the same "reversal is its own row, never a mutation" discipline as
+/// LevyInstallment/LotLevyCharge.
+enum PaymentAllocationStatus {
+  APPLIED
+  REVERSED
+}
+
+/// A recorded cash receipt — see this section's doc comment for why this
+/// always posts Dr FUND_CASH / Cr UNAPPLIED_CASH unconditionally, whether
+/// or not it is allocated to anything yet. Never claims bank
+/// reconciliation — there is no `reconciledAt`/`reconciled` field on this
+/// model at all; that is M16.7's own concern (FIN-018/019), deliberately
+/// out of scope here (see ADR-026).
+model Receipt {
+  id                       String               @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "RCT" prefix.
+  publicReference          String               @unique
+  organisationId           String
+  propertyId               String
+  financialConfigurationId String
+  /// The lot this receipt is recorded against — required; M16.5 only
+  /// supports lot-scoped receipts (every demo scenario and every Lot
+  /// Ledger integration point is lot-level). A property-level receipt
+  /// with no lot is not built this milestone.
+  spaceId                  String
+  /// The fund whose FUND_CASH account actually received this money —
+  /// fixed at creation, never changed. An allocation against a charge in
+  /// a DIFFERENT fund is rejected (see this section's doc comment).
+  financialFundId          String
+  /// The resolved FUND_CASH account for `financialFundId` at the time of
+  /// recording — snapshotted, not re-resolved later, same discipline as
+  /// every other posting-profile-resolved accountId already stored on a
+  /// posted record in this schema.
+  destinationAccountId     String
+  amount                   Decimal              @db.Decimal(14, 2)
+  currencyCode             String
+  paymentMethod            ReceiptPaymentMethod
+  paymentReference         String?
+  description              String?
+  /// When the money actually arrived — distinct from `postingDate`,
+  /// which is the accounting date the journal is posted against (must
+  /// fall in an OPEN AccountingPeriod; `receiptDate` has no such
+  /// constraint, since a bank transfer can arrive on a weekend/holiday
+  /// the books post on the next open day).
+  receiptDate              DateTime             @db.Date
+  postingDate              DateTime             @db.Date
+  /// Optional reference to the bank's own transaction record — never
+  /// used to assert reconciliation by itself (see this model's own doc
+  /// comment); purely a human cross-reference for M16.7 to consume later.
+  externalBankReference    String?
+  status                   ReceiptStatus        @default(RECORDED)
+  /// The one journal this receipt's cash posting produced — set exactly
+  /// once at creation, never re-pointed.
+  journalEntryId           String               @unique
+  reversedByUserId         String?
+  reversedAt               DateTime?
+  reversalReason           String?
+
+  createdByUserId String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organisation           Organisation           @relation(fields: [organisationId], references: [id])
+  property               Property               @relation(fields: [propertyId], references: [id])
+  financialConfiguration FinancialConfiguration @relation(fields: [financialConfigurationId], references: [id])
+  space                  Space                  @relation(fields: [spaceId], references: [id])
+  fund                   FinancialFund          @relation(fields: [financialFundId], references: [id])
+  destinationAccount     AccountingAccount      @relation(fields: [destinationAccountId], references: [id])
+  journalEntry           JournalEntry           @relation(fields: [journalEntryId], references: [id])
+  createdByUser          User                   @relation("ReceiptCreatedBy", fields: [createdByUserId], references: [id])
+  reversedByUser         User?                  @relation("ReceiptReversedBy", fields: [reversedByUserId], references: [id])
+  allocations            PaymentAllocation[]
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([spaceId])
+  @@index([financialFundId])
+  @@map("receipts")
+}
+
+/// One application of (part of) a Receipt against one LotLevyCharge — see
+/// this section's doc comment for the Dr UNAPPLIED_CASH / Cr
+/// LOT_LEVY_RECEIVABLE posting this produces. `amount` is immutable;
+/// `effectiveAmount` is not a stored concept here the way LevyAdjustment
+/// has one — a REVERSED allocation simply no longer counts toward the
+/// charge's paid total (see LotLedgerService), the charge row is never
+/// re-summed in place.
+model PaymentAllocation {
+  id              String                  @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "PALLOC" prefix.
+  publicReference String                  @unique
+  organisationId  String
+  propertyId      String
+  receiptId       String
+  lotLevyChargeId String
+  amount          Decimal                 @db.Decimal(14, 2)
+  status          PaymentAllocationStatus @default(APPLIED)
+  /// The journal this allocation's own posting produced — set once, never
+  /// re-pointed. Null only on a row created purely as a historical
+  /// reversal record is never the case here — every row always has one,
+  /// since even the reversal flips THIS row's status rather than creating
+  /// a new row (mirrors LevyInstallment's reversal-in-place-status
+  /// pattern, not LotLevyCharge's separate-reversal-row pattern, because
+  /// an allocation has no sibling rows another reversal could be confused
+  /// with).
+  journalEntryId  String                  @unique
+
+  reversedByUserId String?
+  reversedAt       DateTime?
+  reversalReason   String?
+
+  createdByUserId String
+  createdAt       DateTime @default(now())
+
+  organisation   Organisation  @relation(fields: [organisationId], references: [id])
+  property       Property      @relation(fields: [propertyId], references: [id])
+  receipt        Receipt       @relation(fields: [receiptId], references: [id])
+  lotLevyCharge  LotLevyCharge @relation(fields: [lotLevyChargeId], references: [id])
+  journalEntry   JournalEntry  @relation(fields: [journalEntryId], references: [id])
+  createdByUser  User          @relation("PaymentAllocationCreatedBy", fields: [createdByUserId], references: [id])
+  reversedByUser User?         @relation("PaymentAllocationReversedBy", fields: [reversedByUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([receiptId])
+  @@index([lotLevyChargeId])
+  @@map("payment_allocations")
+}
+
+// --- Strata Financial Management: Arrears Management (M16.6, ADR-027) ---
+//
+// No new financial-truth table. Every overdue amount, ageing bucket and
+// total is computed live from LotLevyCharge/LevyAdjustment/PaymentAllocation/
+// LevyInstallment/Receipt — the three models below hold ONLY the manual
+// collection workflow layered on top (status, notes, draft reminders),
+// never a cached financial balance. See ADR-027 for the full decision
+// record, including why LotLevyCharge's own reserved OVERDUE status value
+// stays permanently unused.
+
+enum CollectionCaseStatus {
+  OPEN
+  IN_PROGRESS
+  AWAITING_PAYMENT
+  ESCALATED
+  RESOLVED
+  CLOSED
+}
+
+/// One arrears-collection episode for a lot — a human workflow record, not
+/// a financial one. A lot may have multiple cases over time (reopenable
+/// episodes), never a single mutable singleton, so history of past
+/// collection activity is preserved even after a case closes.
+model CollectionCase {
+  id               String               @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "COL" prefix.
+  publicReference  String               @unique
+  organisationId   String
+  propertyId       String
+  spaceId          String
+  status           CollectionCaseStatus @default(OPEN)
+  assignedToUserId String?
+  /// The next date a staff member intends to follow up — purely a
+  /// reminder-to-self field, never a deadline the system enforces.
+  nextFollowUpDate DateTime?            @db.Date
+
+  openedByUserId String
+  openedAt       DateTime  @default(now())
+  closedByUserId String?
+  closedAt       DateTime?
+  closeReason    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation   Organisation      @relation(fields: [organisationId], references: [id])
+  property       Property          @relation(fields: [propertyId], references: [id])
+  space          Space             @relation(fields: [spaceId], references: [id])
+  assignedToUser User?             @relation("CollectionCaseAssignedTo", fields: [assignedToUserId], references: [id])
+  openedByUser   User              @relation("CollectionCaseOpenedBy", fields: [openedByUserId], references: [id])
+  closedByUser   User?             @relation("CollectionCaseClosedBy", fields: [closedByUserId], references: [id])
+  notes          CollectionNote[]
+  reminders      PaymentReminder[]
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([spaceId])
+  @@map("collection_cases")
+}
+
+/// A free-text follow-up entry against a CollectionCase — a phone call, a
+/// letter sent, a payment-plan agreement, anything a staff member wants on
+/// the record. Immutable once created (no edit/delete route), same
+/// append-only discipline as every other audited event in this system.
+model CollectionNote {
+  id               String  @id @default(cuid())
+  collectionCaseId String
+  organisationId   String
+  propertyId       String
+  body             String
+  /// Whether this note represents an actual attempt to contact the
+  /// owner (a call, a letter, a visit) vs. an internal-only note (e.g.
+  /// "flagged for review") — lets the collection timeline distinguish
+  /// real contact attempts from staff bookkeeping.
+  contactAttempted Boolean @default(false)
+  contactMethod    String?
+
+  createdByUserId String
+  createdAt       DateTime @default(now())
+
+  collectionCase CollectionCase @relation(fields: [collectionCaseId], references: [id])
+  organisation   Organisation   @relation(fields: [organisationId], references: [id])
+  property       Property       @relation(fields: [propertyId], references: [id])
+  createdByUser  User           @relation("CollectionNoteCreatedBy", fields: [createdByUserId], references: [id])
+
+  @@index([collectionCaseId])
+  @@index([organisationId])
+  @@index([propertyId])
+  @@map("collection_notes")
+}
+
+enum PaymentReminderStatus {
+  DRAFT
+  CANCELLED
+  /// Reserved for a future, explicitly-authorised dispatch milestone —
+  /// never set by M16.6. See ADR-027: reminders are drafted, never sent,
+  /// this milestone.
+  SENT
+  FAILED
+}
+
+/// A drafted (never automatically sent) payment reminder — `content` is a
+/// point-in-time SNAPSHOT of the outstanding charges/amounts as understood
+/// at generation time, for preview/print only. It is never read back as
+/// current arrears truth; the live arrears endpoints remain the only
+/// source of "what's actually owed right now" (see ADR-027).
+model PaymentReminder {
+  id               String                @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "PRM" prefix.
+  publicReference  String                @unique
+  organisationId   String
+  propertyId       String
+  spaceId          String
+  /// Optional — a reminder can be drafted standalone or attached to an
+  /// open collection case for a unified timeline.
+  collectionCaseId String?
+  status           PaymentReminderStatus @default(DRAFT)
+  /// The arrears snapshot date this reminder's content was generated
+  /// from — not necessarily today, if drafted against a historical
+  /// as-of date for review purposes.
+  asOfDate         DateTime              @db.Date
+  /// Snapshot total of the charges listed in `content`, for display only.
+  totalAmountOwing Decimal               @db.Decimal(14, 2)
+  currencyCode     String
+  /// The generated reminder body/charge breakdown, stored as JSON —
+  /// structured enough for the preview screen to render without
+  /// re-parsing free text, but never queried as a source of financial
+  /// truth (see this model's own doc comment).
+  content          Json
+
+  generatedByUserId String
+  generatedAt       DateTime  @default(now())
+  cancelledByUserId String?
+  cancelledAt       DateTime?
+
+  organisation    Organisation    @relation(fields: [organisationId], references: [id])
+  property        Property        @relation(fields: [propertyId], references: [id])
+  space           Space           @relation(fields: [spaceId], references: [id])
+  collectionCase  CollectionCase? @relation(fields: [collectionCaseId], references: [id])
+  generatedByUser User            @relation("PaymentReminderGeneratedBy", fields: [generatedByUserId], references: [id])
+  cancelledByUser User?           @relation("PaymentReminderCancelledBy", fields: [cancelledByUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([spaceId])
+  @@index([collectionCaseId])
+  @@map("payment_reminders")
 }
 
 /// A business/person record: an owner, tenant or resident on file for an
@@ -1197,6 +2412,49 @@ enum ActivityEventType {
   /// A new DRAFT version was created from an APPROVED/ACTIVE budget —
   /// fired once per revision created, not per subsequent line edit.
   FINANCIAL_BUDGET_REVISED
+  /// M16.2.1 — chart of accounts. One event per account created/
+  /// deactivated (never per field edit); one per applied import batch
+  /// (never per row).
+  FINANCIAL_ACCOUNT_CREATED
+  FINANCIAL_ACCOUNT_UPDATED
+  FINANCIAL_ACCOUNT_DEACTIVATED
+  FINANCIAL_ACCOUNTS_IMPORTED
+  /// M16.2.2 — General Ledger & Posting Engine.
+  FINANCIAL_PERIOD_OPENED
+  FINANCIAL_PERIOD_CLOSED
+  FINANCIAL_PERIOD_REOPENED
+  FINANCIAL_POSTING_PROFILE_UPDATED
+  FINANCIAL_JOURNAL_POSTED
+  FINANCIAL_JOURNAL_REVERSED
+  FINANCIAL_OPENING_JOURNAL_POSTED
+  /// M16.3 — Levy Management & UOE Allocation.
+  LEVY_SCHEDULE_CREATED
+  LEVY_SCHEDULE_APPROVED
+  /// Pre-ADR-024 legacy — a whole schedule issued/reversed in one action.
+  /// No longer written by new code; see LEVY_INSTALLMENT_ISSUED/REVERSED.
+  LEVY_SCHEDULE_ISSUED
+  LEVY_SCHEDULE_CANCELLED
+  /// Pre-ADR-024 legacy — see LEVY_SCHEDULE_ISSUED's doc comment.
+  LEVY_SCHEDULE_REVERSED
+  LEVY_CHARGE_ADJUSTED
+  LEVY_NOTICE_SENT
+  /// ADR-024 — one specific instalment issued (never the whole schedule).
+  LEVY_INSTALLMENT_ISSUED
+  /// ADR-024 — one specific instalment reversed.
+  LEVY_INSTALLMENT_REVERSED
+  /// M16.5 — Receipts & Payment Allocation (ADR-026).
+  RECEIPT_RECORDED
+  RECEIPT_REVERSED
+  PAYMENT_ALLOCATION_CREATED
+  PAYMENT_ALLOCATION_REVERSED
+  /// M16.6 — Arrears Management (ADR-027). Workflow events only — nothing
+  /// here is a financial posting.
+  COLLECTION_CASE_OPENED
+  COLLECTION_CASE_UPDATED
+  COLLECTION_CASE_CLOSED
+  COLLECTION_NOTE_ADDED
+  PAYMENT_REMINDER_DRAFTED
+  PAYMENT_REMINDER_CANCELLED
 }
 
 // --- Resident invitations (Slice 2 / M6.5) ---

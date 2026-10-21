@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from '@prisma/client';
 import type {
   FinancialBudget,
   FinancialBudgetLine,
+  FinancialBudgetLineType,
   FinancialBudgetSource,
   FinancialBudgetStatus,
 } from '@prisma/client';
@@ -34,11 +35,15 @@ export interface BudgetLineView {
   fundPublicReference: string;
   fundType: string;
   fundName: string;
+  lineType: FinancialBudgetLineType;
   category: string;
   description: string | null;
   plannedAmount: string;
   notes: string | null;
   sortOrder: number;
+  accountId: string | null;
+  accountCode: string | null;
+  accountName: string | null;
 }
 
 export interface BudgetFundTotal {
@@ -46,7 +51,8 @@ export interface BudgetFundTotal {
   fundPublicReference: string;
   fundType: string;
   fundName: string;
-  total: string;
+  totalRevenue: string;
+  totalExpenditure: string;
 }
 
 export interface BudgetView {
@@ -69,7 +75,19 @@ export interface BudgetView {
   revisionOfBudgetId: string | null;
   createdAt: string;
   updatedAt: string;
-  totalBudget: string;
+  /** M16.2.1 — replaces the old undifferentiated `totalBudget` (see the
+   * M16.2.1 ADR: no deprecated alias, this is a deliberate breaking
+   * response shape change with no external consumers to preserve).
+   * REVENUE lines only. */
+  totalBudgetedRevenue: string;
+  /** EXPENDITURE lines only. */
+  totalBudgetedExpenditure: string;
+  /** totalBudgetedRevenue - totalBudgetedExpenditure. TRANSFER/
+   * RESERVE_CONTRIBUTION/OTHER lines are reported on each line and fund
+   * total but deliberately excluded from this headline figure — a real
+   * funding bridge (opening balance, transfers, reserve provisions) is
+   * out of scope for M16.2.1; see the M16.2.1 ADR and FIN-007. */
+  budgetedSurplusDeficit: string;
   totalsByFund: BudgetFundTotal[];
   lines: BudgetLineView[];
 }
@@ -131,6 +149,36 @@ export class FinancialBudgetsService {
       throw new NotFoundError('Budget not found');
     }
     return budget;
+  }
+
+  /** M16.2.1 — validates that `accountId` may be newly ASSIGNED to a line
+   * right now: it must belong to the same property (never a cross-property
+   * account — see accounts.service.ts's own ownership discipline) and must
+   * currently be active. This is deliberately a prospective check only —
+   * it runs exclusively where a caller is writing a new value into
+   * `accountId` (addLine, and updateLine when `accountId` is part of the
+   * input). A line that already references an account later deactivated
+   * keeps that reference exactly as-is; this method is never called just
+   * to read/display an existing line, so deactivation never retroactively
+   * invalidates history (see AccountingAccount's doc comment). */
+  private async assertAccountAssignable(
+    client: PrismaClient | Prisma.TransactionClient,
+    organisationId: string,
+    propertyId: string,
+    accountId: string,
+  ) {
+    const account = await client.accountingAccount.findFirst({
+      where: { id: accountId, organisationId, propertyId },
+    });
+    if (!account) {
+      throw new NotFoundError('Account not found');
+    }
+    if (!account.isActive) {
+      throw new ConflictError(
+        `Account ${account.code} — ${account.name} is deactivated and can’t be assigned to a budget line.`,
+      );
+    }
+    return account;
   }
 
   /** Every mutating line/metadata method but create()/approve()/activate()/
@@ -205,15 +253,15 @@ export class FinancialBudgetsService {
       include: { lines: { orderBy: { sortOrder: 'asc' } } },
       orderBy: [{ financialYearStartDate: 'desc' }, { version: 'desc' }],
     });
-    const fundsById = await this.fundsById(propertyId);
-    return budgets.map((b) => this.toView(b, fundsById));
+    const lookups = await this.lookups(propertyId);
+    return budgets.map((b) => this.toView(b, lookups));
   }
 
   async getById(organisationId: string, propertyId: string, budgetId: string): Promise<BudgetView> {
     await this.getOwnedProperty(organisationId, propertyId);
     const budget = await this.getOwnedBudget(this.prisma, organisationId, propertyId, budgetId);
-    const fundsById = await this.fundsById(propertyId);
-    return this.toView(budget, fundsById);
+    const lookups = await this.lookups(propertyId);
+    return this.toView(budget, lookups);
   }
 
   /** The one place a FinancialBudget row is created for a brand-new
@@ -284,8 +332,8 @@ export class FinancialBudgetsService {
         title: `Budget drafted for ${formatDateOnly(start)} – ${formatDateOnly(end)}`,
       });
 
-      const fundsById = await this.fundsById(propertyId);
-      return this.toView({ ...budget, lines: [] }, fundsById);
+      const lookups = await this.lookups(propertyId);
+      return this.toView({ ...budget, lines: [] }, lookups);
     });
   }
 
@@ -308,8 +356,8 @@ export class FinancialBudgetsService {
         include: { lines: { orderBy: { sortOrder: 'asc' } } },
       });
 
-      const fundsById = await this.fundsById(propertyId);
-      return this.toView(updated, fundsById);
+      const lookups = await this.lookups(propertyId);
+      return this.toView(updated, lookups);
     });
   }
 
@@ -338,6 +386,10 @@ export class FinancialBudgetsService {
         throw new NotFoundError('Fund not found');
       }
 
+      if (input.accountId) {
+        await this.assertAccountAssignable(tx, organisationId, propertyId, input.accountId);
+      }
+
       const maxSortOrder = budget.lines.reduce((max, l) => Math.max(max, l.sortOrder), -1);
 
       await withPublicReference('BUDL', (publicReference) =>
@@ -348,18 +400,20 @@ export class FinancialBudgetsService {
             propertyId,
             budgetId: budget.id,
             financialFundId: fund.id,
+            lineType: input.lineType,
             category: input.category,
             description: input.description ?? null,
             plannedAmount: input.plannedAmount,
             notes: input.notes ?? null,
             sortOrder: maxSortOrder + 1,
+            accountId: input.accountId ?? null,
           },
         }),
       );
 
       const refreshed = await this.getOwnedBudget(tx, organisationId, propertyId, budgetId);
-      const fundsById = await this.fundsById(propertyId);
-      return this.toView(refreshed, fundsById);
+      const lookups = await this.lookups(propertyId);
+      return this.toView(refreshed, lookups);
     });
   }
 
@@ -382,20 +436,26 @@ export class FinancialBudgetsService {
         throw new NotFoundError('Budget line not found');
       }
 
+      if (input.accountId) {
+        await this.assertAccountAssignable(tx, organisationId, propertyId, input.accountId);
+      }
+
       await tx.financialBudgetLine.update({
         where: { id: line.id },
         data: {
+          lineType: input.lineType,
           category: input.category,
           description: input.description === undefined ? undefined : input.description,
           plannedAmount: input.plannedAmount,
           notes: input.notes === undefined ? undefined : input.notes,
           sortOrder: input.sortOrder,
+          accountId: input.accountId === undefined ? undefined : input.accountId,
         },
       });
 
       const refreshed = await this.getOwnedBudget(tx, organisationId, propertyId, budgetId);
-      const fundsById = await this.fundsById(propertyId);
-      return this.toView(refreshed, fundsById);
+      const lookups = await this.lookups(propertyId);
+      return this.toView(refreshed, lookups);
     });
   }
 
@@ -420,8 +480,8 @@ export class FinancialBudgetsService {
       await tx.financialBudgetLine.delete({ where: { id: line.id } });
 
       const refreshed = await this.getOwnedBudget(tx, organisationId, propertyId, budgetId);
-      const fundsById = await this.fundsById(propertyId);
-      return this.toView(refreshed, fundsById);
+      const lookups = await this.lookups(propertyId);
+      return this.toView(refreshed, lookups);
     });
   }
 
@@ -498,8 +558,8 @@ export class FinancialBudgetsService {
             : `Budget approved for ${formatDateOnly(budget.financialYearStartDate)} – ${formatDateOnly(budget.financialYearEndDate)}`,
       });
 
-      const fundsById = await this.fundsById(propertyId);
-      return this.toView(updated, fundsById);
+      const lookups = await this.lookups(propertyId);
+      return this.toView(updated, lookups);
     });
   }
 
@@ -532,8 +592,8 @@ export class FinancialBudgetsService {
 
       const budget = await this.getOwnedBudget(tx, organisationId, propertyId, budgetId);
       if (budget.status === 'ACTIVE') {
-        const fundsById = await this.fundsById(propertyId);
-        return this.toView(budget, fundsById);
+        const lookups = await this.lookups(propertyId);
+        return this.toView(budget, lookups);
       }
       if (budget.status !== 'APPROVED') {
         throw new ConflictError('Only an approved budget can be activated.');
@@ -555,6 +615,32 @@ export class FinancialBudgetsService {
         });
       }
 
+      // Closure fix: an APPROVED ancestor earlier in THIS budget's own
+      // revision chain (createRevision's `revisionOfBudgetId` link) that
+      // was itself never activated — e.g. v1 approved, then v2 created as
+      // its revision and activated directly — used to stay APPROVED
+      // forever, reading as if it were still a live candidate alongside
+      // the real ACTIVE budget. It never violated the one-ACTIVE-per-FY
+      // invariant (DB-enforced regardless), but it misrepresented history
+      // on any screen listing budgets by status. Only ancestors in this
+      // budget's own chain are touched — an unrelated APPROVED budget
+      // outside this lineage (if one somehow existed) is left alone, since
+      // activating this one says nothing about that one's validity.
+      // approvedAt/approvedByUserId/lines are never touched — only status
+      // and supersededAt — so the real historical approval record is
+      // preserved exactly as it happened, per Section 12's "never edit a
+      // past version" rule.
+      let ancestorId = budget.revisionOfBudgetId;
+      while (ancestorId) {
+        const ancestor = await tx.financialBudget.findUnique({ where: { id: ancestorId } });
+        if (!ancestor || ancestor.status !== 'APPROVED') break;
+        await tx.financialBudget.update({
+          where: { id: ancestor.id },
+          data: { status: 'SUPERSEDED', supersededAt: new Date() },
+        });
+        ancestorId = ancestor.revisionOfBudgetId;
+      }
+
       const updated = await tx.financialBudget.update({
         where: { id: budget.id },
         data: { status: 'ACTIVE', activatedAt: new Date() },
@@ -571,8 +657,8 @@ export class FinancialBudgetsService {
         title: `Budget activated for ${formatDateOnly(budget.financialYearStartDate)} – ${formatDateOnly(budget.financialYearEndDate)}`,
       });
 
-      const fundsById = await this.fundsById(propertyId);
-      return this.toView(updated, fundsById);
+      const lookups = await this.lookups(propertyId);
+      return this.toView(updated, lookups);
     });
   }
 
@@ -646,11 +732,13 @@ export class FinancialBudgetsService {
                 propertyId,
                 budgetId: revision.id,
                 financialFundId: line.financialFundId,
+                lineType: line.lineType,
                 category: line.category,
                 description: line.description,
                 plannedAmount: line.plannedAmount,
                 notes: line.notes,
                 sortOrder: line.sortOrder,
+                accountId: line.accountId,
               })),
             });
           }
@@ -666,8 +754,8 @@ export class FinancialBudgetsService {
           });
 
           const refreshed = await this.getOwnedBudget(tx, organisationId, propertyId, revision.id);
-          const fundsById = await this.fundsById(propertyId);
-          return this.toView(refreshed, fundsById);
+          const lookups = await this.lookups(propertyId);
+          return this.toView(refreshed, lookups);
         });
       } catch (err) {
         if (isUniqueConstraintViolation(err) && attempt < maxAttempts) continue;
@@ -678,41 +766,62 @@ export class FinancialBudgetsService {
     throw new Error('createRevision: exhausted retry attempts');
   }
 
-  private async fundsById(
-    propertyId: string,
-  ): Promise<Map<string, { publicReference: string; fundType: string; name: string }>> {
-    const funds = await this.prisma.financialFund.findMany({
-      where: { propertyId },
-      select: { id: true, publicReference: true, fundType: true, name: true },
-    });
-    return new Map(funds.map((f) => [f.id, f]));
+  private async lookups(propertyId: string): Promise<{
+    funds: Map<string, { publicReference: string; fundType: string; name: string }>;
+    accounts: Map<string, { code: string; name: string }>;
+  }> {
+    const [funds, accounts] = await Promise.all([
+      this.prisma.financialFund.findMany({
+        where: { propertyId },
+        select: { id: true, publicReference: true, fundType: true, name: true },
+      }),
+      this.prisma.accountingAccount.findMany({
+        where: { propertyId },
+        select: { id: true, code: true, name: true },
+      }),
+    ]);
+    return {
+      funds: new Map(funds.map((f) => [f.id, f])),
+      accounts: new Map(accounts.map((a) => [a.id, a])),
+    };
   }
 
   private toView(
     budget: BudgetWithLines,
-    fundsById: Map<string, { publicReference: string; fundType: string; name: string }>,
+    lookups: {
+      funds: Map<string, { publicReference: string; fundType: string; name: string }>;
+      accounts: Map<string, { code: string; name: string }>;
+    },
   ): BudgetView {
-    const totalBudget = budget.lines
-      .reduce((sum, l) => sum.plus(l.plannedAmount), new Prisma.Decimal(0))
-      .toFixed(2);
+    const totalBudgetedRevenue = budget.lines
+      .filter((l) => l.lineType === 'REVENUE')
+      .reduce((sum, l) => sum.plus(l.plannedAmount), new Prisma.Decimal(0));
+    const totalBudgetedExpenditure = budget.lines
+      .filter((l) => l.lineType === 'EXPENDITURE')
+      .reduce((sum, l) => sum.plus(l.plannedAmount), new Prisma.Decimal(0));
 
-    const totalsByFundMap = new Map<string, Prisma.Decimal>();
+    const revenueByFund = new Map<string, Prisma.Decimal>();
+    const expenditureByFund = new Map<string, Prisma.Decimal>();
     for (const line of budget.lines) {
-      const running = totalsByFundMap.get(line.financialFundId) ?? new Prisma.Decimal(0);
-      totalsByFundMap.set(line.financialFundId, running.plus(line.plannedAmount));
+      const bucket = line.lineType === 'REVENUE' ? revenueByFund : expenditureByFund;
+      if (line.lineType !== 'REVENUE' && line.lineType !== 'EXPENDITURE') continue;
+      const running = bucket.get(line.financialFundId) ?? new Prisma.Decimal(0);
+      bucket.set(line.financialFundId, running.plus(line.plannedAmount));
     }
-    const totalsByFund: BudgetFundTotal[] = Array.from(totalsByFundMap.entries()).map(
-      ([financialFundId, total]) => {
-        const fund = fundsById.get(financialFundId);
-        return {
-          financialFundId,
-          fundPublicReference: fund?.publicReference ?? '',
-          fundType: fund?.fundType ?? '',
-          fundName: fund?.name ?? 'Unknown fund',
-          total: total.toFixed(2),
-        };
-      },
-    );
+    const fundIds = new Set([...revenueByFund.keys(), ...expenditureByFund.keys()]);
+    const totalsByFund: BudgetFundTotal[] = Array.from(fundIds).map((financialFundId) => {
+      const fund = lookups.funds.get(financialFundId);
+      return {
+        financialFundId,
+        fundPublicReference: fund?.publicReference ?? '',
+        fundType: fund?.fundType ?? '',
+        fundName: fund?.name ?? 'Unknown fund',
+        totalRevenue: (revenueByFund.get(financialFundId) ?? new Prisma.Decimal(0)).toFixed(2),
+        totalExpenditure: (expenditureByFund.get(financialFundId) ?? new Prisma.Decimal(0)).toFixed(
+          2,
+        ),
+      };
+    });
 
     return {
       id: budget.id,
@@ -736,10 +845,13 @@ export class FinancialBudgetsService {
       revisionOfBudgetId: budget.revisionOfBudgetId,
       createdAt: budget.createdAt.toISOString(),
       updatedAt: budget.updatedAt.toISOString(),
-      totalBudget,
+      totalBudgetedRevenue: totalBudgetedRevenue.toFixed(2),
+      totalBudgetedExpenditure: totalBudgetedExpenditure.toFixed(2),
+      budgetedSurplusDeficit: totalBudgetedRevenue.minus(totalBudgetedExpenditure).toFixed(2),
       totalsByFund,
       lines: budget.lines.map((line) => {
-        const fund = fundsById.get(line.financialFundId);
+        const fund = lookups.funds.get(line.financialFundId);
+        const account = line.accountId ? lookups.accounts.get(line.accountId) : undefined;
         return {
           id: line.id,
           publicReference: line.publicReference,
@@ -747,11 +859,15 @@ export class FinancialBudgetsService {
           fundPublicReference: fund?.publicReference ?? '',
           fundType: fund?.fundType ?? '',
           fundName: fund?.name ?? 'Unknown fund',
+          lineType: line.lineType,
           category: line.category,
           description: line.description,
           plannedAmount: line.plannedAmount.toFixed(2),
           notes: line.notes,
           sortOrder: line.sortOrder,
+          accountId: line.accountId,
+          accountCode: account?.code ?? null,
+          accountName: account?.name ?? null,
         };
       }),
     };

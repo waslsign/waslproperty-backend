@@ -32,31 +32,49 @@ export const updateBudgetMetadataSchema = z.object({
 });
 export type UpdateBudgetMetadataInput = z.infer<typeof updateBudgetMetadataSchema>;
 
+/** M16.2.1 — see FinancialBudgetLine.lineType's doc comment. Defaults to
+ * EXPENDITURE, matching every pre-M16.2.1 line's backfilled value, so an
+ * existing integration that never sends this field keeps behaving exactly
+ * as before. */
+export const budgetLineTypeSchema = z.enum([
+  'REVENUE',
+  'EXPENDITURE',
+  'TRANSFER',
+  'RESERVE_CONTRIBUTION',
+  'OTHER',
+]);
+
 /** A budget line's planned amount is validated as a non-negative JS number
  * at this boundary (z.coerce.number(), same pattern as M16.1's
  * fundOpeningBalanceInputSchema), then persisted as Prisma.Decimal — never
  * a raw float carried through any arithmetic. A $0 line is valid (see the
  * FinancialBudgetLine.plannedAmount doc comment); only negative is
- * rejected. */
+ * rejected. `accountId` is optional (M16.2.1) — see
+ * FinancialBudgetLine.accountId's doc comment. */
 export const addBudgetLineSchema = z.object({
   financialFundId: z.string().min(1),
+  lineType: budgetLineTypeSchema.default('EXPENDITURE'),
   category: z.string().trim().min(1).max(160),
   description: z.string().trim().max(500).optional(),
   plannedAmount: z.coerce.number().nonnegative(),
   notes: z.string().trim().max(500).optional(),
+  accountId: z.string().min(1).optional(),
 });
 export type AddBudgetLineInput = z.infer<typeof addBudgetLineSchema>;
 
 /** Every field optional — a line can be edited one field at a time.
  * financialFundId is never changed by update (moving a line to a different
  * fund is a delete + re-add, so the fund a line was budgeted against is
- * never ambiguous in history); budgetId is implicit from the route. */
+ * never ambiguous in history); budgetId is implicit from the route.
+ * `accountId: null` clears a previously-set account reference. */
 export const updateBudgetLineSchema = z.object({
+  lineType: budgetLineTypeSchema.optional(),
   category: z.string().trim().min(1).max(160).optional(),
   description: z.string().trim().max(500).nullable().optional(),
   plannedAmount: z.coerce.number().nonnegative().optional(),
   notes: z.string().trim().max(500).nullable().optional(),
   sortOrder: z.number().int().nonnegative().optional(),
+  accountId: z.string().min(1).nullable().optional(),
 });
 export type UpdateBudgetLineInput = z.infer<typeof updateBudgetLineSchema>;
 
