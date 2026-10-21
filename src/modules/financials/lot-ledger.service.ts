@@ -81,7 +81,19 @@ export type LotLedgerRowType =
   | 'REGULAR_LEVY_CHARGE'
   | 'SPECIAL_LEVY_CHARGE'
   | 'LEVY_REVERSAL'
-  | 'LEVY_ADJUSTMENT';
+  | 'LEVY_ADJUSTMENT'
+  /** M16.5 — money received against this lot (Dr FUND_CASH / Cr
+   * UNAPPLIED_CASH at the GL level) — a real credit toward what the owner
+   * owes, posted the moment it's recorded, whether or not it has been
+   * allocated to a specific charge yet. */
+  | 'RECEIPT'
+  | 'RECEIPT_REVERSAL'
+  /** M16.5 — purely informational: which already-counted receipt money
+   * was matched to which charge. Always debit=credit=0.00 — the credit
+   * was already counted on the RECEIPT row; this row would double-count
+   * it if it carried any value of its own. Shown for traceability only
+   * (see LotLevyCharge.status for the resulting PART_PAID/PAID state). */
+  | 'PAYMENT_ALLOCATION';
 
 export type LotBalanceClassification = 'AMOUNT_OWING' | 'CREDIT' | 'SETTLED';
 
@@ -121,6 +133,10 @@ export interface LotFundBreakdownEntry {
   totalIssuedLevyCharges: string;
   totalReversedCharges: string;
   totalAdjustments: string;
+  /** M16.5 — sum of non-reversed receipts recorded against this fund for
+   * this lot. Already reflected in `netBalance` (never a double-count —
+   * see RECEIPT/PAYMENT_ALLOCATION's own doc comments). */
+  totalReceipts: string;
   netBalance: string;
 }
 
@@ -136,6 +152,12 @@ export interface LotFinancialAccountView {
   totalIssuedLevyCharges: string;
   totalReversedCharges: string;
   totalAdjustments: string;
+  /** M16.5 — sum of non-reversed receipts recorded against this lot,
+   * across every fund. */
+  totalReceipts: string;
+  /** M16.5 — the portion of totalReceipts not yet allocated to any
+   * charge (an advance/prepayment, if positive). */
+  totalUnapplied: string;
   currentBalance: string;
   balanceClassification: LotBalanceClassification;
   fundBreakdown: LotFundBreakdownEntry[];
@@ -171,8 +193,11 @@ const TYPE_PRIORITY: Record<LotLedgerRowType, number> = {
   OPENING_POSITION: 0,
   REGULAR_LEVY_CHARGE: 1,
   SPECIAL_LEVY_CHARGE: 1,
-  LEVY_ADJUSTMENT: 2,
-  LEVY_REVERSAL: 3,
+  RECEIPT: 2,
+  LEVY_ADJUSTMENT: 3,
+  PAYMENT_ALLOCATION: 4,
+  LEVY_REVERSAL: 5,
+  RECEIPT_REVERSAL: 5,
 };
 
 type SpaceRecord = { id: string; propertyId: string; organisationId: string; strataClassification: string; lotNumber: string | null; code: string; name: string };
@@ -244,7 +269,7 @@ export class LotLedgerService {
    * (and therefore can never disagree with itself) between the financial
    * account summary, the ledger listing and the statement. */
   private async buildFullLedger(organisationId: string, propertyId: string, spaceId: string): Promise<LotLedgerRow[]> {
-    const [opening, charges] = await Promise.all([
+    const [opening, charges, receipts] = await Promise.all([
       this.prisma.lotOpeningPosition.findUnique({ where: { spaceId } }),
       this.prisma.lotLevyCharge.findMany({
         where: { organisationId, propertyId, spaceId },
@@ -253,6 +278,17 @@ export class LotLedgerService {
           levySchedule: { select: { id: true, name: true, kind: true } },
           levyInstallment: { select: { id: true, sortOrder: true, issuedAt: true, reversedAt: true, reversedByUserId: true, reversalReason: true } },
           fund: { select: { id: true, name: true } },
+        },
+        orderBy: { createdAt: 'asc' },
+      }),
+      // M16.5 — see this file's top-of-file note on why a Receipt row
+      // carries the real credit and a PaymentAllocation row never does
+      // (avoiding double-counting the same money twice).
+      this.prisma.receipt.findMany({
+        where: { organisationId, propertyId, spaceId },
+        include: {
+          fund: { select: { id: true, name: true } },
+          allocations: { include: { lotLevyCharge: { select: { publicReference: true } } }, orderBy: { createdAt: 'asc' } },
         },
         orderBy: { createdAt: 'asc' },
       }),
@@ -357,6 +393,82 @@ export class LotLedgerService {
       }
     }
 
+    for (const receipt of receipts) {
+      // The real credit — counted once, here, regardless of whether it
+      // has been allocated to anything yet (see this file's top-of-file
+      // note and LotLedgerRowType.RECEIPT's own doc comment).
+      raw.push({
+        id: `receipt:${receipt.id}`,
+        date: receipt.postingDate,
+        postedAt: receipt.createdAt,
+        type: 'RECEIPT',
+        description: `Receipt recorded (${receipt.paymentMethod}${receipt.paymentReference ? ` — ${receipt.paymentReference}` : ''})`,
+        financialFundId: receipt.financialFundId,
+        fundName: receipt.fund.name,
+        debit: new Prisma.Decimal(0),
+        credit: receipt.amount,
+        sourceReference: receipt.publicReference,
+        levyScheduleId: null,
+        levyScheduleName: null,
+        levyInstallmentId: null,
+        installmentNumber: null,
+        reversalOfSourceReference: null,
+        reversalReason: null,
+        createdByUserId: receipt.createdByUserId,
+      });
+
+      if (receipt.status === 'REVERSED' && receipt.reversedAt) {
+        raw.push({
+          id: `receipt-reversal:${receipt.id}`,
+          date: receipt.reversedAt,
+          postedAt: receipt.reversedAt,
+          type: 'RECEIPT_REVERSAL',
+          description: `Reversal of receipt ${receipt.publicReference}`,
+          financialFundId: receipt.financialFundId,
+          fundName: receipt.fund.name,
+          debit: receipt.amount,
+          credit: new Prisma.Decimal(0),
+          sourceReference: `${receipt.publicReference}-REV`,
+          levyScheduleId: null,
+          levyScheduleName: null,
+          levyInstallmentId: null,
+          installmentNumber: null,
+          reversalOfSourceReference: receipt.publicReference,
+          reversalReason: receipt.reversalReason,
+          createdByUserId: receipt.reversedByUserId,
+        });
+      }
+
+      for (const allocation of receipt.allocations) {
+        // Deliberately debit=credit=0 — see PAYMENT_ALLOCATION's own doc
+        // comment on LotLedgerRowType. Shown regardless of the
+        // allocation's own status (APPLIED/REVERSED) for full
+        // traceability, same as every other row type in this ledger.
+        raw.push({
+          id: `allocation:${allocation.id}`,
+          date: allocation.createdAt,
+          postedAt: allocation.createdAt,
+          type: 'PAYMENT_ALLOCATION',
+          description:
+            allocation.status === 'REVERSED'
+              ? `Allocation of ${receipt.publicReference} to charge ${allocation.lotLevyCharge.publicReference} reversed — ${allocation.amount.toFixed(2)} returned to unapplied`
+              : `${allocation.amount.toFixed(2)} of ${receipt.publicReference} applied to charge ${allocation.lotLevyCharge.publicReference}`,
+          financialFundId: receipt.financialFundId,
+          fundName: receipt.fund.name,
+          debit: new Prisma.Decimal(0),
+          credit: new Prisma.Decimal(0),
+          sourceReference: allocation.publicReference,
+          levyScheduleId: null,
+          levyScheduleName: null,
+          levyInstallmentId: null,
+          installmentNumber: null,
+          reversalOfSourceReference: allocation.status === 'REVERSED' ? allocation.publicReference : null,
+          reversalReason: allocation.status === 'REVERSED' ? allocation.reversalReason : null,
+          createdByUserId: allocation.createdByUserId,
+        });
+      }
+    }
+
     raw.sort((a, b) => {
       const dateDiff = a.date.getTime() - b.date.getTime();
       if (dateDiff !== 0) return dateDiff;
@@ -404,12 +516,23 @@ export class LotLedgerService {
       throw new ConflictError('Start financial setup for this property before viewing a lot financial account.');
     }
 
-    const [ownerName, opening, rows, funds] = await Promise.all([
+    const [ownerName, opening, rows, funds, receipts] = await Promise.all([
       this.getOwnerName(propertyId, spaceId, includeOwnerNames),
       this.prisma.lotOpeningPosition.findUnique({ where: { spaceId } }),
       this.buildFullLedger(organisationId, propertyId, spaceId),
       this.prisma.financialFund.findMany({ where: { propertyId }, select: { id: true, name: true } }),
+      this.prisma.receipt.findMany({
+        where: { organisationId, propertyId, spaceId, status: 'RECORDED' },
+        include: { allocations: { where: { status: 'APPLIED' } } },
+      }),
     ]);
+
+    const totalReceipts = receipts.reduce((sum, r) => sum.plus(r.amount), new Prisma.Decimal(0));
+    const totalApplied = receipts.reduce(
+      (sum, r) => sum.plus(r.allocations.reduce((s, a) => s.plus(a.amount), new Prisma.Decimal(0))),
+      new Prisma.Decimal(0),
+    );
+    const totalUnapplied = totalReceipts.minus(totalApplied);
 
     const openingPosition: LotOpeningPositionView = {
       recorded: Boolean(opening),
@@ -441,13 +564,17 @@ export class LotLedgerService {
       const adjustments = sumRows(fundRows, (r) => r.type === 'LEVY_ADJUSTMENT', 'debit').minus(
         sumRows(fundRows, (r) => r.type === 'LEVY_ADJUSTMENT', 'credit'),
       );
-      const net = issued.minus(reversed).plus(adjustments);
+      const receiptsForFund = sumRows(fundRows, (r) => r.type === 'RECEIPT', 'credit').minus(
+        sumRows(fundRows, (r) => r.type === 'RECEIPT_REVERSAL', 'debit'),
+      );
+      const net = issued.minus(reversed).plus(adjustments).minus(receiptsForFund);
       return {
         financialFundId: fund.id,
         fundName: fund.name,
         totalIssuedLevyCharges: issued.toFixed(2),
         totalReversedCharges: reversed.toFixed(2),
         totalAdjustments: adjustments.toFixed(2),
+        totalReceipts: receiptsForFund.toFixed(2),
         netBalance: net.toFixed(2),
       };
     });
@@ -466,6 +593,8 @@ export class LotLedgerService {
       totalIssuedLevyCharges: totalIssuedLevyCharges.toFixed(2),
       totalReversedCharges: totalReversedCharges.toFixed(2),
       totalAdjustments: totalAdjustments.toFixed(2),
+      totalReceipts: totalReceipts.toFixed(2),
+      totalUnapplied: totalUnapplied.toFixed(2),
       currentBalance: currentBalance.toFixed(2),
       balanceClassification,
       fundBreakdown,

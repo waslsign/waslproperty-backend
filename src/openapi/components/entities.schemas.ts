@@ -645,6 +645,9 @@ export const lotLedgerRowTypeSchema = z.enum([
   'SPECIAL_LEVY_CHARGE',
   'LEVY_REVERSAL',
   'LEVY_ADJUSTMENT',
+  'RECEIPT',
+  'RECEIPT_REVERSAL',
+  'PAYMENT_ALLOCATION',
 ]);
 
 export const lotLedgerRowSchema = registry.register(
@@ -695,6 +698,9 @@ export const lotFundBreakdownEntrySchema = registry.register(
     totalIssuedLevyCharges: z.string(),
     totalReversedCharges: z.string(),
     totalAdjustments: z.string(),
+    totalReceipts: z.string().openapi({
+      description: 'Already netted into netBalance — never double-counted against PAYMENT_ALLOCATION rows (M16.5).',
+    }),
     netBalance: z.string(),
   }),
 );
@@ -715,6 +721,10 @@ export const lotFinancialAccountSchema = registry.register(
     totalIssuedLevyCharges: z.string(),
     totalReversedCharges: z.string(),
     totalAdjustments: z.string(),
+    totalReceipts: z.string().openapi({ description: 'Sum of non-reversed Receipt amounts (M16.5), regardless of allocation status.' }),
+    totalUnapplied: z.string().openapi({
+      description: 'totalReceipts minus applied allocations — an honest advance/credit balance, never force-allocated (M16.5).',
+    }),
     currentBalance: z.string(),
     balanceClassification: z.enum(['AMOUNT_OWING', 'CREDIT', 'SETTLED']),
     fundBreakdown: z.array(lotFundBreakdownEntrySchema),
@@ -754,6 +764,296 @@ export const lotStatementSchema = registry.register(
     totalCredits: z.string(),
     closingBalance: z.string(),
     generatedAt: z.string().datetime(),
+  }),
+);
+
+// --- M16.5 — Receipts & Payment Allocation ---
+
+export const receiptPaymentMethodSchema = z.enum(['BANK_TRANSFER', 'CASH', 'CHEQUE', 'OTHER']);
+export const receiptStatusSchema = z.enum(['RECORDED', 'REVERSED']);
+export const paymentAllocationStatusSchema = z.enum(['APPLIED', 'REVERSED']);
+
+export const paymentAllocationViewSchema = registry.register(
+  'PaymentAllocationView',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'PAL-9F3K2L' }),
+    receiptId: z.string(),
+    receiptPublicReference: z.string(),
+    lotLevyChargeId: z.string(),
+    lotLevyChargePublicReference: z.string(),
+    amount: z.string(),
+    status: paymentAllocationStatusSchema,
+    journalEntryId: z.string(),
+    reversedByUserId: z.string().nullable(),
+    reversedAt: z.string().datetime().nullable(),
+    reversalReason: z.string().nullable(),
+    createdByUserId: z.string(),
+    createdAt: z.string().datetime(),
+  }),
+);
+
+export const receiptViewSchema = registry.register(
+  'ReceiptView',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'RCT-4H8D1Q' }),
+    propertyId: z.string(),
+    spaceId: z.string(),
+    lotLabel: z.string(),
+    ownerName: z.string().nullable().openapi({
+      description: 'Present only when the caller independently holds people.view on top of financials.view.',
+    }),
+    financialFundId: z.string(),
+    fundName: z.string(),
+    destinationAccountId: z.string(),
+    destinationAccountCode: z.string(),
+    destinationAccountName: z.string(),
+    amount: z.string(),
+    appliedAmount: z.string().openapi({ description: 'Derived: sum of this receipt\'s APPLIED allocations.' }),
+    unappliedAmount: z.string().openapi({ description: 'Derived: amount minus appliedAmount — the honest advance/credit balance.' }),
+    currencyCode: z.string(),
+    paymentMethod: receiptPaymentMethodSchema,
+    paymentReference: z.string().nullable(),
+    description: z.string().nullable(),
+    receiptDate: z.string().openapi({ example: '2026-10-15' }),
+    postingDate: z.string().openapi({ example: '2026-10-15' }),
+    externalBankReference: z.string().nullable().openapi({
+      description: 'A supplied reference only — recording a receipt never implies it is bank-reconciled.',
+    }),
+    status: receiptStatusSchema,
+    journalEntryId: z.string(),
+    allocations: z.array(paymentAllocationViewSchema),
+    reversedByUserId: z.string().nullable(),
+    reversedAt: z.string().datetime().nullable(),
+    reversalReason: z.string().nullable(),
+    createdByUserId: z.string(),
+    createdAt: z.string().datetime(),
+  }),
+);
+
+export const receiptListSchema = registry.register(
+  'ReceiptList',
+  z.object({ items: z.array(receiptViewSchema) }),
+);
+
+// --- M16.6 — Arrears Management (ADR-027) ---
+
+export const ageingBucketSchema = registry.register(
+  'AgeingBucket',
+  z.enum(['CURRENT', 'DAYS_1_30', 'DAYS_31_60', 'DAYS_61_90', 'DAYS_90_PLUS']),
+);
+
+export const collectionCaseStatusSchema = z.enum([
+  'OPEN',
+  'IN_PROGRESS',
+  'AWAITING_PAYMENT',
+  'ESCALATED',
+  'RESOLVED',
+  'CLOSED',
+]);
+
+export const paymentReminderStatusSchema = z.enum(['DRAFT', 'CANCELLED', 'SENT', 'FAILED']);
+
+export const chargeArrearsViewSchema = registry.register(
+  'ChargeArrearsView',
+  z.object({
+    lotLevyChargeId: z.string(),
+    publicReference: z.string().openapi({ example: 'LVC-7F2K9' }),
+    levyScheduleId: z.string(),
+    levyScheduleName: z.string(),
+    levyInstallmentId: z.string(),
+    dueDate: z.string().openapi({ example: '2026-10-15' }),
+    financialFundId: z.string(),
+    fundName: z.string(),
+    originalAmount: z.string(),
+    adjustmentsTotal: z.string(),
+    effectiveAmount: z.string(),
+    appliedAmount: z.string(),
+    outstandingAmount: z.string(),
+    isOverdue: z.boolean(),
+    daysOverdue: z.number().int(),
+    ageingBucket: ageingBucketSchema,
+  }),
+);
+
+export const lotArrearsSummarySchema = registry.register(
+  'LotArrearsSummary',
+  z.object({
+    spaceId: z.string(),
+    lotLabel: z.string(),
+    ownerName: z.string().nullable().openapi({
+      description: 'Present only when the caller independently holds people.view on top of financials.view.',
+    }),
+    financialFundId: z.string().nullable(),
+    totalOutstanding: z.string(),
+    totalOverdue: z.string(),
+    oldestDueDate: z.string().nullable(),
+    maxDaysOverdue: z.number().int(),
+    ageingBucket: ageingBucketSchema.nullable(),
+    unappliedCredits: z.string().openapi({
+      description: 'Never netted into totalOverdue/totalOutstanding — an honest advance, never force-allocated.',
+    }),
+    collectionStatus: z.union([collectionCaseStatusSchema, z.literal('NONE')]),
+    collectionCaseId: z.string().nullable(),
+    lastActivityAt: z.string().nullable(),
+  }),
+);
+
+export const arrearsRegisterSchema = registry.register(
+  'ArrearsRegister',
+  z.object({ items: z.array(lotArrearsSummarySchema) }),
+);
+
+export const arrearsSummarySchema = registry.register(
+  'ArrearsSummary',
+  z.object({
+    propertyId: z.string(),
+    asOfDate: z.string().openapi({ example: '2026-10-21' }),
+    currencyCode: z.string().nullable(),
+    totalOverdue: z.string(),
+    totalCurrentOutstanding: z.string(),
+    totalUnappliedCredits: z.string(),
+    lotsInArrearsCount: z.number().int(),
+    ageingBuckets: z.record(ageingBucketSchema, z.string()),
+    overdueByFund: z.array(z.object({ financialFundId: z.string(), fundName: z.string(), totalOverdue: z.string() })),
+  }),
+);
+
+export const openingBalanceArrearsSchema = registry.register(
+  'OpeningBalanceArrears',
+  z.object({
+    amountOwing: z.string(),
+    creditBalance: z.string(),
+    asOfDate: z.string(),
+    ageingBucket: z.literal('UNKNOWN').openapi({
+      description: 'M16.1 opening balances carry no original levy due date — never fabricated, never aged.',
+    }),
+  }),
+);
+
+export const lotArrearsDetailSchema = registry.register(
+  'LotArrearsDetail',
+  z.object({
+    spaceId: z.string(),
+    propertyId: z.string(),
+    lotLabel: z.string(),
+    ownerName: z.string().nullable(),
+    asOfDate: z.string(),
+    totalOutstanding: z.string(),
+    totalOverdue: z.string(),
+    unappliedCredits: z.string(),
+    charges: z.array(chargeArrearsViewSchema),
+    openingPosition: openingBalanceArrearsSchema.nullable(),
+    receipts: z.array(
+      z.object({
+        id: z.string(),
+        publicReference: z.string(),
+        amount: z.string(),
+        status: z.string(),
+        receiptDate: z.string(),
+        allocations: z.array(
+          z.object({
+            id: z.string(),
+            publicReference: z.string(),
+            lotLevyChargePublicReference: z.string(),
+            amount: z.string(),
+            status: z.string(),
+          }),
+        ),
+      }),
+    ),
+    collectionCases: z.array(
+      z.object({
+        id: z.string(),
+        publicReference: z.string(),
+        status: collectionCaseStatusSchema,
+        assignedToUserId: z.string().nullable(),
+        nextFollowUpDate: z.string().nullable(),
+        openedAt: z.string().datetime(),
+        closedAt: z.string().datetime().nullable(),
+        closeReason: z.string().nullable(),
+        notes: z.array(
+          z.object({
+            id: z.string(),
+            body: z.string(),
+            contactAttempted: z.boolean(),
+            contactMethod: z.string().nullable(),
+            createdByUserId: z.string(),
+            createdAt: z.string().datetime(),
+          }),
+        ),
+        reminders: z.array(
+          z.object({
+            id: z.string(),
+            publicReference: z.string(),
+            status: paymentReminderStatusSchema,
+            asOfDate: z.string(),
+            totalAmountOwing: z.string(),
+            generatedAt: z.string().datetime(),
+          }),
+        ),
+      }),
+    ),
+  }),
+);
+
+export const collectionCaseSchema = registry.register(
+  'CollectionCase',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'COL-3SB5FG' }),
+    organisationId: z.string(),
+    propertyId: z.string(),
+    spaceId: z.string(),
+    status: collectionCaseStatusSchema,
+    assignedToUserId: z.string().nullable(),
+    nextFollowUpDate: z.string().datetime().nullable(),
+    openedByUserId: z.string(),
+    openedAt: z.string().datetime(),
+    closedByUserId: z.string().nullable(),
+    closedAt: z.string().datetime().nullable(),
+    closeReason: z.string().nullable(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  }),
+);
+
+export const collectionNoteSchema = registry.register(
+  'CollectionNote',
+  z.object({
+    id: z.string(),
+    collectionCaseId: z.string(),
+    organisationId: z.string(),
+    propertyId: z.string(),
+    body: z.string(),
+    contactAttempted: z.boolean(),
+    contactMethod: z.string().nullable(),
+    createdByUserId: z.string(),
+    createdAt: z.string().datetime(),
+  }),
+);
+
+export const paymentReminderSchema = registry.register(
+  'PaymentReminder',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'PRM-2C7Q2M' }),
+    organisationId: z.string(),
+    propertyId: z.string(),
+    spaceId: z.string(),
+    collectionCaseId: z.string().nullable(),
+    status: paymentReminderStatusSchema,
+    asOfDate: z.string(),
+    totalAmountOwing: z.string(),
+    currencyCode: z.string(),
+    content: z.record(z.string(), z.unknown()).openapi({
+      description: 'A point-in-time snapshot for preview/print only — never read back as current arrears truth.',
+    }),
+    generatedByUserId: z.string(),
+    generatedAt: z.string().datetime(),
+    cancelledByUserId: z.string().nullable(),
+    cancelledAt: z.string().datetime().nullable(),
   }),
 );
 

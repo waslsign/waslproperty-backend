@@ -79,6 +79,26 @@ import {
   getLotLedger,
   getLotStatement,
 } from '../financials/lot-ledger.controller.js';
+import {
+  createAllocation,
+  getReceipt,
+  listReceipts,
+  recordReceipt,
+  reverseAllocation,
+  reverseReceipt,
+} from '../financials/receipts.controller.js';
+import {
+  addCollectionNote,
+  cancelReminder,
+  createCollectionCase,
+  draftReminder,
+  getArrearsRegister,
+  getArrearsSummary,
+  getCollectionCase,
+  getLotArrearsDetail,
+  getReminder,
+  updateCollectionCase,
+} from '../financials/arrears.controller.js';
 import { createSpaceForProperty, listSpacesForProperty } from '../spaces/spaces.controller.js';
 import {
   bulkSetStrataLots,
@@ -578,4 +598,115 @@ propertiesRouter.get(
   resolveSpaceReference('spaceId'),
   requireCapability('financials.view', fromParam('propertyId')),
   asyncHandler(getLotStatement),
+);
+
+// Receipts & Payment Allocation (M16.5, ADR-026) — recording a receipt or
+// posting/reversing an allocation is itself an immediate ledger posting
+// (no separate "draft" step), so these follow the same financials.approve
+// bar as issue()/reverseInstallment() in the levy section above, never
+// financials.manage.
+propertiesRouter.post(
+  '/:propertyId/financials/receipts',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(recordReceipt),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/receipts',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listReceipts),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/receipts/:receiptId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getReceipt),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/receipts/:receiptId/reverse',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(reverseReceipt),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/receipts/:receiptId/allocations',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(createAllocation),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/payment-allocations/:allocationId/reverse',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(reverseAllocation),
+);
+
+// M16.6 — Arrears Management (ADR-027). Summary/register/lot-detail are
+// pure reads (financials.view); collection-case/note/reminder writes are
+// reversible workflow data, never a ledger posting, so they're gated on
+// financials.manage (not financials.approve, which is reserved for
+// immutable-ledger actions — see that capability's own doc comment).
+propertiesRouter.get(
+  '/:propertyId/financials/arrears/summary',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getArrearsSummary),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/arrears/register',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getArrearsRegister),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/arrears/lots/:spaceId',
+  resolvePropertyReference('propertyId'),
+  resolveSpaceReference('spaceId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getLotArrearsDetail),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/lots/:spaceId/collection-cases',
+  resolvePropertyReference('propertyId'),
+  resolveSpaceReference('spaceId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(createCollectionCase),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/arrears/collection-cases/:caseId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getCollectionCase),
+);
+propertiesRouter.patch(
+  '/:propertyId/financials/arrears/collection-cases/:caseId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(updateCollectionCase),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/collection-cases/:caseId/notes',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(addCollectionNote),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/lots/:spaceId/reminders',
+  resolvePropertyReference('propertyId'),
+  resolveSpaceReference('spaceId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(draftReminder),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/arrears/reminders/:reminderId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getReminder),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/:reminderId/cancel',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(cancelReminder),
 );

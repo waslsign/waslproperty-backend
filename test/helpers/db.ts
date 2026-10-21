@@ -71,6 +71,9 @@ export async function resetDb() {
     // financial_budgets/journal_entries (nullable). All four must go
     // before financial_budget_lines/financial_budgets below and before
     // journal_lines/journal_entries further down.
+    // M16.5 — payment_allocations reference lot_levy_charges (and
+    // receipts/journal_entries) — must go before lot_levy_charges below.
+    testPrisma.paymentAllocation.deleteMany(),
     testPrisma.levyAdjustment.deleteMany(),
     testPrisma.lotLevyCharge.deleteMany(),
     testPrisma.levyInstallment.deleteMany(),
@@ -90,6 +93,11 @@ export async function resetDb() {
     // financial_funds; accounting_periods reference financial_configurations.
     // All four must go before accounting_accounts/financial_funds/
     // financial_configurations below.
+    // M16.5 — receipts reference journal_entries/spaces/financial_funds/
+    // accounting_accounts/financial_configurations (payment_allocations,
+    // which also reference receipts, are already deleted above, before
+    // lot_levy_charges) — must go before journal_entries/journal_lines.
+    testPrisma.receipt.deleteMany(),
     testPrisma.journalLine.deleteMany(),
     testPrisma.journalEntry.deleteMany(),
     testPrisma.postingProfileRule.deleteMany(),
@@ -102,6 +110,12 @@ export async function resetDb() {
     testPrisma.lotOpeningPosition.deleteMany(),
     testPrisma.financialFund.deleteMany(),
     testPrisma.financialConfiguration.deleteMany(),
+    // M16.6 — collection_notes/payment_reminders reference collection_cases
+    // (and property/space/user, never journal_entries) — both must go
+    // before collection_cases, and all three before space/property below.
+    testPrisma.collectionNote.deleteMany(),
+    testPrisma.paymentReminder.deleteMany(),
+    testPrisma.collectionCase.deleteMany(),
     testPrisma.space.deleteMany(),
     testPrisma.property.deleteMany(),
     testPrisma.session.deleteMany(),

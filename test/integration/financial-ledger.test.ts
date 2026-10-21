@@ -462,6 +462,58 @@ describe('M16.2.2 General Ledger & Posting Engine', () => {
       const count = await testPrisma.journalEntry.count({ where: { propertyId: property.id } });
       expect(count).toBe(1);
     });
+
+    /** Models the exact shape of the M16.5 historical correction posted
+     * against Harbour View Strata (ADR-026/027 traceability entry): a
+     * two-line manual journal fixing a wrong-direction posting between a
+     * receivable-like asset and a liability-like account, identified by a
+     * stable sourceId so a retried request can never double-post it. */
+    it('a historical correcting journal is idempotent — a retry returns the original, never a duplicate', async () => {
+      const { accessToken } = await registerAuOrg();
+      const { property, administrationFundId } = await createActiveFinancialProperty(accessToken);
+      const receivable = await createAccount(accessToken, property.id, {
+        code: '110000',
+        name: 'Lot Levy Receivable',
+        classification: 'ASSET',
+      });
+      const unapplied = await createAccount(accessToken, property.id, {
+        code: '220000',
+        name: 'Unapplied Owner Cash',
+        classification: 'LIABILITY',
+      });
+      await createPeriod(accessToken, property.id, '2026-10-01', '2026-12-31');
+
+      const correction = {
+        effectiveDate: '2026-10-21',
+        sourceId: 'TEST-POSTING-DIRECTION-CORRECTION',
+        narration: 'Correction of a wrong-direction payment-allocation posting.',
+        lines: [
+          { accountId: unapplied.id, financialFundId: administrationFundId, debit: 15263.16 },
+          { accountId: receivable.id, financialFundId: administrationFundId, credit: 15263.16 },
+        ],
+      };
+
+      const first = await postJournal(accessToken, property.id, correction);
+      expect(first.status).toBe(201);
+
+      const retry = await postJournal(accessToken, property.id, correction);
+      expect(retry.status).toBe(201);
+      expect(retry.body.id).toBe(first.body.id);
+
+      const manualJournals = await testPrisma.journalEntry.count({
+        where: { propertyId: property.id, sourceType: 'MANUAL', sourceId: 'TEST-POSTING-DIRECTION-CORRECTION' },
+      });
+      expect(manualJournals).toBe(1);
+
+      const tb = await request(app)
+        .get(`/api/v1/properties/${property.id}/financials/trial-balance`)
+        .set(authHeader(accessToken));
+      const receivableRow = tb.body.items.find((r: { accountId: string }) => r.accountId === receivable.id);
+      const unappliedRow = tb.body.items.find((r: { accountId: string }) => r.accountId === unapplied.id);
+      // Posted exactly once, even though postJournal was called twice.
+      expect(receivableRow.totalCredit).toBe('15263.16');
+      expect(unappliedRow.totalDebit).toBe('15263.16');
+    });
   });
 
   describe('transaction rollback', () => {

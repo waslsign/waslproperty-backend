@@ -21,20 +21,49 @@ scope, reason given).
 | FIN-010 | Opening journal migration | **M16.2.2** | **Done** | `opening-journal.service.ts` | `financial-ledger.test.ts` (balanced generation, idempotent retry, unresolved/mismatched lot rejection, posting-profile-not-configured block) | ADR-018 (D8), ADR-020 |
 | FIN-011 | Regular levy schedules and allocations | **M16.3** | **Done** | `levies.service.ts`, `levy-allocation.ts` | `financial-levies.test.ts` (UOE rounding, budget-derived total, idempotency, concurrency, closed-period rejection) | ADR-022, ADR-023 |
 | FIN-012 | Special levies and adjustments | **M16.3** | **Done** | `levies.service.ts` (`createSpecial`, `createAdjustment`) | `financial-levies.test.ts` (approval evidence required, adjustment never edits original amount, idempotent) | ADR-023 |
-| FIN-013 | Lot financial subledger | **M16.3 partial** | **Partial** | `LotLevyCharge` — issuance only; receipts/running position are M16.4 | `financial-levies.test.ts` (charges reconcile exactly to the aggregate journal) | ADR-023 |
-| FIN-014 | Owner receipts and allocations | M16.4 | Planned | — | — | ADR-018 (D5 recommendation) |
-| FIN-015 | PO commitments and budget reservations | M16.5 | Planned | — | — | ADR-018 (D4 recommendation) |
-| FIN-016 | Supplier invoices and AP | M16.5 | Planned | — | — | — |
-| FIN-017 | Budget actual/committed/available dashboard | M16.5 | Planned | — | — | ADR-018 (D4) |
-| FIN-018 | Bank accounts and statement import | M16.6 | Planned | — | — | — |
-| FIN-019 | Bank reconciliation | M16.6 | Planned | — | — | — |
-| FIN-020 | GST and tax treatment | M16.8 | Planned | — | — | ADR-018 (D6 recommendation, mandatory validation flagged) |
-| FIN-021 | Financial statements and owner statements | M16.8 | Planned | — | — | — |
-| FIN-022 | Year-end close and rollover | M16.8 | Planned | — | — | ADR-018 (D9 recommendation) |
-| FIN-023 | Arrears, interest and collections | M16.7 | Planned | — | — | — |
-| FIN-024 | External payment/bank/accounting adapters | M16.9 | Planned | — | — | — |
-| FIN-025 | Financial AI assistance | M16.9 | Deferred | — | — | AI must not auto-post; no change this milestone |
+| FIN-013 | Lot financial subledger | **M16.3 partial** | **Partial** | `LotLevyCharge` — issuance only; receipts/running position are **M16.5** (renumbered — see "Milestone renumbering" below) | `financial-levies.test.ts` (charges reconcile exactly to the aggregate journal) | ADR-023 |
+| FIN-014 | Owner receipts and allocations | **M16.5** (was M16.4) | **Done** (backend + tests; Stitch frontend pending) | `receipts.service.ts`, `receipts.controller.ts`, `receipts.schemas.ts` | `financial-receipts.test.ts` (29 tests) | ADR-018 (D5 recommendation), ADR-026 |
+| FIN-015 | PO commitments and budget reservations | **M16.8+** (was M16.5) | Planned | — | — | ADR-018 (D4 recommendation) |
+| FIN-016 | Supplier invoices and AP | **M16.8+** (was M16.5) | Planned | — | — | — |
+| FIN-017 | Budget actual/committed/available dashboard | **M16.8+** (was M16.5) | Planned | — | — | ADR-018 (D4) |
+| FIN-018 | Bank accounts and statement import | **M16.7** (was M16.6) | Planned | — | — | — |
+| FIN-019 | Bank reconciliation | **M16.7** (was M16.6) | Planned | — | — | — |
+| FIN-020 | GST and tax treatment | **M16.8+** (was M16.8) | Planned | — | — | ADR-018 (D6 recommendation, mandatory validation flagged) |
+| FIN-021 | Financial statements and owner statements | **M16.8+** (was M16.8) | Planned | — | — | — |
+| FIN-022 | Year-end close and rollover | **M16.8+** (was M16.8) | Planned | — | — | ADR-018 (D9 recommendation) |
+| FIN-023 | Arrears, interest and collections | **M16.6** (was M16.7) | Planned | — | — | — |
+| FIN-024 | External payment/bank/accounting adapters | **M16.8+** (was M16.9) | Planned | — | — | — |
+| FIN-025 | Financial AI assistance | **M16.8+** (was M16.9) | Deferred | — | — | AI must not auto-post; no change this milestone |
 | FIN-026 | Multi-jurisdiction financial policy | Architecture (ongoing) | Partial | `AccountClassification` is jurisdiction-neutral; no AU-specific rule hard-coded in CoA/import | `financial-accounts.test.ts` | ADR-018 (D6 notes AU-specific GST threshold explicitly, not globalized) |
+
+## Milestone renumbering (21 October 2026) — dependency-driven resequencing
+
+The original roadmap (line "M16.3 — Levies & receivables → M16.4 — Lot ledger, receipts &
+allocations → M16.5 — Commitments & AP → M16.6 — Banking & reconciliation → M16.7 — Arrears →
+M16.8 — Statements, GST/BAS, year close → M16.9 — AI assistance" below) bundled receipts/
+allocations into M16.4 alongside the lot ledger. In practice M16.4 shipped only the lot ledger
+(FIN-013 partial, read-only projection — see ADR-025); receipts/allocations (FIN-014) was deferred
+whole. Arrears management (FIN-023) cannot be built honestly without a real payment/receipt record
+to be in arrears against — it was sequenced ahead of receipts in the original plan, which this
+resequencing corrects.
+
+**No requirement ID, scope, or acceptance criterion is removed or altered — only the `Milestone`
+column above.** This is a resequencing record, not a requirements change:
+
+| Requirement | Was | Now |
+|---|---|---|
+| FIN-014 (Owner receipts and allocations) | M16.4 (planned, never built) | **M16.5** — this milestone |
+| FIN-023 (Arrears, interest and collections) | M16.7 | **M16.6** — now depends on FIN-014's real receipt records existing first |
+| FIN-018/019 (Bank accounts, reconciliation) | M16.6 | **M16.7** — reconciliation needs real receipts to reconcile against |
+| FIN-015/016/017 (PO commitments, Supplier AP, Actual/committed dashboard) | M16.5 | **M16.8+** |
+| FIN-020/021/022 (GST, owner statements, year-end close) | M16.8 | **M16.8+** (unchanged in substance, folded into the same forward bucket) |
+| FIN-024/025 (External adapters, AI assistance) | M16.9 | **M16.8+** |
+
+`financial-management-implementation-plan.md`'s own milestone-sequence line is updated to match
+(see that file). "M16.8+" is deliberately not broken back out into M16.8/M16.9 sub-numbers here —
+the relative order among those remaining items is not yet a dependency-driven decision the way
+M16.5→M16.6→M16.7 is, so it is recorded as one forward bucket rather than a precision this
+resequencing doesn't actually have evidence for.
 
 ## M16.2.1 closure verification (20 October 2026)
 
@@ -504,3 +533,333 @@ future payments/receipts milestone (one more row type, following the same "deriv
 authoritative records" discipline) — but that is a new accounting design in its own right and was
 explicitly not started here.
 at Bank — Administrative Fund` and `101000 — Term Deposit — Capital Works Fund`.
+
+## M16.5 — Receipts & Payment Allocation (21 October 2026)
+
+**Data model:** two new tables, `Receipt` and `PaymentAllocation` (migrations
+`20261021064805_m16_5_receipts_and_payment_allocation`, `20261021065222_m16_5_receipt_activity_events`).
+Full accounting-design rationale in **ADR-026**: a `Receipt` is the cash event (always posts
+Dr fund cash / Cr `UNAPPLIED_CASH`, unconditionally); a `PaymentAllocation` is the separate
+application event (Dr `UNAPPLIED_CASH` / Cr `LOT_LEVY_RECEIVABLE`), posted as its own journal even
+when "immediate." Cross-fund allocation is explicitly rejected (409), not built. `LotLevyCharge.status`
+is now driven by allocations, using the `PART_PAID`/`PAID` enum values M16.1 had already reserved
+for exactly this.
+
+**Backend:** `src/modules/financials/receipts.{service,controller,schemas}.ts`, six new routes
+under `/:propertyId/financials/...`: `POST .../receipts` (record, with optional immediate manual or
+auto allocation), `GET .../receipts`, `GET .../receipts/:receiptId`, `POST .../receipts/:receiptId/reverse`,
+`POST .../receipts/:receiptId/allocations` (allocate previously-unapplied cash), `POST
+.../payment-allocations/:allocationId/reverse`. `recordReceipt`/`reverseReceipt`/`createAllocation`/
+`reverseAllocation` require `financials.approve` (they post immediately, matching the levy module's
+own bar); `listReceipts`/`getReceipt` require `financials.view`, with `people.view` checked
+independently for `ownerName` — same split as every other financials endpoint. `LedgerPostingService`'s
+existing subledger-reversal guard was extended to cover `RECEIPT`/`PAYMENT_ALLOCATION` sourceTypes,
+so neither journal can be reversed through the generic manual-journal endpoint and leave
+`Receipt.status`/`PaymentAllocation.status`/`LotLevyCharge.status` out of sync with the GL — the
+exact same risk ADR-024's levy guard already protected against. OpenAPI updated
+(`financial-receipts.paths.ts`, new `Receipt`/`PaymentAllocation` schemas in `entities.schemas.ts`);
+`openapi-route-coverage.test.ts` confirms all six routes are documented. Lot Ledger (ADR-025)
+extended with three new row types (`RECEIPT`, `RECEIPT_REVERSAL`, `PAYMENT_ALLOCATION` — the last
+always rendered debit=0/credit=0, since its money was already counted once on the `RECEIPT` row)
+and two new summary fields (`totalReceipts`, `totalUnapplied`).
+
+**Frontend:** Record Receipt and Allocate Payment modals, and a standalone Receipt Detail page —
+all three designed in Stitch first (project `17365736688974073408`: "Wasl Property — Record Receipt
+Modal (Desktop)", "Wasl Property — Allocate Payment Modal (Desktop)", "Wasl Property — Receipt
+Detail RCT-4H8D1Q (Desktop)"), inspected, then implemented against the real API using existing
+shared components (`FormModal`, `RadioCardGroup`, `SegmentedControl`, `Select`, `StatTile`,
+`ProgressBar`) rather than copy-pasted Stitch markup. Lot Financial Account gained a "Record
+Receipt" action (gated on `financials.approve`), two new KPI cards (Total Receipts, Unapplied
+Balance), a Receipts fund-column and a Receipts list linking to each receipt's detail page. Lot
+Ledger renders the three new row types via the same table. Financial Overview Dashboard gained an
+"Unapplied Credits" KPI (property-wide, distinct from Outstanding Levy Receivables) — explicitly
+does not claim any bank-reconciliation status, since this system does not yet track one.
+
+**Result:** backend — new `financial-receipts.test.ts`, 29/29 passing (full/partial allocation,
+multiple charges per receipt, auto-allocation ageing order, leftover-stays-unapplied, advance
+payment allocated later, over-allocation rejection (both against the charge and against the
+receipt), cross-fund rejection, duplicate-idempotency-key safety for both receipt and allocation
+creation, reversal of an unallocated receipt, the staged-unwind block on a receipt with an active
+allocation, reversal-then-reversal rejection, the generic-journal-reversal guard, exact Decimal
+arithmetic on a non-round-cent split, a closed-period rejection, Lot Ledger no-double-counting
+assertions (including an advance-only lot and a post-reversal lot), cross-property/cross-org 404
+isolation, `financials.approve`/`financials.view` 403s, a concurrent-allocation race that is
+serialized to exactly one success, and a regression check that M16.3/M16.4's own levy
+issue/reverse flow is unaffected); full backend suite 920/920 passing (64 files), `tsc --noEmit`
+clean, lint clean (2 pre-existing unrelated warnings only). One real bug was found and fixed during
+test-writing: `applyAllocationWithinTransaction`'s idempotency check originally ran *after* the
+over-allocation checks, so a retried allocation request would fail once the first attempt had
+already fully paid the charge — the idempotency lookup was moved to run first, immediately after
+the receipt/charge existence checks, so a genuine retry always returns the original result
+regardless of how the balance has since moved. Frontend — `tsc --noEmit`/`npm run build` clean
+(one generic-inference build error from `SegmentedControl`/`RadioCardGroup` needing an explicit
+type argument in build mode, fixed), full suite 258/258 passing (49 files, including two existing
+Financial Overview Dashboard assertions extended to cover the new mocked `receipt-api` and the
+Unapplied Credits KPI), lint clean.
+
+**Harbour View Strata live demonstration (21 October 2026, same day):** executed against the real
+demo property (`PROP-TNET87`, code `HARBOURVIEW-DEMO`, verified by code before any write) via
+authenticated API calls as Olivia Bennett — no reset, no reseed, no browser automation available
+(UI click-through NOT TESTED; API-level validation only). Email safety: `EMAIL_SEND_DISABLED=true`
+confirmed in the running server's environment and `isEmailSendSuppressed()`'s short-circuit (before
+any provider client is constructed) re-confirmed in code; no notification-triggering endpoint was
+called by any of the five scenarios below in any case (`recordReceipt`/`createAllocation`/
+`reverseAllocation` never call the email service). Baseline trial balance before any scenario:
+AUD 389,250.50 debit = credit. Five scenarios, all via real API calls, each verified to the cent:
+
+1. **Fully paid charge** — Lot 1, receipt RCT-NLJSLU, AUD 3,031.58 bank transfer, fully allocated
+   to LVC-UCHUKA in one call. Charge status ISSUED → **PAID**. Lot balance 16,673.69 → 13,642.11
+   (exactly −3,031.58).
+2. **Partially paid charge** — Lot 2, receipt RCT-RUAX99, AUD 1,000.00 cash, allocated against
+   LVC-K56EJV (face value 2,400.00). Charge status ISSUED → **PART_PAID**. Lot balance 13,200.00 →
+   12,200.00 (exactly −1,000.00).
+3. **One receipt across multiple charges** — Lot 3, receipt RCT-VTPU34, AUD 3,400.00 bank transfer,
+   allocated 2,400.00 to LVC-YXU8RJ (→ **PAID**) and 1,000.00 to LVC-6QQDKS (→ **PART_PAID**) in the
+   same request, as two separate allocation journals. Lot balance 13,200.00 → 9,800.00 (exactly
+   −3,400.00).
+4. **Advance/unapplied payment** — Lot 4, receipt RCT-YPPGQS, AUD 500.00 bank transfer, no
+   allocation. `appliedAmount` 0.00, `unappliedAmount` 500.00. Lot balance 11,115.79 → 10,615.79
+   (the credit is counted even though unapplied, per ADR-026 — never force-allocated).
+5. **Controlled reversal** — Lot 5, receipt RCT-YLKBMJ, AUD 2,021.05 cheque, allocated in full to
+   LVC-MUXCKD (→ PAID), then the allocation itself reversed ("allocated to the wrong instalment").
+   Charge status reverted PAID → **ISSUED**; receipt's `unappliedAmount` returned to 2,021.05; the
+   Lot Ledger shows one `PAYMENT_ALLOCATION` row whose description reflects the reversed state
+   (debit/credit still 0.00/0.00 — the reversal never creates a second, differently-valued row).
+   Lot balance settled at 9,094.74, exactly matching the Lot Ledger's own final running balance.
+
+After all five scenarios: trial balance AUD 410,676.81 debit = credit (still balanced — the
+increase is the double-entry effect of 9 new journals: 5 receipt postings + 4 net allocation
+postings, after the one allocation reversal). Exactly 5 `Receipt` records exist for the property
+(no duplicate postings from any retried or malformed request). Every `LotLevyCharge.status`
+transition matched its scenario exactly: LVC-UCHUKA → PAID, LVC-K56EJV → PART_PAID, LVC-YXU8RJ →
+PAID, LVC-6QQDKS → PART_PAID, LVC-MUXCKD → ISSUED (reverted). All demo records were left in place
+for manual review — no cleanup, no reset.
+
+**Known limitations:** (1) cross-fund allocation is rejected, not implemented — a single payment
+covering two funds must be recorded as two separate receipts (documented gap, ADR-026); (2) no
+true bank reconciliation — `externalBankReference` is a stored reference only, never implying a
+reconciled state (M16.7 scope); (3) UI click-through for the three new Stitch-designed screens was
+NOT TESTED in a real browser this session (no browser automation tool available) — only the
+underlying API calls and the React Testing Library suite were exercised; (4) the Financial Overview
+Dashboard's "Unapplied Credits" KPI makes one extra `GET .../receipts` call property-wide — fine at
+today's scale (the same bounded-per-lot argument ADR-025 makes does not directly apply here, since
+this is property-wide rather than per-lot; worth revisiting if a scheme's receipt volume ever
+becomes very large).
+
+**M16.6 readiness:** Arrears Management (resequenced from M16.7, see the renumbering note above)
+can now build on real `LotLevyCharge.status`/`PaymentAllocation` data instead of issued-but-possibly-
+already-paid charges — ageing, reminders, and interest calculations have an honest "is this actually
+still owed" signal to key off for the first time.
+
+## M16.6 — Arrears Management (21 October 2026)
+
+**Phase 0 — reconciliation finding, pre-implementation.** Investigated the trial-balance gap
+described at the start of this milestone (claimed M16.4-confirmed 293,250.50 vs M16.5-demo-start
+389,250.50, "96,000.00 difference"). Reconstructed the real journal-by-journal running total for
+Harbour View Strata: Opening 161,250.50 → +Admin levy issuance 96,000 → +CW levy issuance 96,000 →
+**305,250.50** (the real, previously-verified M16.4 figure — not 293,250.50) → +CW reversal incident
+48,000 → +its 36,000 correction (reinstating instalments #1–3, intentionally leaving #4 cancelled)
+→ **389,250.50** (the real M16.5-demo-start figure, confirmed to match). The actual gap between the
+two real figures is 84,000.00 (two real journals, both independently narrated and dated — the
+earlier levy-reversal-incident test and its scoped correction), not 96,000.00, and the net true
+economic effect is −12,000 on the Capital Works Fund, confirmed by exactly 12 `CANCELLED` charges
+(one per lot, all Capital Works, all due 2027-06-15 — Instalment #4) summing to exactly
+12,000.00. No duplicate or incorrect postings found. The "293,250.50" figure in the task's own
+framing does not correspond to any real point-in-time snapshot and appears to be a miscalculation
+(305,250.50 minus the incident's net effect applied to the wrong baseline) — reported here with full
+evidence rather than silently accepted.
+
+**M16.5 invariant verification (Phase 0).** All four re-verified live against Harbour View Strata:
+(1) an unapplied receipt reduces net owing without marking any charge paid — confirmed (Lot 4/5's
+advance receipts); (2) an allocation settles a specific charge without double-reducing the overall
+balance — confirmed via the Lot Ledger's debit=0/credit=0 `PAYMENT_ALLOCATION` row convention
+(ADR-026); (3) reversing an allocation restores the charge balance without reversing the receipt —
+confirmed (Lot 5: `LVC-MUXCKD` reverted PAID→ISSUED, receipt stayed `RECORDED`); (4) reversing a
+receipt correctly reverses the cash impact — confirmed live (Lot 5's receipt reversal returned its
+balance to the exact pre-receipt baseline, 11,115.79, with a `RECEIPT_REVERSAL` row and a balanced
+trial balance throughout). No invariant failed — Phase 0 cleared with no blocker.
+
+**ADR-027 decisions:** arrears figures are computed live, never persisted (same discipline as
+ADR-025/026); only the collection workflow (`CollectionCase`/`CollectionNote`/`PaymentReminder`) is
+new persisted state; `LotLevyCharge`'s reserved `OVERDUE` status stays permanently unused (a stored
+status can't represent two independent, date-relative and payment-state facts in one slot); as-of
+dates drive genuine effective-dated reconstruction (not a today-only approximation); M16.1 opening
+balances are reported separately with `ageingBucket: "UNKNOWN"`, never fabricated into an aged
+position; NSW interest/notice/recovery-cost rules are explicitly out of scope and unresolved,
+recorded for a future milestone; reminders are drafted/previewed only, the `communications` module
+(real SMTP path) is deliberately not reused.
+
+**Database:** two new enums (`CollectionCaseStatus`, `PaymentReminderStatus`) and three new tables
+(`CollectionCase`, `CollectionNote`, `PaymentReminder`) — migration
+`20261021110246_m16_6_arrears_management`. No change to `LotLevyCharge`/`Receipt`/
+`PaymentAllocation`/`LotOpeningPosition` schemas — arrears reads them, never extends them.
+
+**Backend:** `src/modules/financials/arrears.{service,controller,schemas}.ts`, ten new routes under
+`/:propertyId/financials/arrears/...`: `GET .../summary`, `GET .../register`,
+`GET .../lots/:spaceId`, `POST .../lots/:spaceId/collection-cases`, `GET`/`PATCH
+.../collection-cases/:caseId`, `POST .../collection-cases/:caseId/notes`,
+`POST .../lots/:spaceId/reminders`, `GET .../reminders/:reminderId`,
+`POST .../reminders/:reminderId/cancel`. Reads require `financials.view`; collection-workflow
+writes require `financials.manage` (reversible, non-ledger data — deliberately not gated on
+`financials.approve`, reserved for immutable-ledger actions). OpenAPI updated
+(`financial-arrears.paths.ts`, new `ArrearsSummary`/`LotArrearsDetail`/`CollectionCase`/
+`PaymentReminder` schemas); `openapi-route-coverage.test.ts` confirms all ten routes are documented.
+
+**A real posting-direction bug was found and fixed during Phase 6 live validation** (not a M16.6
+defect — in M16.5's `receipts.service.ts`, shipped uncommitted in the prior session):
+`applyAllocationWithinTransaction`'s `PAYMENT_ALLOCATION` journal posted **Dr LOT_LEVY_RECEIVABLE /
+Cr UNAPPLIED_CASH** for an applied payment — backwards. `LevyService.createAdjustment` already
+establishes the correct convention for this account (debit increases what's owed, credit decreases
+it — confirmed from the actual levy-issuance and adjustment journals), so a payment being *applied*
+must **credit** the receivable (asset decreases) and **debit** unapplied cash (liability clears),
+never the reverse. The bug was silent because (a) each journal still balanced internally (both
+lines flipped together, so `LedgerPostingService`'s own balance check never caught it), and (b) the
+Lot Ledger/arrears/receipt-view figures everywhere in the UI are computed from `PaymentAllocation.
+amount`/`status` directly — never by summing GL journal lines — so every user-facing balance figure
+in M16.4/M16.5/M16.6 was correct throughout and remains correct. Only the GL's own
+`LOT_LEVY_RECEIVABLE` *account balance* was distorted, and only for a fund that had actually
+received an applied payment (Capital Works Fund in this demo never had one, so it was unaffected).
+**Fixed** in `receipts.service.ts` (lines swapped, comment added referencing the correct
+convention); a new regression test (`financial-receipts.test.ts`, "full and partial allocation") now
+asserts the allocation journal's exact debit/credit per account. The resulting historical distortion
+on Harbour View Strata's Administration Fund `LOT_LEVY_RECEIVABLE` balance was corrected with an
+explicit, client-approved correcting journal — see "M16.5 historical correction (21 October 2026)"
+below for the full investigation, approval, posting, and post-correction reconciliation evidence.
+All M16.6 arrears/ageing figures reported in this document and in the live demo below were
+unaffected throughout, since they never read this GL balance.
+
+**Frontend:** four new screens — Arrears Dashboard, Arrears Register, Lot Arrears Detail, and a
+Reminder Preview modal — all designed in Stitch first (project `17365736688974073408`: "Wasl
+Property — Arrears Dashboard (Desktop)", "— Arrears Register (Desktop)", "— Lot Arrears Detail (Lot
+12 Olivia Bennett)", "— Reminder Preview (Lot 12 Olivia Bennett)"), inspected, then implemented
+against the real API. The Stitch mocks' own fabricated "Dispatch Notice"/"Send" buttons and an NSW
+statutory citation were deliberately **not** carried into the implementation (ADR-027: drafted/
+previewed only; no NSW requirement invented). Financial Overview gained a 6th KPI card ("Overdue
+Receivables", linking to the Arrears Dashboard) distinct from "Outstanding Levy Receivables" and
+"Unapplied Credits" — three separate figures, never merged.
+
+**Result:** backend — new `financial-arrears.test.ts`, 23/23 passing (not-yet-due vs overdue,
+partial/full payment, multiple receipts to one charge, one receipt across multiple charges,
+unapplied credit kept separate, cancelled-instalment exclusion, signed adjustments in both
+directions, allocation reversal restoring arrears, receipt reversal clearing cash impact, opening
+balances shown separately with unknown ageing, exact ageing-bucket day boundaries (30/31/60/61/90/
+91), as-of-date day boundaries, historical pre-issuance exclusion, cross-fund aggregation, collection
+notes + audit history, a closed case blocking further updates, reminder draft + cancel with no send
+path, email-service-never-called, and cross-property/cross-org/permission isolation); full backend
+suite 943/943 passing (65 files), `tsc --noEmit` clean, lint clean (2 pre-existing unrelated
+warnings only). Frontend — `tsc -b --noEmit`/`npm run build` clean, full suite 259/259 passing (49
+files, including the Financial Overview dashboard test extended with a mocked `arrears-api` and an
+"Overdue Receivables" assertion), lint clean.
+
+**Harbour View Strata live validation (21 October 2026, same day), read-only:** executed against
+the real demo property, no reset/reseed, no new financial postings (trial balance identical
+before/after every arrears read: 413,097.86 both sides). Property-level `totalOverdue` (29,368.42)
+exactly equals the sum of all 12 lots' own `totalOverdue` from the register. `totalCurrentOutstanding
++ totalOverdue` (95,000.00 + 29,368.42 = 124,368.42) exactly equals the sum of all lots'
+`totalOutstanding`. All overdue balances fall in the `DAYS_1_30` bucket (6 days overdue, matching
+the 15 Oct 2026 due date and 21 Oct 2026 as-of date) — the dashboard's ageing distribution correctly
+shows the other four buckets at exactly 0.00 rather than a fabricated spread. Overdue by fund:
+Administration 17,368.42, Capital Works 12,000.00 — summing to the property total. Lot 1's reversed
+Capital Works Instalment #4 charge (`LVC-P9HLW5`) confirmed excluded (outstanding 0.00, not overdue).
+Historical reconstruction re-confirmed live: `?asOfDate=2026-10-20` (the day before the M16.5 demo
+receipts) shows `LVC-UCHUKA` still outstanding 3,031.58 and overdue; `?asOfDate=2026-10-21` (today)
+shows it paid in full — proving allocations genuinely created on a later real calendar day are
+excluded from an earlier as-of read, not just a same-run approximation. `EMAIL_SEND_DISABLED=true`
+reconfirmed in the running server's environment; no notification-triggering endpoint exists on any
+arrears/collection-workflow route. A small number of safe, fictional collection-workflow demo
+records (one `CollectionCase`, one `CollectionNote`, one `PaymentReminder`, all on Lot 1) were
+created via the real API during backend smoke-testing, left in place for review, with full audit
+metadata — no existing financial record was modified to produce any of the figures above. UI
+click-through for the four new screens was **NOT TESTED** in a real browser this session (no
+browser automation tool available) — only the underlying API calls and the component/page test
+suites were exercised.
+
+**Known limitations / unresolved NSW policy decisions (ADR-027):** (1) interest on arrears,
+statutory notice requirements, and recovery-cost charge-backs under the NSW *Strata Schemes
+Management Act 2015* are explicitly unresolved — no rate, period, or fee schedule has been invented;
+(2) reminders have no dispatch path at all (by design this milestone) — M16.7+ would need an
+explicit, separately-authorised decision before any owner-facing send is built; (3) the Financial
+Overview's new "Overdue Receivables" KPI makes one extra property-wide arrears-summary call, fine at
+today's scale, same bounded-size argument as every other property-wide read in this module. The
+historical GL posting-direction distortion is no longer a limitation — see the correction entry
+immediately below.
+
+**M16.7 readiness:** Banking & Reconciliation (next in the resequenced roadmap) now has a corrected
+payment-allocation posting direction to build on — both in code and in Harbour View's own posted
+history — and a real arrears/ageing signal it can eventually cross-reference against bank statement
+data.
+
+## M16.5 historical correction (21 October 2026, same day) — approved and posted
+
+**Investigation (read-only).** Reconstructed every `PAYMENT_ALLOCATION` journal ever posted against
+Harbour View Strata from persisted records, not assumption. All 6 posted **Dr Lot Levy Receivable /
+Cr Unapplied Cash** (confirmed from each journal's actual lines) — backwards, per ADR-026's
+addendum. One (`JRN-X7BVPJ`, 2,021.05) was already fully reversed by `JRN-2SD3CT`, which mirrors
+whatever direction its original posted and so cancels it exactly regardless of the defect — net
+effect zero, correctly excluded from the correction. The other 5 remained active:
+
+| Journal | Receipt → Charge | Amount |
+|---|---|---:|
+| JRN-JECTZM | RCT-NLJSLU → LVC-UCHUKA | 3,031.58 |
+| JRN-4VDBV2 | RCT-RUAX99 → LVC-K56EJV | 1,000.00 |
+| JRN-3545H6 | RCT-VTPU34 → LVC-YXU8RJ | 2,400.00 |
+| JRN-DLXBG6 | RCT-VTPU34 → LVC-6QQDKS | 1,000.00 |
+| JRN-EUVFYE | RCT-AVFX7Z → LVC-JVQWBU | 200.00 |
+| **Total active (Administration Fund only)** | | **7,631.58** |
+
+**Reconciliation, three independent derivations, all agreeing on AUD 15,263.16:**
+
+1. *Per-journal*: 2 × 7,631.58 (each wrong-direction posting swings the account twice as far from
+   target as a correct one would have, since it moved the wrong way instead of not moving at all).
+2. *Receivable control total*: Admin Fund issued, non-cancelled charges (96,000.00) minus active
+   allocations (7,631.58) = target 88,368.42; actual GL balance 103,631.58; difference 15,263.16.
+3. *Unapplied Cash control total*: RECORDED receipts (8,131.58) minus correctly-applied allocations
+   (7,631.58) = target liability 500.00 (exactly Lot 4's one genuine advance); actual GL balance
+   15,763.16; difference 15,263.16.
+
+Capital Works Fund required **no correction** — its GL receivable (36,000.00) already reconciled
+exactly to its non-cancelled charges (36,000.00), since no M16.5 receipt was ever recorded against
+it. Cash at Bank (50,631.58) and Term Deposit — Capital Works (118,750.50) both independently
+reconciled to opening balance + receipts − reversals throughout, unaffected by the defect (it never
+touched `FUND_CASH`). The pre-existing legacy Capital Works correction `JRN-CZTT3T` was confirmed to
+appear exactly once, untouched.
+
+**Approval and posting.** The client explicitly approved the exact two-line journal below, scoped to
+the Harbour View Strata demo tenant only. All pre-flight checks were re-confirmed immediately before
+posting (tenant identity, account/fund IDs, open accounting period, no equivalent correction already
+present, trial balance unchanged since the proposal) — nothing had changed. Posted through the
+existing `POST /financials/journals` controlled API (never direct SQL) as **`JRN-46PXXV`**,
+`sourceType: MANUAL`, `sourceId: "M16.5-ADMIN-RECEIVABLE-POSTING-DIRECTION-CORRECTION"` (a stable,
+descriptive idempotency key — verified live by an immediate retry with identical lines, which
+returned the exact same journal, `testPrisma`-confirmed no duplicate row, and is now additionally
+covered by a permanent regression test, `financial-ledger.test.ts`'s "idempotency and concurrency"
+describe block):
+
+| Account | Fund | Debit | Credit |
+|---|---|---:|---:|
+| 220000 — Unapplied Owner Cash | Administration | 15,263.16 | |
+| 110000 — Lot Levy Receivable — Administrative Fund | Administration | | 15,263.16 |
+
+Narration and both line-level narrations name the defect and all 5 source journal references
+verbatim, so the correction is fully traceable from the journal itself without consulting this
+document.
+
+**Post-posting verification, all 9 checks passing exactly:**
+
+| Check | Expected | Actual |
+|---|---:|---:|
+| Admin Fund GL receivable | 88,368.42 | **88,368.42** ✓ |
+| Unapplied Cash liability | 500.00 | **500.00** ✓ |
+| Capital Works GL receivable (unchanged) | 36,000.00 | **36,000.00** ✓ |
+| Total GL levy receivables = lot subledger total outstanding | 124,368.42 | **124,368.42** ✓ |
+| All 12 lots' arrears register unchanged | (pre-posting figures) | **identical** ✓ |
+| Cash at Bank / Term Deposit unchanged | 50,631.58 / 118,750.50 | **unchanged** ✓ |
+| Trial balance balanced | debit = credit | **428,361.02 = 428,361.02** ✓ |
+| No duplicate correction | 1 new MANUAL journal | **exactly 1** (2 total MANUAL journals property-wide, the other being the pre-existing `JRN-CZTT3T`) ✓ |
+| M16.6 arrears total overdue unchanged | 29,368.42 | **29,368.42** ✓ |
+
+The trial balance's grand total rose from 413,097.86 to 428,361.02 — expected and correct, since a
+correcting journal adds its own turnover (15,263.16 on each side) the same way every other posted
+journal does; the *property-level net effect* of this entry is zero (it only moves the same amount
+between two Administration Fund accounts), which is exactly why every arrears/lot-ledger figure
+above is identical before and after.

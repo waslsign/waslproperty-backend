@@ -1,8 +1,8 @@
 # Financial Management — Architecture Validation & Implementation Plan
 
-**Version:** 1.4 | **Date:** 20 October 2026 | **Status:** M16.2.1, M16.2.2 and M16.3 implemented; M16.4+ remain proposed
+**Version:** 1.6 | **Date:** 21 October 2026 | **Status:** M16.2.1, M16.2.2, M16.3, M16.4, M16.5 and M16.6 implemented; M16.7+ remain proposed
 **Scope:** Validates `WaslProp_Financial_Architecture_Blueprint_Option_B.md` and `WaslProp_Complete_Financial_Requirements_Option_B.md` against the repository, and defines the roadmap from M16.2.1 onward.
-**Authority:** Sections 6 (M16.2.1), 7 (M16.2.2) and 8 (M16.3) are now implemented — see each section's own Implementation Report. M16.4+ remain a proposal pending architecture/client confirmation per ADR-018.
+**Authority:** Sections 6 (M16.2.1), 7 (M16.2.2) and 8 (M16.3) are now implemented — see each section's own Implementation Report, plus the M16.4, M16.5 and M16.6 sections further below. M16.7+ remain a proposal pending architecture/client confirmation per ADR-018.
 
 ---
 
@@ -133,7 +133,7 @@ Codes cluster strictly as `15–19xxxx` (287 rows) and `25–29xxxx` (137 rows).
 | Funding requirement (FIN-007) | Raw expenditure sum | Explicit funding bridge (revenue, transfers, reserve, opening surplus) | P0 | M16.2.1 |
 | GL, periods, posting, reversal, idempotency (FIN-008/009/010) | Nothing | Entire ledger + opening journal | P0 | **M16.2.2** |
 | Levies & lot subledger (FIN-011/012/013) | Entitlements (`Space.entitlementValue`), opening positions | Schedules, allocation, issuance, per-lot ledger | P0 | M16.3 |
-| Receipts & allocations (FIN-014) | Nothing | Receipts, allocation, unapplied cash, refunds | P0 | M16.4 |
+| Receipts & allocations (FIN-014) | Nothing | Receipts, allocation, unapplied cash, refunds | P0 | **M16.5** (resequenced from M16.4 — see the traceability matrix's "Milestone renumbering" note) |
 | PO commitments (FIN-015) | Work orders, quotes, approval policy, variations | `PurchaseCommitment` with fund/account; release on invoice/cancel | P1 | M16.5 |
 | Supplier invoices / AP (FIN-016) | Contractor records, quote approval, WaslSign | Invoices, AP posting, payments, aging | P1 | M16.5 |
 | Actual/committed dashboard (FIN-017) | Budget totals only | Actuals from posted GL; committed from open commitments | P1 | M16.5 |
@@ -160,8 +160,8 @@ Codes cluster strictly as `15–19xxxx` (287 rows) and `25–29xxxx` (137 rows).
 **Acceptance.** Every posted journal balances. Closed periods reject posting. Duplicate source key is a no-op returning the original reference. Reversal is a linked opposite entry; nothing is ever updated in place. Opening journal balances and reconciles to M16.1 snapshots, which remain byte-identical. Cross-property account/fund/lot references rejected. Concurrency and retry tests included.
 **Docs.** ADR-posting-engine; ADR-idempotency-key; migration/backfill + rollback; golden ledger fixtures; technical page on the posting contract.
 
-### M16.3 — Levies & receivables → **M16.4** — Lot ledger, receipts & allocations → **M16.5** — Commitments & AP → **M16.6** — Banking & reconciliation → **M16.7** — Arrears → **M16.8** — Statements, GST/BAS, year close → **M16.9** — AI assistance.
-Each consumes the frozen posting contract and adds no ledger tables. Deliberately not fragmented further; M16.3–M16.9 are scoped in detail once M16.2.2 ships, because their designs depend on decisions the posting profile will have settled.
+### M16.3 — Levies & receivables → **M16.4** — Lot ledger → **M16.5** — Receipts & payment allocation → **M16.6** — Arrears management → **M16.7** — Banking & reconciliation → **M16.8+** — Commitments & AP, GST/BAS, owner statements, year close, external adapters, AI assistance.
+Each consumes the frozen posting contract and adds no ledger tables. **Resequenced 21 October 2026** (see the traceability matrix's "Milestone renumbering" entry): the original plan bundled receipts/allocations into M16.4 alongside the lot ledger, and sequenced Arrears (M16.7) ahead of a real receipt/payment record to be in arrears against. M16.4 shipped only the lot ledger; receipts/allocations is its own milestone (M16.5), Arrears now follows it directly (M16.6) rather than waiting on Banking, and Banking/reconciliation (M16.7) follows Arrears since reconciliation needs real receipts to reconcile against. No requirement ID or scope was removed — Commitments & AP (previously M16.5) moves to the M16.8+ forward bucket with GST/statements/year-close/adapters/AI, none precision-renumbered among themselves since their relative order isn't yet a dependency-driven decision the way M16.5→M16.6→M16.7 is.
 
 **Parallelism.** Frontend accounts/budget UI may start with M16.2.1. Nothing downstream of M16.3 starts before the posting contract is frozen.
 
@@ -686,3 +686,59 @@ unset — this milestone still has no real payment records to drive them.
 
 **No migration.** Full decision record: ADR-025. Full test/verification detail: the
 traceability matrix's "M16.4" entry.
+
+## M16.5 — Receipts & Payment Allocation (21 October 2026)
+
+**Client-facing capability delivered:** a strata manager can record money received against a lot
+(fund, amount, payment method, reference, receipt/posting dates, optional external bank
+reference), apply it immediately or later to one or more outstanding levy charges (manually or via
+a documented oldest-due-date-first auto-allocation), leave it unapplied as an honest advance/credit,
+and reverse a receipt or a single allocation with a full audit trail. The Lot Ledger and Financial
+Account now show real receipts, applied/unapplied splits, and the resulting charge payment status
+(ISSUED/PART_PAID/PAID) alongside everything M16.4 already showed — reconciling to the GL by
+construction (two new tables, `Receipt`/`PaymentAllocation`, each posting its own journal through
+the existing `LedgerPostingService`), never a second accounting system.
+
+**Explicitly NOT delivered:** cross-fund allocation (rejected with a clear error, not built — a
+payment covering two funds needs two receipts); bank reconciliation (an `externalBankReference` is
+stored but never implies reconciled); commitments/AP, interest/arrears, an owner payment portal
+(all later milestones).
+
+**Migrations:** `20261021064805_m16_5_receipts_and_payment_allocation`,
+`20261021065222_m16_5_receipt_activity_events`. Full decision record: ADR-026. Full
+test/verification detail, including the Harbour View Strata live demonstration results: the
+traceability matrix's "M16.5" entry.
+
+## M16.6 — Arrears Management (21 October 2026)
+
+**Client-facing capability delivered:** a strata manager can see, for any lot or the whole scheme,
+exactly what is overdue (vs. levied-but-not-yet-due), how long each charge has been overdue, and a
+property-wide ageing distribution and per-fund breakdown — all computed live from the real receipts/
+allocations M16.5 introduced, never a second, independently-maintained balance. Unapplied owner
+credits are shown as their own figure, never silently netted against what's overdue. A manual
+collection workflow (open a case, log notes and contact attempts, draft a reminder for review) sits
+alongside the numbers without ever becoming a source of financial truth itself, and without ever
+sending anything automatically.
+
+**Explicitly NOT delivered:** interest on arrears, statutory notices, debt-recovery charges,
+automatic or manual email/SMS dispatch of any kind — all deferred, with the governing NSW *Strata
+Schemes Management Act 2015* questions recorded as unresolved (ADR-027) rather than guessed at.
+
+**A real bug was found and fixed during this milestone's live validation, in M16.5's own posting
+code** (not a M16.6 defect): payment allocations were posting against the lot levy receivable
+account in the wrong direction. Every user-facing balance (Lot Ledger, arrears, receipt views) was
+unaffected throughout, since none of them are computed by summing GL lines — but the GL's own
+receivable account balance for a fund that had received an applied payment was distorted. Fixed
+going forward in code, with a regression test; the existing demo property's historical distortion
+(AUD 15,263.16 on the Administration Fund receivable, reconstructed and cross-verified three
+independent ways before any posting) was then corrected with a single, client-approved, append-only
+journal (`JRN-46PXXV`), posted through the existing controlled journal API and independently
+re-verified on 9 separate checks afterward — GL receivables now reconcile exactly to the lot
+subledger. Full detail, including the exact Phase 0 reconciliation bridge for the trial-balance
+question this milestone opened with and the full correction record: the traceability matrix's
+"M16.6" entry and its "M16.5 historical correction" follow-up entry.
+
+**Migrations:** `20261021110246_m16_6_arrears_management`. Full decision record: ADR-027 (see also
+ADR-026's addendum on the posting-direction defect). Full test/verification detail, including the
+Harbour View Strata live validation and correction results: the traceability matrix's "M16.6" and
+"M16.5 historical correction" entries.
