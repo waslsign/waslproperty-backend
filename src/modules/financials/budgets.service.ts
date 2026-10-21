@@ -615,6 +615,32 @@ export class FinancialBudgetsService {
         });
       }
 
+      // Closure fix: an APPROVED ancestor earlier in THIS budget's own
+      // revision chain (createRevision's `revisionOfBudgetId` link) that
+      // was itself never activated — e.g. v1 approved, then v2 created as
+      // its revision and activated directly — used to stay APPROVED
+      // forever, reading as if it were still a live candidate alongside
+      // the real ACTIVE budget. It never violated the one-ACTIVE-per-FY
+      // invariant (DB-enforced regardless), but it misrepresented history
+      // on any screen listing budgets by status. Only ancestors in this
+      // budget's own chain are touched — an unrelated APPROVED budget
+      // outside this lineage (if one somehow existed) is left alone, since
+      // activating this one says nothing about that one's validity.
+      // approvedAt/approvedByUserId/lines are never touched — only status
+      // and supersededAt — so the real historical approval record is
+      // preserved exactly as it happened, per Section 12's "never edit a
+      // past version" rule.
+      let ancestorId = budget.revisionOfBudgetId;
+      while (ancestorId) {
+        const ancestor = await tx.financialBudget.findUnique({ where: { id: ancestorId } });
+        if (!ancestor || ancestor.status !== 'APPROVED') break;
+        await tx.financialBudget.update({
+          where: { id: ancestor.id },
+          data: { status: 'SUPERSEDED', supersededAt: new Date() },
+        });
+        ancestorId = ancestor.revisionOfBudgetId;
+      }
+
       const updated = await tx.financialBudget.update({
         where: { id: budget.id },
         data: { status: 'ACTIVE', activatedAt: new Date() },

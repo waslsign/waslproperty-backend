@@ -63,6 +63,10 @@ model Organisation {
   accountingPeriods                AccountingPeriod[]
   postingProfileRules              PostingProfileRule[]
   journalEntries                   JournalEntry[]
+  /// M16.3 — Levy Management & UOE Allocation.
+  levySchedules                    LevySchedule[]
+  lotLevyCharges                   LotLevyCharge[]
+  levyAdjustments                  LevyAdjustment[]
   activityEvents                   ActivityEvent[]
   maintenanceRequests              MaintenanceRequest[]
   maintenanceRequestAttachments    MaintenanceRequestAttachment[]
@@ -148,6 +152,14 @@ model User {
   reopenedAccountingPeriods             AccountingPeriod[]                @relation("AccountingPeriodReopenedBy")
   createdPostingProfileRules            PostingProfileRule[]              @relation("PostingProfileRuleCreatedBy")
   postedJournalEntries                  JournalEntry[]                    @relation("JournalEntryPostedBy")
+  createdLevySchedules                  LevySchedule[]                    @relation("LevyScheduleCreatedBy")
+  approvedLevySchedules                 LevySchedule[]                    @relation("LevyScheduleApprovedBy")
+  issuedLevySchedules                   LevySchedule[]                    @relation("LevyScheduleIssuedBy")
+  cancelledLevySchedules                LevySchedule[]                    @relation("LevyScheduleCancelledBy")
+  reversedLevySchedules                 LevySchedule[]                    @relation("LevyScheduleReversedBy")
+  issuedLevyInstallments                LevyInstallment[]                 @relation("LevyInstallmentIssuedBy")
+  reversedLevyInstallments              LevyInstallment[]                 @relation("LevyInstallmentReversedBy")
+  createdLevyAdjustments                LevyAdjustment[]                  @relation("LevyAdjustmentCreatedBy")
 
   @@map("users")
 }
@@ -405,6 +417,10 @@ model Property {
   accountingPeriods      AccountingPeriod[]
   postingProfileRules    PostingProfileRule[]
   journalEntries         JournalEntry[]
+  /// M16.3 — Levy Management & UOE Allocation.
+  levySchedules          LevySchedule[]
+  lotLevyCharges         LotLevyCharge[]
+  levyAdjustments        LevyAdjustment[]
 
   @@unique([organisationId, code])
   @@index([organisationId])
@@ -502,6 +518,9 @@ model Space {
   /// Always null for COMMON_PROPERTY/UNCLASSIFIED spaces — see
   /// LotOpeningPosition's own doc comment for how that's enforced.
   lotOpeningPosition  LotOpeningPosition?
+  /// M16.3 — every levy charge ever raised against this lot, across every
+  /// schedule/installment; never deleted (see LotLevyCharge's doc comment).
+  lotLevyCharges      LotLevyCharge[]
 
   /// A strata lot number must be unique within its Property (never
   /// enforced across properties) — distinct from `code` above, which is
@@ -644,6 +663,8 @@ model FinancialConfiguration {
   accountingPeriods   AccountingPeriod[]
   postingProfileRules PostingProfileRule[]
   journalEntries      JournalEntry[]
+  /// M16.3 — Levy Management & UOE Allocation.
+  levySchedules       LevySchedule[]
 
   @@index([organisationId])
   @@map("financial_configurations")
@@ -689,6 +710,9 @@ model FinancialFund {
   /// M16.2.2 — General Ledger & Posting Engine.
   postingProfileRules    PostingProfileRule[]
   journalLines           JournalLine[]
+  /// M16.3 — Levy Management & UOE Allocation.
+  levySchedules          LevySchedule[]
+  lotLevyCharges         LotLevyCharge[]
 
   @@index([financialConfigurationId])
   @@index([propertyId])
@@ -811,7 +835,14 @@ model LotOpeningPosition {
 
 /// DRAFT -> APPROVED -> ACTIVE -> SUPERSEDED, strictly forward (see
 /// FinancialBudgetsService for the one legal transition out of each
-/// state). SUPERSEDED is terminal and permanent; there is no "reactivate"
+/// state) — with one closure-pass exception: activating a budget also
+/// walks its own `revisionOfBudgetId` chain and moves any still-APPROVED
+/// ancestor (one that was approved but never itself activated, e.g. v1
+/// approved then skipped straight to v2) to SUPERSEDED too, so "APPROVED"
+/// never misrepresents a budget as still a live candidate once a later
+/// revision in its own lineage has gone ACTIVE. An APPROVED budget
+/// outside the activated one's lineage is never touched by this. Either
+/// way, SUPERSEDED is terminal and permanent; there is no "reactivate"
 /// path back from it — create a new revision instead.
 enum FinancialBudgetStatus {
   DRAFT
@@ -904,6 +935,9 @@ model FinancialBudget {
   revisionOf             FinancialBudget?       @relation("FinancialBudgetRevision", fields: [revisionOfBudgetId], references: [id])
   revisions              FinancialBudget[]      @relation("FinancialBudgetRevision")
   lines                  FinancialBudgetLine[]
+  /// M16.3 — regular levy schedules whose total is derived from this
+  /// budget's LEVY_INCOME-linked revenue lines.
+  levySchedules          LevySchedule[]
 
   /// Deterministic version numbering per financial-year group — see
   /// `version`'s doc comment. (The separate ONE-ACTIVE-BUDGET invariant is
@@ -1379,6 +1413,18 @@ model JournalEntry {
   /// direction of `reversalOf`. Null until/unless this journal is reversed.
   reversedBy             JournalEntry?          @relation("JournalEntryReversal")
   lines                  JournalLine[]
+  /// M16.3 — the schedule this journal is the issuance posting for, if any
+  /// (reverse of LevySchedule.journalEntryId) — null for every other kind
+  /// of journal (manual, opening balance, reversal).
+  levySchedule           LevySchedule?
+  /// ADR-024 — every instalment THIS journal is the issuance (or
+  /// reversal) posting for. Exactly one for every journal posted going
+  /// forward; more than one only for a journal that predates ADR-024 and
+  /// was shared across a whole schedule's instalments (preserved by
+  /// migration).
+  levyInstallments       LevyInstallment[]
+  /// The adjustment this journal is the correction posting for, if any.
+  levyAdjustment         LevyAdjustment?
 
   @@unique([propertyId, sourceType, sourceId, sourceEventVersion])
   @@index([organisationId])
@@ -1417,6 +1463,289 @@ model JournalLine {
   @@index([financialFundId])
   @@index([propertyId])
   @@map("journal_lines")
+}
+
+// --- Strata Financial Management: Levy Management & UOE Allocation (M16.3) ---
+//
+// Builds on M16.2.2's posting contract (LedgerPostingService) — no new ledger
+// table, every levy posts through the existing JournalEntry/JournalLine via
+// LedgerPostingService.postWithinTransaction. Load-bearing decisions (see
+// docs/architecture/adr/ADR-022, ADR-023, ADR-024):
+//
+// 1. One fund per schedule. A scheme's Administrative and Capital Works
+//    levies are always separate LevySchedule rows, matching standard
+//    Australian strata practice and keeping every schedule's own posting
+//    trivially fund-balanced (same "tag both lines of a pair with the same
+//    fund" discipline OpeningJournalService already established).
+//
+// 2. One posted JournalEntry per INSTALMENT issuance (ADR-024, replacing
+//    this milestone's original "one aggregated journal per whole-schedule
+//    issuance" design) — one DEBIT LOT_LEVY_RECEIVABLE + one CREDIT
+//    LEVY_INCOME line per fund, posted when that specific instalment is
+//    struck, not when the schedule is approved. This matches NSW Strata
+//    Schemes Management Act 2015 s.81/s.85 practice: a scheme's annual
+//    contribution is determined once, but each instalment is separately
+//    levied (and separately due, separately interest-bearing on arrears)
+//    at its own date — never all struck simultaneously regardless of how
+//    far in the future they fall. LotLevyCharge rows for an instalment are
+//    created only when THAT instalment is issued. SUM(LotLevyCharge.amount)
+//    for an instalment reconciles exactly to its own receivable line
+//    (FIN-013); SUM across a schedule's issued instalments reconciles to
+//    the schedule's totalAmount only once every instalment is issued.
+//    LevySchedule.journalEntryId/issuedAt/issuedByUserId are now populated
+//    only for schedules that were fully issued under the pre-ADR-024
+//    whole-schedule model (preserved by migration, never rewritten) — a
+//    schedule issued under this model instead carries that detail per
+//    LevyInstallment.
+//
+// 3. Issued is immutable, now at the instalment level. LotLevyCharge.amount
+//    is never edited after issuance; a correction is either a
+//    LevyAdjustment (a small posted delta against one charge) or reversing
+//    that ONE instalment's own journal via
+//    LedgerPostingService.reverseWithinTransaction (LevyInstallment.status
+//    -> REVERSED) — never a direct UPDATE on a charge row, and never a
+//    whole-schedule reversal (there is no longer one journal to reverse at
+//    that level — see LevySchedule.status's PARTIALLY_ISSUED/ISSUED notes).
+
+enum LevyKind {
+  REGULAR
+  SPECIAL
+}
+
+/// Schedule-level status now derives from its instalments' own statuses
+/// (ADR-024) rather than being independently set by a whole-schedule
+/// issue/reverse action — LevyService recomputes it after every
+/// instalment-level change.
+enum LevyScheduleStatus {
+  DRAFT
+  APPROVED
+  /// At least one instalment ISSUED, at least one still PENDING.
+  PARTIALLY_ISSUED
+  /// Every instalment ISSUED (none PENDING, none REVERSED-and-not-reissued
+  /// — a REVERSED instalment with no later reissue drops the schedule back
+  /// to PARTIALLY_ISSUED or APPROVED, never leaves it at ISSUED).
+  ISSUED
+  /// Cancelled before any instalment was ever issued — nothing was posted,
+  /// so this is a simple terminal state, not a reversal. Blocked once any
+  /// instalment has ever been issued, even if later reversed (real
+  /// financial history exists by then).
+  CANCELLED
+  /// Pre-ADR-024 legacy terminal state: a schedule fully reversed under
+  /// the old whole-schedule model (LevySchedule.journalEntryId/
+  /// reversedAt/reversedByUserId/reversalReason set). No schedule reaches
+  /// this status going forward — reversal is per-instalment now, so a
+  /// schedule's status instead moves back to PARTIALLY_ISSUED/APPROVED.
+  REVERSED
+}
+
+enum LevyChargeStatus {
+  /// The only status this milestone ever sets. PART_PAID/PAID/OVERDUE are
+  /// modelled now so M16.4 (receipts) can drive them without a schema
+  /// change, but nothing in M16.3 ever sets them.
+  ISSUED
+  PART_PAID
+  PAID
+  OVERDUE
+  /// Set only when the owning INSTALMENT is reversed (ADR-024) — the
+  /// charge itself is never deleted (see this section's doc comment,
+  /// point 3).
+  CANCELLED
+}
+
+/// ADR-024 — the instalment, not the schedule, is now the real issuance
+/// unit. See LevyInstallment.
+enum LevyInstallmentStatus {
+  PENDING
+  ISSUED
+  /// Reversed via LedgerPostingService.reverseWithinTransaction — the
+  /// original posting and every LotLevyCharge for this instalment stay
+  /// exactly as issued; only this status and the linked reversal journal
+  /// record the correction. Terminal — same "never a reversal of a
+  /// reversal" discipline as JournalEntry.reversalOfJournalId; a further
+  /// correction is a LevyAdjustment or a fresh special levy, never
+  /// re-issuing this instalment.
+  REVERSED
+}
+
+/// One levy assessment for one fund — the unit of approval and issuance.
+/// See this section's doc comment for why it's always single-fund and why
+/// issuance posts one aggregated journal rather than one line per lot.
+model LevySchedule {
+  id                       String             @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "LEVY" prefix.
+  publicReference          String             @unique
+  organisationId           String
+  propertyId               String
+  financialConfigurationId String
+  financialFundId          String
+  /// Required for REGULAR (the schedule's total is derived from this
+  /// budget's own LEVY_INCOME-linked revenue lines — see
+  /// LevyService.deriveRegularTotal); always null for SPECIAL.
+  financialBudgetId        String?
+  kind                     LevyKind
+  name                     String
+  /// SUM of every installment's amount — validated exactly equal at
+  /// creation (see LevyInstallment.amount), never independently entered.
+  totalAmount              Decimal            @db.Decimal(14, 2)
+  status                   LevyScheduleStatus @default(DRAFT)
+
+  /// Required for SPECIAL — the real-world committee/AGM resolution this
+  /// levy was raised under, never fabricated by WaslProp. Same
+  /// non-fabrication discipline as FinancialBudget.externalApprovalDate.
+  rationale                 String?
+  externalApprovalDate      DateTime? @db.Date
+  externalApprovalReference String?
+
+  createdByUserId   String?
+  approvedByUserId  String?
+  approvedAt        DateTime?
+  /// ADR-024: these five fields (issuedByUserId/issuedAt/journalEntryId/
+  /// reversedByUserId/reversedAt/reversalReason, plus status REVERSED) are
+  /// now written only by the migration that backfilled pre-ADR-024
+  /// whole-schedule issuances — a schedule issued going forward carries
+  /// this detail per LevyInstallment instead, since each instalment posts
+  /// (and may be reversed) independently. Left in place, never rewritten,
+  /// so a schedule issued under the old model keeps its original history
+  /// exactly as it happened.
+  issuedByUserId    String?
+  issuedAt          DateTime?
+  journalEntryId    String?   @unique
+  cancelledByUserId String?
+  cancelledAt       DateTime?
+  cancelReason      String?
+  reversedByUserId  String?
+  reversedAt        DateTime?
+  reversalReason    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation           Organisation           @relation(fields: [organisationId], references: [id])
+  property               Property               @relation(fields: [propertyId], references: [id])
+  financialConfiguration FinancialConfiguration @relation(fields: [financialConfigurationId], references: [id])
+  fund                   FinancialFund          @relation(fields: [financialFundId], references: [id])
+  budget                 FinancialBudget?       @relation(fields: [financialBudgetId], references: [id])
+  createdByUser          User?                  @relation("LevyScheduleCreatedBy", fields: [createdByUserId], references: [id])
+  approvedByUser         User?                  @relation("LevyScheduleApprovedBy", fields: [approvedByUserId], references: [id])
+  issuedByUser           User?                  @relation("LevyScheduleIssuedBy", fields: [issuedByUserId], references: [id])
+  cancelledByUser        User?                  @relation("LevyScheduleCancelledBy", fields: [cancelledByUserId], references: [id])
+  reversedByUser         User?                  @relation("LevyScheduleReversedBy", fields: [reversedByUserId], references: [id])
+  journalEntry           JournalEntry?          @relation(fields: [journalEntryId], references: [id])
+  installments           LevyInstallment[]
+  charges                LotLevyCharge[]
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([financialFundId])
+  @@index([financialBudgetId])
+  @@map("levy_schedules")
+}
+
+/// One due date under a schedule. `amount` is explicit, caller-supplied
+/// input (never auto-derived by an equal-split policy this milestone
+/// doesn't invent — see ADR-022) — validated to sum exactly to the
+/// schedule's totalAmount.
+model LevyInstallment {
+  id             String                @id @default(cuid())
+  levyScheduleId String
+  dueDate        DateTime              @db.Date
+  amount         Decimal               @db.Decimal(14, 2)
+  sortOrder      Int                   @default(0)
+  /// ADR-024 — this instalment's own issuance state, independent of its
+  /// siblings. See LevyInstallmentStatus.
+  status         LevyInstallmentStatus @default(PENDING)
+
+  issuedByUserId   String?
+  issuedAt         DateTime?
+  /// The one JournalEntry THIS instalment's issuance produced — null until
+  /// ISSUED. Deliberately NOT @unique: every instalment issued under
+  /// ADR-024 gets its own distinct journal (so uniqueness holds in
+  /// practice going forward), but the migration that introduced this
+  /// column backfilled every instalment of a pre-ADR-024 whole-schedule
+  /// issuance with that SAME shared journal — accurately reflecting that
+  /// they really were posted together as one journal, which a unique
+  /// constraint would reject.
+  journalEntryId   String?
+  reversedByUserId String?
+  reversedAt       DateTime?
+  reversalReason   String?
+
+  createdAt DateTime @default(now())
+
+  levySchedule   LevySchedule    @relation(fields: [levyScheduleId], references: [id])
+  issuedByUser   User?           @relation("LevyInstallmentIssuedBy", fields: [issuedByUserId], references: [id])
+  reversedByUser User?           @relation("LevyInstallmentReversedBy", fields: [reversedByUserId], references: [id])
+  journalEntry   JournalEntry?   @relation(fields: [journalEntryId], references: [id])
+  charges        LotLevyCharge[]
+
+  @@index([levyScheduleId])
+  @@index([journalEntryId])
+  @@map("levy_installments")
+}
+
+/// One lot's charge for one installment — the real per-lot subledger
+/// (FIN-013). Immutable once created (issuance is the only writer);
+/// amount is never edited — see this section's doc comment, point 3.
+model LotLevyCharge {
+  id                String           @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "LVC" prefix.
+  publicReference   String           @unique
+  organisationId    String
+  propertyId        String
+  levyScheduleId    String
+  levyInstallmentId String
+  spaceId           String
+  financialFundId   String
+  amount            Decimal          @db.Decimal(14, 2)
+  status            LevyChargeStatus @default(ISSUED)
+
+  createdAt DateTime @default(now())
+
+  levySchedule    LevySchedule     @relation(fields: [levyScheduleId], references: [id])
+  levyInstallment LevyInstallment  @relation(fields: [levyInstallmentId], references: [id])
+  space           Space            @relation(fields: [spaceId], references: [id])
+  fund            FinancialFund    @relation(fields: [financialFundId], references: [id])
+  adjustments     LevyAdjustment[]
+  organisation    Organisation     @relation(fields: [organisationId], references: [id])
+  property        Property         @relation(fields: [propertyId], references: [id])
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([levyScheduleId])
+  @@index([levyInstallmentId])
+  @@index([spaceId])
+  @@map("lot_levy_charges")
+}
+
+/// A controlled correction to one lot's charge, posted as its own small
+/// journal — never a direct edit of LotLevyCharge.amount. The charge's
+/// effective amount is always `amount + SUM(adjustments.amount)`, derived
+/// fresh, never stored.
+model LevyAdjustment {
+  id              String  @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "LVA" prefix.
+  publicReference String  @unique
+  organisationId  String
+  propertyId      String
+  lotLevyChargeId String
+  /// Signed — positive increases the lot's receivable, negative reduces
+  /// it (e.g. an entitlement-data correction or a documented waiver).
+  amount          Decimal @db.Decimal(14, 2)
+  reason          String
+  journalEntryId  String  @unique
+
+  createdByUserId String
+  createdAt       DateTime @default(now())
+
+  lotLevyCharge LotLevyCharge @relation(fields: [lotLevyChargeId], references: [id])
+  journalEntry  JournalEntry  @relation(fields: [journalEntryId], references: [id])
+  createdByUser User          @relation("LevyAdjustmentCreatedBy", fields: [createdByUserId], references: [id])
+  organisation  Organisation  @relation(fields: [organisationId], references: [id])
+  property      Property      @relation(fields: [propertyId], references: [id])
+
+  @@index([lotLevyChargeId])
+  @@index([propertyId])
+  @@map("levy_adjustments")
 }
 
 /// A business/person record: an owner, tenant or resident on file for an
@@ -1717,6 +2046,21 @@ enum ActivityEventType {
   FINANCIAL_JOURNAL_POSTED
   FINANCIAL_JOURNAL_REVERSED
   FINANCIAL_OPENING_JOURNAL_POSTED
+  /// M16.3 — Levy Management & UOE Allocation.
+  LEVY_SCHEDULE_CREATED
+  LEVY_SCHEDULE_APPROVED
+  /// Pre-ADR-024 legacy — a whole schedule issued/reversed in one action.
+  /// No longer written by new code; see LEVY_INSTALLMENT_ISSUED/REVERSED.
+  LEVY_SCHEDULE_ISSUED
+  LEVY_SCHEDULE_CANCELLED
+  /// Pre-ADR-024 legacy — see LEVY_SCHEDULE_ISSUED's doc comment.
+  LEVY_SCHEDULE_REVERSED
+  LEVY_CHARGE_ADJUSTED
+  LEVY_NOTICE_SENT
+  /// ADR-024 — one specific instalment issued (never the whole schedule).
+  LEVY_INSTALLMENT_ISSUED
+  /// ADR-024 — one specific instalment reversed.
+  LEVY_INSTALLMENT_REVERSED
 }
 
 // --- Resident invitations (Slice 2 / M6.5) ---

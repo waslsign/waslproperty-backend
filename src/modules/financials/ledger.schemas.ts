@@ -54,6 +54,10 @@ export type ListJournalsQuery = z.infer<typeof listJournalsQuerySchema>;
 
 export const trialBalanceQuerySchema = z.object({
   asOfDate: dateOnlySchema.optional(),
+  /** Restricts the trial balance to one fund's journal lines (M16.3
+   * refinement pass) — see LedgerPostingService.trialBalance's doc
+   * comment. */
+  financialFundId: z.string().trim().min(1).optional(),
 });
 export type TrialBalanceQuery = z.infer<typeof trialBalanceQuerySchema>;
 

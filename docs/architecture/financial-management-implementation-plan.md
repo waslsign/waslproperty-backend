@@ -1,8 +1,8 @@
 # Financial Management — Architecture Validation & Implementation Plan
 
-**Version:** 1.3 | **Date:** 20 October 2026 | **Status:** M16.2.1 and M16.2.2 implemented and verified; M16.3+ remain proposed
+**Version:** 1.4 | **Date:** 20 October 2026 | **Status:** M16.2.1, M16.2.2 and M16.3 implemented; M16.4+ remain proposed
 **Scope:** Validates `WaslProp_Financial_Architecture_Blueprint_Option_B.md` and `WaslProp_Complete_Financial_Requirements_Option_B.md` against the repository, and defines the roadmap from M16.2.1 onward.
-**Authority:** Sections 6 (M16.2.1) and 7 (M16.2.2) are now implemented — see each section's own Implementation Report. M16.3+ remain a proposal pending architecture/client confirmation per ADR-018.
+**Authority:** Sections 6 (M16.2.1), 7 (M16.2.2) and 8 (M16.3) are now implemented — see each section's own Implementation Report. M16.4+ remain a proposal pending architecture/client confirmation per ADR-018.
 
 ---
 
@@ -446,11 +446,59 @@ D6) remain unimplemented pending mandatory accountant validation.
 
 ## 8. M16.3 implementation checklist — Levy Management & UOE Allocation
 
-**Status: not started — preparation only**, produced at M16.2.2 closure (20 October 2026). Builds
-directly on the frozen M16.2.2 posting contract (`LedgerPostingService.post()`,
-`PostingProfileService`) and the already-reserved `PostingRole.LOT_LEVY_RECEIVABLE`/
-`LEVY_INCOME` roles — no ledger schema change is needed for this milestone. **No code in this
-section has been written.**
+**Status: Implemented, 20 October 2026.** Built directly on the frozen M16.2.2 posting contract
+and the already-reserved `PostingRole.LOT_LEVY_RECEIVABLE`/`LEVY_INCOME` roles, exactly as
+scoped below — no change to the M16.2.2 ledger schema was needed. See the **M16.3 Implementation
+Report** immediately below for what was actually delivered, and ADR-022/ADR-023 for the
+architecture decisions made while building it.
+
+### 8.0 M16.3 Implementation Report (20 October 2026)
+
+**Schema** (additive migration `20261020100432_m16_3_levy_management`): `LevySchedule`,
+`LevyInstallment`, `LotLevyCharge`, `LevyAdjustment` — no new ledger table; every posting flows
+through `LedgerPostingService`.
+
+**Services:** `LevyService` (schedule CRUD, preview, issue, reverse, adjustments),
+`levy-allocation.ts` (`allocateByEntitlement` — the largest-remainder UOE rounding method, ADR-022),
+`levy-notices.ts` (Communications-module integration, ADR-023). `LedgerPostingService` gained a new
+public `postWithinTransaction` method — the reusable posting contract M16.2.2's own checklist
+anticipated for future producers, used here for the first time.
+
+**APIs:** 10 new endpoints under `/properties/:propertyId/financials/{levy-schedules,
+lot-levy-charges}/*`. New `financials.approve`-gated actions (issue/reverse/adjust) alongside
+`financials.manage`-gated drafting (create/approve/cancel) — same split as periods/posting-profile.
+OpenAPI (`financial-levies.paths.ts` + 6 new entity schemas) verified by
+`openapi-route-coverage.test.ts`.
+
+**Frontend:** Levy Schedules list (status filters, Regular/Special creation with a live
+installments-vs-total reconciliation indicator) and Levy Schedule Detail (lot allocation preview
+pre-issuance, the real posted subledger post-issuance, issuance/audit history, an honest "not yet
+sent" notices empty state) — both designed in Stitch (project `17365736688974073408`: "Wasl
+Property — Levy Schedules (Desktop)" and "... Levy Schedule Detail: Lot Allocation Preview,
+Issuance & Notice History (Desktop)") before implementation.
+
+**Accounting rules applied:** regular levy totals derive strictly from budget REVENUE lines linked
+to the configured `LEVY_INCOME` account (never assumed from unrelated revenue — the concrete
+"distinguish levy revenue from other income" safeguard); special levies require explicit
+AGM/committee approval evidence; UOE allocation uses `Space.entitlementValue` with deterministic
+largest-remainder rounding (ADR-022); one aggregated, fund-balanced journal per issuance with
+`LotLevyCharge` as the real per-lot subledger; issued charges are immutable (adjustment or full
+reversal only); notices are best-effort and strictly post-commit, never able to affect an
+already-posted levy.
+
+**Tests:** 20 new backend integration tests covering every required scenario (UOE rounding across
+an uneven 33/33/34 split and an odd-cent total, multiple installments, regular-vs-special,
+budget/account misconfiguration, posting balance + idempotency, true concurrent issuance, a closed
+accounting period, reversal + adjustment correction, cross-property/organisation isolation and
+capability enforcement, and notice-failure isolation). **Backend: 850/851 tests pass (60 files; the
+one failure is the pre-existing `strata-plan-vision-live.test.ts`, an unrelated live external-API
+test, not a regression). Frontend: 222/222 tests pass (40 files).** Typecheck and lint clean on
+both.
+
+**Not implemented (explicitly out of scope, per the original checklist):** receipt allocation and
+arrears/interest tracking (`PART_PAID`/`OVERDUE` charge states are modeled but never set this
+milestone — M16.4/M16.7); GST on levies (M16.8, ADR-018 D6); per-recipient templated notice content
+with exact dollar figures (documented limitation, ADR-023).
 
 ### 8.1 Schema (additive; one migration)
 
@@ -594,3 +642,47 @@ Receipt allocation and arrears/interest (M16.4/M16.7) are **not** in scope — `
 issuance and the `PART_PAID`/`OVERDUE` states it anticipates are the hook those milestones attach
 to, not functionality this milestone implements itself. GST on levies is deferred to M16.8/ADR-018
 D6 (mandatory accountant validation still outstanding).
+
+### 8.11 M16.3 refinement pass (20 October 2026) — post-demo findings
+
+A review of the completed Harbour View Strata demo found six issues, addressed under ADR-024:
+budget-activation gate tightened, levy charges made human-readable (with `people.view`-gated
+owner names), issuance moved to the instalment level (NSW s.81/s.85-compatible — see ADR-024 §2),
+trial balance given conventional Debit/Credit presentation plus a fund filter, levy notices made
+genuinely per-lot personalised, and a financial-overview dashboard proposed (not built this pass).
+Full detail: ADR-024, the traceability matrix's "M16.3 refinement pass" entry, and
+`docs/testing/financial-e2e-demo-report.md`.
+
+**Status as of 20 October 2026 (updated):** all six findings are now fully closed, including the
+frontend. The Levy Schedule Detail and Journals/Trial Balance pages were rebuilt against Stitch
+designs in the same pass (per-instalment issue/reverse controls, human-readable charge columns,
+conventional Debit/Credit trial-balance columns with a fund filter). The Financial Overview
+Dashboard (finding 6) was designed in Stitch, then implemented against real data only — see the
+traceability matrix's "Financial Overview Dashboard implemented" entry for full detail, including
+the fabricated figures from the Stitch mock that were deliberately NOT reproduced.
+
+**Outstanding before M16.4:** none identified from this refinement pass. The orphaned pre-revision
+budget (v1, superseded in content but never auto-marked SUPERSEDED by `activate()`, which only
+supersedes whichever budget was previously ACTIVE) remains a minor pre-existing wrinkle, out of
+scope for this pass. (Resolved separately in the M16.3 UI closure pass's budget-lifecycle fix.)
+
+## M16.4 — Lot Ledger & Owner Financial Accounts (21 October 2026)
+
+**Client-facing capability delivered:** a strata manager can now open any strata lot and see an
+accurate, auditable financial account — its opening position (amount owing / credit, shown
+separately, never netted), every regular and special levy charge ever issued against it, any
+reversal (kept visible, never hidden, with its reason and a link back to the original charge),
+any posted adjustment, a current outstanding balance classified as Amount Owing / Credit /
+Settled, and a per-fund breakdown. A full paginated/filterable ledger and a statement for an
+explicit period (opening balance, itemised movements, closing balance) are both one click away.
+This reconciles to the existing General Ledger/levy subledger by construction — see ADR-025 — not
+by a separate reconciliation step, since the Lot Ledger has no storage of its own that could drift.
+
+**Explicitly NOT delivered, and not claimed as supported:** payment tracking of any kind (no
+payment-status field, no payment button anywhere in the UI), bank reconciliation, automatic
+payment matching, interest/arrears calculation, debt-recovery workflows, an owner payment portal.
+`LevyChargeStatus`'s `PART_PAID`/`PAID`/`OVERDUE` values (anticipated since M16.3) remain entirely
+unset — this milestone still has no real payment records to drive them.
+
+**No migration.** Full decision record: ADR-025. Full test/verification detail: the
+traceability matrix's "M16.4" entry.

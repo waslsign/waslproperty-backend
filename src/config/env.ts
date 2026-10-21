@@ -55,6 +55,24 @@ const envSchema = z.object({
   CREDENTIAL_EXPIRING_SOON_DAYS: z.coerce.number().default(30),
 
   // --- Outbound email ---
+  // The one kill switch for every outbound email in the app — checked
+  // first, inside EmailService.send() itself, BEFORE any provider is even
+  // selected/instantiated (see src/lib/email.ts). This is deliberately the
+  // single shared chokepoint every caller (invites, quote-round emails,
+  // communications delivery) already funnels through — there is no
+  // separate path that could bypass it, and no provider object (SMTP
+  // transporter or Resend client) is ever constructed while this is true,
+  // so no network connection to a real mail server is ever attempted.
+  // EmailService.send() also independently suppresses whenever
+  // NODE_ENV === 'test' regardless of this flag (every automated test run
+  // is implicitly email-safe without needing to opt in) — this flag is
+  // for suppressing a real local dev server too, e.g. while exercising
+  // invite/levy-notice flows against a real SMTP account during manual
+  // testing. Defaults to "false" — set it explicitly to "true" in .env.
+  EMAIL_SEND_DISABLED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true'),
   // RESEND_API_KEY is the production/staging transport (Resend's HTTPS
   // API) — required anywhere the platform blocks outbound SMTP ports (e.g.
   // Render's Free Web Service tier blocks 25/465/587 entirely, so SMTP is

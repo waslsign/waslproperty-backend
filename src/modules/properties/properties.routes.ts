@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../../middlewares/auth.middleware.js';
 import { requireCapability } from '../../middlewares/authorize.middleware.js';
 import { fromParam } from '../../middlewares/resolvePropertyId.js';
-import { resolvePropertyReference } from '../../middlewares/resolvePublicReference.js';
+import { resolvePropertyReference, resolveSpaceReference } from '../../middlewares/resolvePublicReference.js';
 import { asyncHandler } from '../../middlewares/asyncHandler.js';
 import { listActivityForProperty } from '../activity/activity.controller.js';
 import {
@@ -61,6 +61,24 @@ import {
   postManualJournal,
   reverseJournal,
 } from '../financials/ledger.controller.js';
+import {
+  approveLevySchedule,
+  cancelLevySchedule,
+  createLevyAdjustment,
+  createRegularLevySchedule,
+  createSpecialLevySchedule,
+  getLevySchedule,
+  issueLevySchedule,
+  listLevySchedules,
+  listLotLevyCharges,
+  previewLevySchedule,
+  reverseLevySchedule,
+} from '../financials/levies.controller.js';
+import {
+  getLotFinancialAccount,
+  getLotLedger,
+  getLotStatement,
+} from '../financials/lot-ledger.controller.js';
 import { createSpaceForProperty, listSpacesForProperty } from '../spaces/spaces.controller.js';
 import {
   bulkSetStrataLots,
@@ -459,4 +477,105 @@ propertiesRouter.post(
   resolvePropertyReference('propertyId'),
   requireCapability('financials.approve', fromParam('propertyId')),
   asyncHandler(generateOpeningJournal),
+);
+
+// Levy Management & UOE Allocation (M16.3) — see prisma/schema.prisma's
+// "Strata Financial Management: Levy Management & UOE Allocation" section
+// doc comment. Draft/approve/cancel (pre-posting) are financials.manage;
+// issue/reverse/adjust (every write that touches posted ledger history)
+// are financials.approve — same split as periods/posting-profile in
+// M16.2.2.
+propertiesRouter.get(
+  '/:propertyId/financials/levy-schedules',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listLevySchedules),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/levy-schedules/regular',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(createRegularLevySchedule),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/levy-schedules/special',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(createSpecialLevySchedule),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/levy-schedules/:scheduleId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getLevySchedule),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/levy-schedules/:scheduleId/approve',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(approveLevySchedule),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/levy-schedules/:scheduleId/cancel',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(cancelLevySchedule),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/levy-schedules/:scheduleId/preview',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(previewLevySchedule),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/levy-schedules/:scheduleId/issue',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(issueLevySchedule),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/levy-schedules/:scheduleId/reverse',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(reverseLevySchedule),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/lot-levy-charges',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listLotLevyCharges),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/lot-levy-charges/:chargeId/adjust',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(createLevyAdjustment),
+);
+
+// Lot Ledger & Owner Financial Accounts (M16.4) — a read-only projection
+// over LotOpeningPosition/LotLevyCharge/LevyAdjustment (see
+// lot-ledger.service.ts's own architecture note for why there is no new
+// persisted subledger table). financials.view only, same as every other
+// read endpoint in this section — people.view is checked independently,
+// inside the controller, before an owner's name is ever included.
+propertiesRouter.get(
+  '/:propertyId/financials/lots/:spaceId/financial-account',
+  resolvePropertyReference('propertyId'),
+  resolveSpaceReference('spaceId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getLotFinancialAccount),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/lots/:spaceId/ledger',
+  resolvePropertyReference('propertyId'),
+  resolveSpaceReference('spaceId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getLotLedger),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/lots/:spaceId/statement',
+  resolvePropertyReference('propertyId'),
+  resolveSpaceReference('spaceId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getLotStatement),
 );

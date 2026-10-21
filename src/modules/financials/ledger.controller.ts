@@ -69,6 +69,7 @@ export async function getTrialBalance(req: Request, res: Response) {
     auth.organisationId,
     req.params.propertyId as string,
     query.asOfDate,
+    query.financialFundId,
   );
   res.json({ items: rows });
 }

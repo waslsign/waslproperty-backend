@@ -269,7 +269,11 @@ registry.registerPath({
   summary: 'As-of trial balance: SUM(debit)/SUM(credit) per account over every posted line.',
   description:
     'Requires `financials.view`. A read-only aggregation over immutable postings, never a stored ' +
-    'running balance. Optional `asOfDate` (default today).',
+    'running balance. Optional `asOfDate` (default today) and `financialFundId` (restricts to one ' +
+    'fund\'s lines — useful where an unrestricted account like GST Payable carries balances from ' +
+    'more than one fund). Each row\'s `presentedSide`/`presentedBalance` give the conventional ' +
+    'Debit-or-Credit-column presentation; `totalDebit`/`totalCredit`/`netBalance` remain the raw ' +
+    'figures.',
   security: SECURITY_CUSTOMER,
   request: { params: propertyIdPathParam, query: trialBalanceQuerySchema },
   responses: {

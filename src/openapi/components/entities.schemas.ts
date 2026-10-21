@@ -484,12 +484,277 @@ export const trialBalanceRowSchema = z.object({
   classification: z.string(),
   totalDebit: z.string(),
   totalCredit: z.string(),
-  netBalance: z.string(),
+  netBalance: z.string().openapi({
+    description: 'Signed, debit-positive. Kept for callers relying on the raw figure.',
+  }),
+  presentedSide: z.enum(['DEBIT', 'CREDIT']).openapi({
+    description: 'Conventional trial-balance presentation: which column this balance sits under.',
+  }),
+  presentedBalance: z.string().openapi({
+    description: 'Always non-negative — the magnitude to show under presentedSide\'s column.',
+    example: '1200.00',
+  }),
 });
 
 export const trialBalanceListSchema = registry.register(
   'TrialBalanceList',
   z.object({ items: z.array(trialBalanceRowSchema) }),
+);
+
+const levyInstallmentSchema = z.object({
+  id: z.string(),
+  installmentNumber: z.number().int().openapi({ description: '1-based — sortOrder + 1.', example: 1 }),
+  dueDate: z.string().openapi({ example: '2026-10-01' }),
+  amount: z.string().openapi({ example: '10000.00' }),
+  status: z.enum(['PENDING', 'ISSUED', 'REVERSED']).openapi({
+    description: 'ADR-024 — this instalment\'s own issuance state, independent of its siblings.',
+  }),
+  issuedByUserId: z.string().nullable(),
+  issuedAt: z.string().datetime().nullable(),
+  journalEntryId: z.string().nullable().openapi({
+    description: 'The journal THIS instalment\'s issuance produced — null until ISSUED.',
+  }),
+  reversedByUserId: z.string().nullable(),
+  reversedAt: z.string().datetime().nullable(),
+  reversalReason: z.string().nullable(),
+  sortOrder: z.number().int(),
+});
+
+export const levyScheduleSchema = registry.register(
+  'LevySchedule',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'LEVY-K7M4Q2' }),
+    financialFundId: z.string(),
+    fundName: z.string(),
+    financialBudgetId: z.string().nullable(),
+    kind: z.enum(['REGULAR', 'SPECIAL']),
+    name: z.string(),
+    totalAmount: z.string().openapi({ example: '40000.00' }),
+    status: z.enum(['DRAFT', 'APPROVED', 'PARTIALLY_ISSUED', 'ISSUED', 'CANCELLED', 'REVERSED']).openapi({
+      description:
+        'Derived from the instalments\' own statuses (ADR-024) — PARTIALLY_ISSUED: some issued, ' +
+        'some not; ISSUED: every instalment issued; REVERSED: legacy pre-ADR-024 whole-schedule ' +
+        'reversal only, never reached by new issuance.',
+    }),
+    rationale: z.string().nullable(),
+    externalApprovalDate: z.string().nullable(),
+    externalApprovalReference: z.string().nullable(),
+    createdByUserId: z.string().nullable(),
+    approvedByUserId: z.string().nullable(),
+    approvedAt: z.string().datetime().nullable(),
+    issuedByUserId: z.string().nullable().openapi({
+      description: 'Legacy pre-ADR-024 whole-schedule issuance only — see each instalment instead.',
+    }),
+    issuedAt: z.string().datetime().nullable(),
+    journalEntryId: z.string().nullable().openapi({
+      description: 'Legacy pre-ADR-024 whole-schedule issuance only — see each instalment\'s own journalEntryId.',
+    }),
+    cancelledByUserId: z.string().nullable(),
+    cancelledAt: z.string().datetime().nullable(),
+    cancelReason: z.string().nullable(),
+    reversedByUserId: z.string().nullable(),
+    reversedAt: z.string().datetime().nullable(),
+    reversalReason: z.string().nullable(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+    installments: z.array(levyInstallmentSchema),
+  }),
+);
+
+export const levyScheduleListSchema = registry.register(
+  'LevyScheduleList',
+  z.object({ items: z.array(levyScheduleSchema) }),
+);
+
+export const lotAllocationPreviewRowSchema = z.object({
+  spaceId: z.string(),
+  spaceName: z.string(),
+  lotNumber: z.string().nullable(),
+  entitlementValue: z.string(),
+  installments: z.array(
+    z.object({
+      levyInstallmentId: z.string(),
+      dueDate: z.string(),
+      amount: z.string(),
+    }),
+  ),
+  total: z.string(),
+});
+
+export const lotAllocationPreviewListSchema = registry.register(
+  'LotAllocationPreviewList',
+  z.object({ items: z.array(lotAllocationPreviewRowSchema) }),
+);
+
+export const lotLevyChargeSchema = registry.register(
+  'LotLevyCharge',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'LVC-K7M4Q2' }),
+    levyScheduleId: z.string(),
+    levyScheduleName: z.string(),
+    levyInstallmentId: z.string(),
+    installmentNumber: z.number().int().openapi({ example: 1 }),
+    dueDate: z.string().openapi({ example: '2026-10-15' }),
+    spaceId: z.string(),
+    lotLabel: z.string().openapi({
+      description: 'Human-readable lot identifier (lotNumber, else space code/name) — never the raw spaceId.',
+      example: 'Lot 12',
+    }),
+    ownerName: z.string().nullable().openapi({
+      description:
+        'Present only when the caller independently holds people.view on top of financials.view; ' +
+        'null otherwise, or if the lot has no recorded OWNER membership.',
+    }),
+    financialFundId: z.string(),
+    fundName: z.string(),
+    amount: z.string(),
+    effectiveAmount: z.string().openapi({
+      description: 'amount + SUM(adjustments) — derived fresh, never stored.',
+    }),
+    status: z.enum(['ISSUED', 'PART_PAID', 'PAID', 'OVERDUE', 'CANCELLED']),
+    createdAt: z.string().datetime(),
+  }),
+);
+
+export const lotLevyChargeListSchema = registry.register(
+  'LotLevyChargeList',
+  z.object({ items: z.array(lotLevyChargeSchema) }),
+);
+
+export const levyAdjustmentSchema = registry.register(
+  'LevyAdjustment',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'LVA-K7M4Q2' }),
+    lotLevyChargeId: z.string(),
+    amount: z.string(),
+    reason: z.string(),
+    journalEntryId: z.string(),
+    createdByUserId: z.string(),
+    createdAt: z.string().datetime(),
+  }),
+);
+
+// --- M16.4 — Lot Ledger & Owner Financial Accounts ---
+
+export const lotLedgerRowTypeSchema = z.enum([
+  'OPENING_POSITION',
+  'REGULAR_LEVY_CHARGE',
+  'SPECIAL_LEVY_CHARGE',
+  'LEVY_REVERSAL',
+  'LEVY_ADJUSTMENT',
+]);
+
+export const lotLedgerRowSchema = registry.register(
+  'LotLedgerRow',
+  z.object({
+    id: z.string().openapi({ description: 'Stable, derived row id — not a standalone persisted record.' }),
+    date: z.string().openapi({ example: '2026-10-15' }),
+    postedAt: z.string().datetime(),
+    type: lotLedgerRowTypeSchema,
+    description: z.string(),
+    financialFundId: z.string().nullable().openapi({
+      description: 'Null for the opening-position row — LotOpeningPosition carries no fund attribution.',
+    }),
+    fundName: z.string().nullable(),
+    debit: z.string(),
+    credit: z.string(),
+    runningBalance: z.string().openapi({
+      description: 'Computed over this lot\'s complete chronological row set, never per-page.',
+    }),
+    sourceReference: z.string().nullable(),
+    levyScheduleId: z.string().nullable(),
+    levyScheduleName: z.string().nullable(),
+    levyInstallmentId: z.string().nullable(),
+    installmentNumber: z.number().int().nullable(),
+    reversalOfSourceReference: z.string().nullable(),
+    reversalReason: z.string().nullable(),
+    createdByUserId: z.string().nullable(),
+  }),
+);
+
+export const lotOpeningPositionViewSchema = registry.register(
+  'LotOpeningPositionView',
+  z.object({
+    recorded: z.boolean(),
+    amountOwing: z.string(),
+    creditBalance: z.string(),
+    net: z.string().openapi({ description: 'amountOwing - creditBalance.' }),
+    asOfDate: z.string().nullable(),
+    fundAttributed: z.literal(false),
+  }),
+);
+
+export const lotFundBreakdownEntrySchema = registry.register(
+  'LotFundBreakdownEntry',
+  z.object({
+    financialFundId: z.string(),
+    fundName: z.string(),
+    totalIssuedLevyCharges: z.string(),
+    totalReversedCharges: z.string(),
+    totalAdjustments: z.string(),
+    netBalance: z.string(),
+  }),
+);
+
+export const lotFinancialAccountSchema = registry.register(
+  'LotFinancialAccount',
+  z.object({
+    spaceId: z.string(),
+    propertyId: z.string(),
+    lotLabel: z.string(),
+    ownerName: z.string().nullable().openapi({
+      description: 'Present only when the caller independently holds people.view on top of financials.view.',
+    }),
+    currencyCode: z.string().nullable(),
+    financialYearStartDate: z.string().nullable(),
+    financialYearEndDate: z.string().nullable(),
+    openingPosition: lotOpeningPositionViewSchema,
+    totalIssuedLevyCharges: z.string(),
+    totalReversedCharges: z.string(),
+    totalAdjustments: z.string(),
+    currentBalance: z.string(),
+    balanceClassification: z.enum(['AMOUNT_OWING', 'CREDIT', 'SETTLED']),
+    fundBreakdown: z.array(lotFundBreakdownEntrySchema),
+    lastActivity: z
+      .object({ date: z.string(), description: z.string(), type: lotLedgerRowTypeSchema })
+      .nullable(),
+  }),
+);
+
+export const lotLedgerPageSchema = registry.register(
+  'LotLedgerPage',
+  z.object({
+    items: z.array(lotLedgerRowSchema),
+    page: z.number().int(),
+    pageSize: z.number().int(),
+    total: z.number().int(),
+    ownerName: z.string().nullable(),
+    lotLabel: z.string(),
+  }),
+);
+
+export const lotStatementSchema = registry.register(
+  'LotStatement',
+  z.object({
+    spaceId: z.string(),
+    propertyId: z.string(),
+    propertyName: z.string(),
+    strataPlanNumber: z.string().nullable(),
+    lotLabel: z.string(),
+    ownerName: z.string().nullable(),
+    currencyCode: z.string().nullable(),
+    periodStartDate: z.string(),
+    periodEndDate: z.string(),
+    openingBalance: z.string(),
+    movements: z.array(lotLedgerRowSchema),
+    totalDebits: z.string(),
+    totalCredits: z.string(),
+    closingBalance: z.string(),
+    generatedAt: z.string().datetime(),
+  }),
 );
 
 export const contactSummarySchema = registry.register(

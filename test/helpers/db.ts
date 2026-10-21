@@ -64,6 +64,17 @@ export async function resetDb() {
     // financial_budgets, and financial_budgets self-references
     // (revisionOfBudgetId) — both must go before financial_funds/
     // financial_configurations.
+    // M16.3 — levy_adjustments reference lot_levy_charges and
+    // journal_entries; lot_levy_charges reference levy_schedules/
+    // levy_installments/spaces/financial_funds; levy_installments
+    // reference levy_schedules; levy_schedules reference financial_funds/
+    // financial_budgets/journal_entries (nullable). All four must go
+    // before financial_budget_lines/financial_budgets below and before
+    // journal_lines/journal_entries further down.
+    testPrisma.levyAdjustment.deleteMany(),
+    testPrisma.lotLevyCharge.deleteMany(),
+    testPrisma.levyInstallment.deleteMany(),
+    testPrisma.levySchedule.deleteMany(),
     testPrisma.financialBudgetLine.deleteMany(),
     testPrisma.financialBudget.deleteMany(),
     // M16.2.1 — accounting_accounts references financial_funds/

@@ -128,6 +128,38 @@ export class LedgerPostingService {
     });
   }
 
+  /**
+   * Same contract as `post()`, but for a caller that already holds its own
+   * open `Prisma.TransactionClient` and needs the journal write to commit
+   * atomically with its own additional writes (e.g. LevyService writing
+   * `LotLevyCharge` subledger rows alongside the aggregate receivable/
+   * income journal — see docs/architecture/adr/ADR-023). This is the
+   * reusable posting contract the M16.2.2 brief anticipated for future
+   * producers: it never bypasses any of `post()`'s own validation, locking,
+   * or idempotency — it IS the same code path, just without opening a
+   * second transaction around it. The caller's transaction must acquire
+   * the same FinancialConfiguration row lock itself, before this method is
+   * called, whenever it also needs to read/validate property-scoped state
+   * under that lock before posting (see LevyService.issue for the pattern
+   * — the same "lock before check" lesson as ADR-021's reversal fix).
+   */
+  async postWithinTransaction(
+    tx: Prisma.TransactionClient,
+    organisationId: string,
+    actorUserId: string,
+    propertyId: string,
+    command: PostCommand,
+  ): Promise<JournalEntryView> {
+    const { journal, fundNames } = await this.postInTransaction(
+      tx,
+      organisationId,
+      actorUserId,
+      propertyId,
+      command,
+    );
+    return toJournalView(journal, fundNames);
+  }
+
   /** The shared core — assumes it is already running inside a
    * `$transaction` callback (so both `post()` and `reverse()` can share
    * exactly one transaction scope each). Acquires the row lock itself; a
@@ -325,82 +357,142 @@ export class LedgerPostingService {
     input: { effectiveDate?: string; reason: string },
   ): Promise<JournalEntryView> {
     await this.getOwnedProperty(organisationId, propertyId);
+    return this.prisma.$transaction((tx) =>
+      // allowLevySourced: false — this is the generic MANUAL-journal
+      // reversal entrypoint. A journal the levy subledger generated must
+      // be reversed through LevyService.reverseInstallment (which calls
+      // reverseWithinTransaction below with allowLevySourced: true, and
+      // which also keeps LotLevyCharge/LevyInstallment state consistent
+      // with the ledger) — reversing it here would leave that subledger
+      // state completely untouched while the GL shows it reversed. Found
+      // during the live Harbour View Strata incident investigation
+      // (2026-10-21): the actual incident went through the levy workflow,
+      // not this one, but this gap was real and independent of it.
+      this.reverseInTransaction(tx, organisationId, actorUserId, propertyId, journalId, input, {
+        allowLevySourced: false,
+      }),
+    );
+  }
 
-    return this.prisma.$transaction(async (tx) => {
-      const configuration = await tx.financialConfiguration.findUnique({ where: { propertyId } });
-      if (!configuration) {
-        throw new ConflictError('Start financial setup for this property before reversing a journal.');
-      }
-      // Must happen BEFORE the "already reversed" check below — see this
-      // method's own doc comment.
-      await tx.$queryRaw`SELECT id FROM "financial_configurations" WHERE id = ${configuration.id} FOR UPDATE`;
-
-      const original = await tx.journalEntry.findFirst({
-        where: { id: journalId, organisationId, propertyId },
-        include: { lines: true },
-      });
-      if (!original) {
-        throw new NotFoundError('Journal entry not found');
-      }
-
-      const alreadyReversed = await tx.journalEntry.findFirst({
-        where: { reversalOfJournalId: original.id },
-      });
-      if (alreadyReversed) {
-        throw new ConflictError('This journal has already been reversed.');
-      }
-
-      const reversalLines: JournalLineInput[] = original.lines.map((line) => ({
-        accountId: line.accountId,
-        financialFundId: line.financialFundId,
-        // Swapped: what was debited is now credited, and vice versa — the
-        // exact opposite entry, per the "reversal integrity" requirement.
-        debit: Number(line.credit),
-        credit: Number(line.debit),
-        lineNarration: line.lineNarration ?? undefined,
-      }));
-
-      const { journal, fundNames } = await this.postInTransaction(
-        tx,
-        organisationId,
-        actorUserId,
-        propertyId,
-        {
-          effectiveDate: input.effectiveDate ?? formatDateOnly(new Date()),
-          currencyCode: original.currencyCode,
-          sourceType: 'REVERSAL',
-          sourceId: original.id,
-          sourceEventVersion: 1,
-          narration: `Reversal of ${original.publicReference}: ${input.reason}`,
-          lines: reversalLines,
-          // The original's own per-fund balance already held when it was
-          // first posted (postInTransaction enforced it then); an exact
-          // sign-swap of an already fund-balanced journal is necessarily
-          // fund-balanced too, so re-deriving that here is redundant, not
-          // a safety gap.
-          allowCrossFund: true,
-        },
-      );
-
-      const linked = await tx.journalEntry.update({
-        where: { id: journal.id },
-        data: { reversalOfJournalId: original.id, reversalReason: input.reason },
-        include: JOURNAL_LINE_INCLUDE,
-      });
-
-      await recordActivity(tx, {
-        organisationId,
-        propertyId,
-        actorUserId,
-        eventType: 'FINANCIAL_JOURNAL_REVERSED',
-        entityType: 'JournalEntry',
-        entityId: original.id,
-        title: `Journal ${original.publicReference} reversed by ${linked.publicReference}`,
-        description: input.reason,
-      });
-
-      return toJournalView(linked, fundNames);
+  /**
+   * Same contract as `reverse()`, but for a caller that already holds its
+   * own open transaction and needs the reversal to commit atomically with
+   * its own additional writes — e.g. LevyService.reverseIssuance also
+   * needs to cancel every LotLevyCharge and mark the LevySchedule REVERSED
+   * in the same transaction as the journal reversal itself. Without this,
+   * a crash between "journal reversed" and "subledger updated" would leave
+   * the ledger correctly reversed but the levy subledger still showing
+   * ISSUED — caught and fixed during the M16.3 closure review before any
+   * test exercised the gap (see the M16.3 verification notes). The
+   * caller's transaction must still acquire the FinancialConfiguration
+   * row lock itself before this is called if it reads/validates
+   * property-scoped state beforehand — this method re-acquires the same
+   * lock internally regardless (harmless re-entrant no-op within one
+   * transaction), the same "lock before check" discipline as `post()`.
+   */
+  async reverseWithinTransaction(
+    tx: Prisma.TransactionClient,
+    organisationId: string,
+    actorUserId: string,
+    propertyId: string,
+    journalId: string,
+    input: { effectiveDate?: string; reason: string },
+  ): Promise<JournalEntryView> {
+    return this.reverseInTransaction(tx, organisationId, actorUserId, propertyId, journalId, input, {
+      allowLevySourced: true,
     });
+  }
+
+  private async reverseInTransaction(
+    tx: Prisma.TransactionClient,
+    organisationId: string,
+    actorUserId: string,
+    propertyId: string,
+    journalId: string,
+    input: { effectiveDate?: string; reason: string },
+    options: { allowLevySourced: boolean },
+  ): Promise<JournalEntryView> {
+    const configuration = await tx.financialConfiguration.findUnique({ where: { propertyId } });
+    if (!configuration) {
+      throw new ConflictError('Start financial setup for this property before reversing a journal.');
+    }
+    // Must happen BEFORE the "already reversed" check below — see this
+    // method's own doc comment and ADR-021's closure addendum.
+    await tx.$queryRaw`SELECT id FROM "financial_configurations" WHERE id = ${configuration.id} FOR UPDATE`;
+
+    const original = await tx.journalEntry.findFirst({
+      where: { id: journalId, organisationId, propertyId },
+      include: { lines: true },
+    });
+    if (!original) {
+      throw new NotFoundError('Journal entry not found');
+    }
+
+    // Guard added after the 2026-10-21 Harbour View Strata incident
+    // investigation — a levy-generated journal (LEVY_REGULAR/LEVY_SPECIAL/
+    // LEVY_ADJUSTMENT) must never be reversed through the generic manual
+    // workflow: doing so posts a correct, balanced GL reversal while
+    // leaving LotLevyCharge/LevyInstallment completely untouched, which
+    // would desync the lot subledger from the ledger just as surely as
+    // the instalment-level bug this same investigation found (see
+    // LevyService.reverseInstallment's own shared-journal guard).
+    if (!options.allowLevySourced && (original.sourceType === 'LEVY_REGULAR' || original.sourceType === 'LEVY_SPECIAL' || original.sourceType === 'LEVY_ADJUSTMENT')) {
+      throw new ConflictError(
+        'This journal was generated by the levy subledger and cannot be reversed through the generic manual-journal workflow — use the levy schedule’s own reverse-instalment action (or reverse the adjustment’s source charge) so lot-level charge state stays consistent with the ledger.',
+      );
+    }
+
+    const alreadyReversed = await tx.journalEntry.findFirst({
+      where: { reversalOfJournalId: original.id },
+    });
+    if (alreadyReversed) {
+      throw new ConflictError('This journal has already been reversed.');
+    }
+
+    const reversalLines: JournalLineInput[] = original.lines.map((line) => ({
+      accountId: line.accountId,
+      financialFundId: line.financialFundId,
+      // Swapped: what was debited is now credited, and vice versa — the
+      // exact opposite entry, per the "reversal integrity" requirement.
+      debit: Number(line.credit),
+      credit: Number(line.debit),
+      lineNarration: line.lineNarration ?? undefined,
+    }));
+
+    const { journal, fundNames } = await this.postInTransaction(tx, organisationId, actorUserId, propertyId, {
+      effectiveDate: input.effectiveDate ?? formatDateOnly(new Date()),
+      currencyCode: original.currencyCode,
+      sourceType: 'REVERSAL',
+      sourceId: original.id,
+      sourceEventVersion: 1,
+      narration: `Reversal of ${original.publicReference}: ${input.reason}`,
+      lines: reversalLines,
+      // The original's own per-fund balance already held when it was
+      // first posted (postInTransaction enforced it then); an exact
+      // sign-swap of an already fund-balanced journal is necessarily
+      // fund-balanced too, so re-deriving that here is redundant, not a
+      // safety gap.
+      allowCrossFund: true,
+    });
+
+    const linked = await tx.journalEntry.update({
+      where: { id: journal.id },
+      data: { reversalOfJournalId: original.id, reversalReason: input.reason },
+      include: JOURNAL_LINE_INCLUDE,
+    });
+
+    await recordActivity(tx, {
+      organisationId,
+      propertyId,
+      actorUserId,
+      eventType: 'FINANCIAL_JOURNAL_REVERSED',
+      entityType: 'JournalEntry',
+      entityId: original.id,
+      title: `Journal ${original.publicReference} reversed by ${linked.publicReference}`,
+      description: input.reason,
+    });
+
+    return toJournalView(linked, fundNames);
   }
 
   async get(organisationId: string, propertyId: string, journalId: string): Promise<JournalEntryView> {
@@ -441,12 +533,23 @@ export class LedgerPostingService {
    * today) — a read-only aggregation over immutable postings, never an
    * independently maintained running balance (see the "no independently
    * maintained running balances" safeguard). */
-  async trialBalance(organisationId: string, propertyId: string, asOfDate?: string) {
+  /** `financialFundId` (M16.3 refinement pass) restricts the trial
+   * balance to journal lines tagged with that one fund — useful for a
+   * scheme with multiple funds where an unrestricted account (e.g.
+   * GST Payable, Accounts Payable) carries balances from more than one
+   * fund and a reviewer wants to see just one fund's slice. Omitted,
+   * the trial balance covers every fund, exactly as before. */
+  async trialBalance(organisationId: string, propertyId: string, asOfDate?: string, financialFundId?: string) {
     await this.getOwnedProperty(organisationId, propertyId);
     const cutoff = asOfDate ? parseDateOnly(asOfDate) : new Date();
 
     const lines = await this.prisma.journalLine.findMany({
-      where: { organisationId, propertyId, journalEntry: { effectiveDate: { lte: cutoff } } },
+      where: {
+        organisationId,
+        propertyId,
+        financialFundId,
+        journalEntry: { effectiveDate: { lte: cutoff } },
+      },
       include: { account: { select: { code: true, name: true, classification: true } } },
     });
 
@@ -467,16 +570,32 @@ export class LedgerPostingService {
       byAccount.set(line.accountId, bucket);
     }
 
+    // Conventional presentation (M16.3 refinement pass): ASSET/EXPENSE
+    // accounts normally carry a debit balance, LIABILITY/EQUITY/INCOME a
+    // credit balance. A trial balance is conventionally shown as one
+    // amount in EITHER the Debit or the Credit column per row — never a
+    // single signed "net" figure, which reads as "negative revenue" to a
+    // non-accountant. `netBalance` (signed, debit-positive) is kept for
+    // any caller relying on the raw figure; `presentedSide`/
+    // `presentedBalance` are the conventional, always-positive pair.
+    const creditNormal = new Set(['LIABILITY', 'EQUITY', 'INCOME']);
     return Array.from(byAccount.entries())
-      .map(([accountId, b]) => ({
-        accountId,
-        accountCode: b.code,
-        accountName: b.name,
-        classification: b.classification,
-        totalDebit: b.debit.toFixed(2),
-        totalCredit: b.credit.toFixed(2),
-        netBalance: b.debit.minus(b.credit).toFixed(2),
-      }))
+      .map(([accountId, b]) => {
+        const net = b.debit.minus(b.credit);
+        const isCreditNormal = creditNormal.has(b.classification);
+        const presentedSide = net.isZero() ? (isCreditNormal ? 'CREDIT' : 'DEBIT') : net.gt(0) ? 'DEBIT' : 'CREDIT';
+        return {
+          accountId,
+          accountCode: b.code,
+          accountName: b.name,
+          classification: b.classification,
+          totalDebit: b.debit.toFixed(2),
+          totalCredit: b.credit.toFixed(2),
+          netBalance: net.toFixed(2),
+          presentedSide: presentedSide as 'DEBIT' | 'CREDIT',
+          presentedBalance: net.abs().toFixed(2),
+        };
+      })
       .sort((a, b) => a.accountCode.localeCompare(b.accountCode));
   }
 

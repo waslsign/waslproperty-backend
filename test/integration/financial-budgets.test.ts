@@ -980,6 +980,78 @@ describe('M16.2 Budget Management', () => {
       expect(activeBudgets[0].id).toBe(v2Id);
     });
 
+    it('closure fix: activating v2 also supersedes an APPROVED-but-never-activated v1 in its own revision chain', async () => {
+      const { accessToken } = await registerAuOrg();
+      const { property, administrationFundId, capitalWorksFundId } =
+        await createActiveFinancialProperty(accessToken);
+      const v1Id = await createDraftBudgetWithLines(
+        accessToken,
+        property.id,
+        administrationFundId,
+        capitalWorksFundId,
+      );
+      // v1 is approved but deliberately never activated — the real-world
+      // case: a committee approves a draft, then a correction is needed
+      // before it ever goes live, so a revision is approved and activated
+      // directly instead.
+      await approveBudget(accessToken, property.id, v1Id);
+
+      const revised = await reviseBudget(accessToken, property.id, v1Id);
+      const v2Id = revised.body.id as string;
+      await approveBudget(accessToken, property.id, v2Id);
+      const activateV2 = await activateBudget(accessToken, property.id, v2Id);
+      expect(activateV2.status).toBe(200);
+      expect(activateV2.body.status).toBe('ACTIVE');
+
+      // v1 never passed through ACTIVE, so before this fix it stayed
+      // APPROVED forever — misrepresenting it as still a live candidate.
+      const v1After = await getBudget(accessToken, property.id, v1Id);
+      expect(v1After.body.status).toBe('SUPERSEDED');
+      expect(v1After.body.supersededAt).toBeTruthy();
+      // Its real historical approval record is untouched.
+      expect(v1After.body.approvedAt).toBeTruthy();
+      expect(v1After.body.lines).toHaveLength(2);
+
+      const list = await listBudgets(accessToken, property.id);
+      const activeBudgets = list.body.items.filter((b: { status: string }) => b.status === 'ACTIVE');
+      expect(activeBudgets).toHaveLength(1);
+      expect(activeBudgets[0].id).toBe(v2Id);
+    });
+
+    it('does not supersede an APPROVED budget for a different financial year (no revision-chain relationship)', async () => {
+      const { accessToken } = await registerAuOrg();
+      const { property, administrationFundId, capitalWorksFundId } =
+        await createActiveFinancialProperty(accessToken);
+      // create() itself blocks a second non-revision budget for the SAME
+      // financial year, so the only real way for an unrelated APPROVED
+      // budget to coexist is a different (e.g. next) financial year —
+      // planned ahead of the next rollover, per FinancialBudget's own doc
+      // comment on why a budget carries its own explicit FY dates.
+      const budgetAId = await createDraftBudgetWithLines(
+        accessToken,
+        property.id,
+        administrationFundId,
+        capitalWorksFundId,
+      );
+      await approveBudget(accessToken, property.id, budgetAId);
+      const budgetBId = await createDraftBudgetWithLines(
+        accessToken,
+        property.id,
+        administrationFundId,
+        capitalWorksFundId,
+        { financialYearStartDate: '2027-07-01', financialYearEndDate: '2028-06-30' },
+      );
+      await approveBudget(accessToken, property.id, budgetBId);
+
+      await activateBudget(accessToken, property.id, budgetBId);
+
+      // budgetA has no revision-chain relationship to budgetB (and is a
+      // different financial year entirely) — activating B must never
+      // touch it.
+      const budgetAAfter = await getBudget(accessToken, property.id, budgetAId);
+      expect(budgetAAfter.body.status).toBe('APPROVED');
+    });
+
     it('concurrent activation of two approved versions for the same financial year ends with exactly one ACTIVE', async () => {
       const { accessToken } = await registerAuOrg();
       const { property, administrationFundId, capitalWorksFundId } =
@@ -999,7 +1071,24 @@ describe('M16.2 Budget Management', () => {
         activateBudget(accessToken, property.id, v1Id),
         activateBudget(accessToken, property.id, v2Id),
       ]);
-      expect([first.status, second.status]).toEqual([200, 200]);
+      // Closure fix side effect (an improvement, not a regression):
+      // whichever of v1/v2 wins the row lock first now also immediately
+      // supersedes any still-APPROVED ancestor in its own revision chain.
+      // If v2 (the descendant) wins first, v1 is superseded under it and
+      // v1's own call then correctly 409s instead of the old "last call
+      // silently wins and clobbers the first" race (which used to let v1
+      // and v2 flicker ACTIVE back and forth with both calls reporting
+      // 200 regardless of order). If v1 (the ancestor) wins first
+      // instead, v2 — a descendant, never touched by the ancestor-only
+      // walk — is still a legitimate pending alternative and its own
+      // call still succeeds by the pre-existing currentlyActive-supersede
+      // path. Both outcomes are correct; only the exact pairing is
+      // inherently lock-order-dependent, so assert the invariant that
+      // actually matters rather than one specific race outcome.
+      expect([first.status, second.status]).toContain(200);
+      for (const status of [first.status, second.status]) {
+        expect([200, 409]).toContain(status);
+      }
 
       const list = await listBudgets(accessToken, property.id);
       const activeBudgets = list.body.items.filter(
