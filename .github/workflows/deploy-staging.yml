@@ -46,10 +46,28 @@ jobs:
       - name: Package artifact
         run: tar -czf backend.tar.gz dist node_modules package.json
 
-      # Host comes from a repo variable, never hardcoded here — update
-      # vars.STAGING_HOST if the instance's public IP ever changes (no
-      # Elastic IP is provisioned). The deploy key only ever reaches the
-      # forced-command dispatcher on the host; it cannot open a shell.
+      # Host comes from a repo variable (Settings > Secrets and variables >
+      # Actions — a plain repo variable, not a GitHub "Environment" one;
+      # this job has no `environment:` key), never hardcoded here. The
+      # instance now has an Elastic IP (currently 13.63.100.138) so this
+      # shouldn't need updating again after a stop/start, but repo
+      # variables are per-repository — this value is NOT shared with
+      # waslproperty-frontend's own STAGING_HOST. The deploy key only ever
+      # reaches the forced-command dispatcher on the host; it cannot open
+      # a shell.
+      - name: Verify deployment configuration
+        env:
+          SSH_KEY: ${{ secrets.STAGING_DEPLOY_SSH_KEY }}
+          STAGING_HOST: ${{ vars.STAGING_HOST }}
+        run: |
+          missing=()
+          [ -z "$STAGING_HOST" ] && missing+=("vars.STAGING_HOST")
+          [ -z "$SSH_KEY" ] && missing+=("secrets.STAGING_DEPLOY_SSH_KEY")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required deployment configuration on this repo: ${missing[*]}. Set it under Settings > Secrets and variables > Actions." >&2
+            exit 1
+          fi
+
       - name: Transfer artifact and trigger deploy
         env:
           SSH_KEY: ${{ secrets.STAGING_DEPLOY_SSH_KEY }}

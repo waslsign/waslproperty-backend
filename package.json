@@ -7,6 +7,16 @@
   "engines": {
     "node": ">=22.0.0"
   },
+  "packageManager": "pnpm@10.34.7",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "argon2",
+      "esbuild",
+      "prisma",
+      "tesseract.js"
+    ]
+  },
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "build": "tsc -p tsconfig.json",
