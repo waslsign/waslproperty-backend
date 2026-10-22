@@ -74,6 +74,12 @@ model Organisation {
   collectionCases                  CollectionCase[]
   collectionNotes                  CollectionNote[]
   paymentReminders                 PaymentReminder[]
+  /// M16.7 — Banking & Manual Bank Reconciliation.
+  bankAccounts                     BankAccount[]
+  bankStatementImports             BankStatementImport[]
+  bankTransactions                 BankTransaction[]
+  bankTransactionMatches           BankTransactionMatch[]
+  bankReconciliations              BankReconciliation[]
   activityEvents                   ActivityEvent[]
   maintenanceRequests              MaintenanceRequest[]
   maintenanceRequestAttachments    MaintenanceRequestAttachment[]
@@ -177,6 +183,13 @@ model User {
   createdCollectionNotes                CollectionNote[]                  @relation("CollectionNoteCreatedBy")
   generatedPaymentReminders             PaymentReminder[]                 @relation("PaymentReminderGeneratedBy")
   cancelledPaymentReminders             PaymentReminder[]                 @relation("PaymentReminderCancelledBy")
+  createdBankAccounts                   BankAccount[]                     @relation("BankAccountCreatedBy")
+  importedBankStatements                BankStatementImport[]             @relation("BankStatementImportBy")
+  confirmedBankTransactionMatches       BankTransactionMatch[]            @relation("BankTransactionMatchConfirmedBy")
+  reversedBankTransactionMatches        BankTransactionMatch[]            @relation("BankTransactionMatchReversedBy")
+  preparedBankReconciliations           BankReconciliation[]              @relation("BankReconciliationPreparedBy")
+  reviewedBankReconciliations           BankReconciliation[]              @relation("BankReconciliationReviewedBy")
+  reopenedBankReconciliations           BankReconciliation[]              @relation("BankReconciliationReopenedBy")
 
   @@map("users")
 }
@@ -445,6 +458,12 @@ model Property {
   collectionCases        CollectionCase[]
   collectionNotes        CollectionNote[]
   paymentReminders       PaymentReminder[]
+  /// M16.7 — Banking & Manual Bank Reconciliation.
+  bankAccounts           BankAccount[]
+  bankStatementImports   BankStatementImport[]
+  bankTransactions       BankTransaction[]
+  bankTransactionMatches BankTransactionMatch[]
+  bankReconciliations    BankReconciliation[]
 
   @@unique([organisationId, code])
   @@index([organisationId])
@@ -696,6 +715,8 @@ model FinancialConfiguration {
   levySchedules       LevySchedule[]
   /// M16.5 — Receipts & Payment Allocation.
   receipts            Receipt[]
+  /// M16.7 — Banking & Manual Bank Reconciliation.
+  bankAccounts        BankAccount[]
 
   @@index([organisationId])
   @@map("financial_configurations")
@@ -746,6 +767,8 @@ model FinancialFund {
   lotLevyCharges         LotLevyCharge[]
   /// M16.5 — Receipts & Payment Allocation.
   receipts               Receipt[]
+  /// M16.7 — Banking & Manual Bank Reconciliation.
+  bankAccounts           BankAccount[]
 
   @@index([financialConfigurationId])
   @@index([propertyId])
@@ -1156,6 +1179,9 @@ model AccountingAccount {
   journalLines           JournalLine[]
   /// M16.5 — every Receipt whose cash landed in this account.
   receiptsAsDestination  Receipt[]
+  /// M16.7 — every BankAccount whose statement reconciles against this
+  /// account.
+  bankAccounts           BankAccount[]
 
   /// Code uniqueness is per property, not global — the same code (e.g.
   /// "150200") may legitimately exist on two different schemes.
@@ -1493,9 +1519,12 @@ model JournalLine {
 
   createdAt DateTime @default(now())
 
-  journalEntry JournalEntry      @relation(fields: [journalEntryId], references: [id])
-  account      AccountingAccount @relation(fields: [accountId], references: [id])
-  fund         FinancialFund     @relation(fields: [financialFundId], references: [id])
+  journalEntry           JournalEntry           @relation(fields: [journalEntryId], references: [id])
+  account                AccountingAccount      @relation(fields: [accountId], references: [id])
+  fund                   FinancialFund          @relation(fields: [financialFundId], references: [id])
+  /// M16.7 — set when a bank transaction was matched to this specific
+  /// existing GL cash movement (an outgoing payment, bank charge, etc.).
+  bankTransactionMatches BankTransactionMatch[]
 
   @@index([journalEntryId])
   @@index([accountId])
@@ -1923,6 +1952,9 @@ model Receipt {
   createdByUser          User                   @relation("ReceiptCreatedBy", fields: [createdByUserId], references: [id])
   reversedByUser         User?                  @relation("ReceiptReversedBy", fields: [reversedByUserId], references: [id])
   allocations            PaymentAllocation[]
+  /// M16.7 — set when a bank transaction was matched (or, for
+  /// NEW_RECEIPT, caused the creation of) this receipt.
+  bankTransactionMatches BankTransactionMatch[]
 
   @@index([organisationId])
   @@index([propertyId])
@@ -2127,6 +2159,387 @@ model PaymentReminder {
   @@index([spaceId])
   @@index([collectionCaseId])
   @@map("payment_reminders")
+}
+
+// --- Strata Financial Management: Banking & Manual Bank Reconciliation (M16.7) ---
+//
+// Builds on M16.2.2's General Ledger (JournalEntry/JournalLine) and M16.5's
+// Receipt/PaymentAllocation — no parallel financial truth source. Five
+// load-bearing decisions:
+//
+// 1. Importing a bank statement never posts a GL journal. A BankTransaction
+//    is a read-only record of what the bank's own statement says happened;
+//    it becomes economically real in WaslProp's books only when MATCHED to
+//    an existing Receipt/JournalLine, or when a manager explicitly uses it
+//    to create a new Receipt via the existing ReceiptsService (the only
+//    receipt-posting path in this codebase — see BankMatchType.NEW_RECEIPT).
+//
+// 2. Matching and reconciliation are separate concepts, per this
+//    milestone's own brief. BankTransactionMatch links one bank movement to
+//    one existing accounting record. BankReconciliation separately confirms
+//    that, for a whole statement period, the bank account's statement
+//    balance and the GL cash account's balance agree — it does not itself
+//    link individual transactions (BankTransaction.reconciliationId does).
+//
+// 3. A bank account's own identifier is never persisted in recoverable
+//    form. BankAccount.accountIdentifierMasked is the ONLY thing stored —
+//    derived once at registration (keeping only the last 4 characters
+//    visible) and the raw value is discarded immediately after. This
+//    trivially satisfies "never unmasked in logs/activity events/ordinary
+//    API responses" because the unmasked value is never persisted at all,
+//    not because it is filtered on the way out.
+//
+// 4. Duplicate-import detection does not rely on date+amount alone (an MVP
+//    CSV frequently has no stable bank transaction id). BankTransaction.
+//    sourceRowHash is a SHA-256 of (bankAccountId, transactionDate, amount,
+//    description, bankReference, runningBalance) — unique per bank account
+//    — so two genuinely identical-looking legitimate transactions on the
+//    same day are distinguished only by whatever the statement itself
+//    distinguishes them by (typically a distinct runningBalance); see
+//    bank-import.service.ts's doc comment for the full strategy and its
+//    known limitation.
+//
+// 5. A completed BankReconciliation is immutable history, same discipline
+//    as a POSTED JournalEntry — correction is REOPENED (an explicit,
+//    audited status change, not a silent mutation of the original
+//    snapshot fields) plus a fresh superseding DRAFT, never an in-place
+//    edit of a RECONCILED row's own balances.
+
+enum BankAccountType {
+  OPERATING
+  RESERVE
+  TRUST
+  OTHER
+}
+
+enum BankAccountStatus {
+  ACTIVE
+  INACTIVE
+}
+
+/// A property-scoped registry entry for a real-world bank account — see
+/// this section's doc comment, point 3, for why no unmasked identifier is
+/// ever persisted. Deliberately NOT assumed to be 1:1 with a
+/// FinancialFund (see this milestone's brief) — `financialFundId` is an
+/// optional convenience association; `glCashAccountId` is the one
+/// authoritative link into the chart of accounts, explicitly chosen at
+/// registration (mirrors Receipt.destinationAccountId's own
+/// resolved-and-snapshotted-once discipline) rather than re-resolved via
+/// the posting profile on every use.
+model BankAccount {
+  id                       String            @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "BANK" prefix.
+  publicReference          String            @unique
+  organisationId           String
+  propertyId               String
+  financialConfigurationId String
+  accountName              String
+  institutionName          String
+  /// The ONLY persisted representation of the account identifier — e.g.
+  /// "••••1234". See this section's doc comment, point 3.
+  accountIdentifierMasked  String
+  currencyCode             String
+  accountType              BankAccountType
+  /// The GL cash account this bank account's movements post against —
+  /// must be ASSET-classified and belong to the same property; see
+  /// BankAccountsService.register for the validation. Required: every
+  /// bank account must have somewhere in the GL its balance corresponds
+  /// to, even before any statement is ever imported.
+  glCashAccountId          String
+  /// Optional — set only when this bank account genuinely corresponds to
+  /// one fund's own cash (the common case for a dedicated Capital Works
+  /// reserve account); null for an operating account whose statement
+  /// mixes multiple funds' cash (matching/allocation then happens at the
+  /// transaction level, same as a multi-fund Receipt's own fund choice).
+  financialFundId          String?
+  status                   BankAccountStatus @default(ACTIVE)
+  /// The reconciled balance and date WaslProp's own reconciliation history
+  /// starts from — set once at registration (optional: a brand-new bank
+  /// account with no prior history simply starts at 0.00 from today, same
+  /// "never fabricate history before this date" discipline as
+  /// FinancialConfiguration.cutoverDate), frozen thereafter; never updated
+  /// after the first BankReconciliation against this account is created.
+  openingReconciledBalance Decimal?          @db.Decimal(14, 2)
+  openingReconciledDate    DateTime?         @db.Date
+
+  createdByUserId String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organisation           Organisation           @relation(fields: [organisationId], references: [id])
+  property               Property               @relation(fields: [propertyId], references: [id])
+  financialConfiguration FinancialConfiguration @relation(fields: [financialConfigurationId], references: [id])
+  glCashAccount          AccountingAccount      @relation(fields: [glCashAccountId], references: [id])
+  financialFund          FinancialFund?         @relation(fields: [financialFundId], references: [id])
+  createdByUser          User                   @relation("BankAccountCreatedBy", fields: [createdByUserId], references: [id])
+  imports                BankStatementImport[]
+  transactions           BankTransaction[]
+  reconciliations        BankReconciliation[]
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([glCashAccountId])
+  @@index([financialFundId])
+  @@map("bank_accounts")
+}
+
+/// One applied CSV statement upload — provenance record only (mirrors
+/// AccountImportBatch exactly: preview is a pure, unpersisted computation,
+/// nothing is written until `apply`). `fileHash` is the SHA-256 of the
+/// raw, normalized file content — a second upload of the byte-identical
+/// file against the same bank account is rejected outright before any
+/// row-level duplicate detection even runs (see bank-import.service.ts).
+model BankStatementImport {
+  id                 String    @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "BIMP" prefix.
+  publicReference    String    @unique
+  organisationId     String
+  propertyId         String
+  bankAccountId      String
+  fileName           String
+  fileHash           String
+  statementStartDate DateTime? @db.Date
+  statementEndDate   DateTime? @db.Date
+  totalRows          Int
+  importedCount      Int
+  /// Rows present in the file but skipped as duplicates of an
+  /// already-imported transaction (same bank account, different import).
+  duplicateCount     Int
+  importedByUserId   String
+  importedAt         DateTime  @default(now())
+
+  organisation   Organisation      @relation(fields: [organisationId], references: [id])
+  property       Property          @relation(fields: [propertyId], references: [id])
+  bankAccount    BankAccount       @relation(fields: [bankAccountId], references: [id])
+  importedByUser User              @relation("BankStatementImportBy", fields: [importedByUserId], references: [id])
+  transactions   BankTransaction[]
+
+  @@unique([bankAccountId, fileHash])
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([bankAccountId])
+  @@map("bank_statement_imports")
+}
+
+/// UNMATCHED -> SUGGESTED -> MATCHED, or -> IGNORED (a manager's explicit
+/// "this will never be matched" dismissal, e.g. a bank fee the scheme
+/// chooses not to book). SUGGESTED means the matching engine has proposed
+/// a match (a BankTransactionMatch row with status SUGGESTED exists) that
+/// no one has confirmed yet.
+enum BankTransactionMatchStatus {
+  UNMATCHED
+  SUGGESTED
+  MATCHED
+  IGNORED
+}
+
+/// Separate from matching (see this section's doc comment, point 2) — set
+/// only once this transaction is included in a BankReconciliation
+/// (DRAFT or later), cleared back to UNRECONCILED if that reconciliation
+/// is later reopened.
+enum BankTransactionReconciliationStatus {
+  UNRECONCILED
+  RECONCILED
+}
+
+/// One normalized row from an imported bank statement — amount is signed
+/// (credit/deposit positive, debit/payment negative), always exact Decimal,
+/// never a float. See this section's doc comment, point 4, for
+/// `sourceRowHash`'s role in duplicate detection.
+model BankTransaction {
+  id                    String                              @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "BTX" prefix.
+  publicReference       String                              @unique
+  organisationId        String
+  propertyId            String
+  bankAccountId         String
+  importBatchId         String
+  transactionDate       DateTime                            @db.Date
+  /// The settlement/value date, if the statement provides one separately
+  /// from the transaction date — optional, display-only in this MVP.
+  valueDate             DateTime?                           @db.Date
+  amount                Decimal                             @db.Decimal(14, 2)
+  currencyCode          String
+  description           String
+  bankReference         String?
+  /// The statement's own running balance after this row, if provided —
+  /// never used as an authoritative balance by itself, only as
+  /// corroborating evidence for duplicate detection and row validation.
+  runningBalance        Decimal?                            @db.Decimal(14, 2)
+  /// A stable bank-provided transaction id, if the CSV has one — when
+  /// present, duplicate detection trusts it directly; see
+  /// bank-import.service.ts.
+  externalTransactionId String?
+  /// SHA-256 hex digest — see this section's doc comment, point 4.
+  sourceRowHash         String
+  matchStatus           BankTransactionMatchStatus          @default(UNMATCHED)
+  reconciliationStatus  BankTransactionReconciliationStatus @default(UNRECONCILED)
+  reconciliationId      String?
+
+  createdAt DateTime @default(now())
+
+  organisation   Organisation           @relation(fields: [organisationId], references: [id])
+  property       Property               @relation(fields: [propertyId], references: [id])
+  bankAccount    BankAccount            @relation(fields: [bankAccountId], references: [id])
+  importBatch    BankStatementImport    @relation(fields: [importBatchId], references: [id])
+  reconciliation BankReconciliation?    @relation(fields: [reconciliationId], references: [id])
+  matches        BankTransactionMatch[]
+
+  /// The core duplicate-import guard — see this section's doc comment,
+  /// point 4.
+  @@unique([bankAccountId, sourceRowHash])
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([bankAccountId])
+  @@index([importBatchId])
+  @@index([reconciliationId])
+  @@index([matchStatus])
+  @@map("bank_transactions")
+}
+
+/// What kind of existing accounting record a bank transaction was matched
+/// to. RECEIPT/JOURNAL_LINE link to something that already existed before
+/// the match; NEW_RECEIPT records that confirming this match is what
+/// CAUSED a new Receipt to be posted (via the existing ReceiptsService —
+/// see this section's doc comment, point 1).
+enum BankMatchType {
+  RECEIPT
+  JOURNAL_LINE
+  NEW_RECEIPT
+}
+
+/// SUGGESTED -> CONFIRMED, or -> REVERSED (never edited in place — a
+/// reversed suggestion/confirmation is superseded by a fresh row, same
+/// "reversal is its own event" discipline as PaymentAllocationStatus).
+enum BankMatchStatus {
+  SUGGESTED
+  CONFIRMED
+  REVERSED
+}
+
+/// One proposed-or-confirmed link between a BankTransaction and an
+/// existing (or, for NEW_RECEIPT, newly created) accounting record. At
+/// most one SUGGESTED-or-CONFIRMED row may exist per BankTransaction at a
+/// time (enforced in bank-matching.service.ts, not a DB constraint — same
+/// "service-level dedup" precedent as PostingProfileRule) — "do not match
+/// the same bank transaction twice". At most one CONFIRMED row may ever
+/// reference the same receiptId — "do not allocate the same receipt
+/// twice", checked the same way.
+model BankTransactionMatch {
+  id                String          @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "BMTCH" prefix.
+  publicReference   String          @unique
+  organisationId    String
+  propertyId        String
+  bankTransactionId String
+  matchType         BankMatchType
+  /// Set for RECEIPT and NEW_RECEIPT match types.
+  receiptId         String?
+  /// Set for JOURNAL_LINE match types — the existing GL cash movement
+  /// (e.g. a manual journal for bank charges/interest) this transaction
+  /// corresponds to.
+  journalLineId     String?
+  /// A short machine-readable reason code (e.g. "UNIQUE_REFERENCE",
+  /// "EXACT_AMOUNT_LOT", "EXACT_AMOUNT_DATE") driving `explanation` — see
+  /// bank-matching.service.ts's priority-ordered rule list.
+  confidence        String
+  /// The human-readable reason shown to the manager — see this
+  /// milestone's brief example ("Unique reference and exact amount
+  /// match.").
+  explanation       String
+  status            BankMatchStatus @default(SUGGESTED)
+
+  suggestedByUserId String?
+  suggestedAt       DateTime  @default(now())
+  confirmedByUserId String?
+  confirmedAt       DateTime?
+  reversedByUserId  String?
+  reversedAt        DateTime?
+  reversalReason    String?
+
+  organisation    Organisation    @relation(fields: [organisationId], references: [id])
+  property        Property        @relation(fields: [propertyId], references: [id])
+  bankTransaction BankTransaction @relation(fields: [bankTransactionId], references: [id])
+  receipt         Receipt?        @relation(fields: [receiptId], references: [id])
+  journalLine     JournalLine?    @relation(fields: [journalLineId], references: [id])
+  confirmedByUser User?           @relation("BankTransactionMatchConfirmedBy", fields: [confirmedByUserId], references: [id])
+  reversedByUser  User?           @relation("BankTransactionMatchReversedBy", fields: [reversedByUserId], references: [id])
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([bankTransactionId])
+  @@index([receiptId])
+  @@index([journalLineId])
+  @@index([status])
+  @@map("bank_transaction_matches")
+}
+
+enum BankReconciliationStatus {
+  DRAFT
+  IN_REVIEW
+  RECONCILED
+  REOPENED
+}
+
+/// One statement-period reconciliation of a bank account against its GL
+/// cash account — see this section's doc comment, point 2 and point 5.
+/// `difference` is the core output of BankReconciliationService.calculate
+/// — see that method's doc comment for the exact equation. A RECONCILED
+/// row's balance fields are never edited again; `supersedesReconciliationId`
+/// links a later correcting reconciliation back to the one it replaces.
+model BankReconciliation {
+  id                         String                   @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "RECN" prefix.
+  publicReference            String                   @unique
+  organisationId             String
+  propertyId                 String
+  bankAccountId              String
+  periodStartDate            DateTime                 @db.Date
+  periodEndDate              DateTime                 @db.Date
+  statementOpeningBalance    Decimal                  @db.Decimal(14, 2)
+  statementClosingBalance    Decimal                  @db.Decimal(14, 2)
+  /// Snapshotted GL cash account balance as of periodStartDate/periodEndDate
+  /// at the time `calculate` last ran — re-computed on every calculate
+  /// call while still DRAFT/IN_REVIEW, frozen once RECONCILED.
+  glOpeningBalance           Decimal                  @db.Decimal(14, 2)
+  glClosingBalance           Decimal                  @db.Decimal(14, 2)
+  /// Net of GL cash lines in-period not yet linked to any bank transaction
+  /// via a CONFIRMED BankTransactionMatch — split for display into the
+  /// deposit (debit) and payment (credit) components.
+  outstandingDepositsTotal   Decimal                  @default(0) @db.Decimal(14, 2)
+  unpresentedPaymentsTotal   Decimal                  @default(0) @db.Decimal(14, 2)
+  /// glClosingBalance - outstandingDepositsTotal + unpresentedPaymentsTotal
+  /// - statementClosingBalance — see BankReconciliationService.calculate's
+  /// doc comment. Must be exactly 0.00 for `complete` to succeed.
+  difference                 Decimal                  @default(0) @db.Decimal(14, 2)
+  status                     BankReconciliationStatus @default(DRAFT)
+  supersedesReconciliationId String?                  @unique
+
+  preparedByUserId String
+  reviewedByUserId String?
+  completedAt      DateTime?
+  reopenedByUserId String?
+  reopenedAt       DateTime?
+  reopenReason     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organisation   Organisation        @relation(fields: [organisationId], references: [id])
+  property       Property            @relation(fields: [propertyId], references: [id])
+  bankAccount    BankAccount         @relation(fields: [bankAccountId], references: [id])
+  preparedByUser User                @relation("BankReconciliationPreparedBy", fields: [preparedByUserId], references: [id])
+  reviewedByUser User?               @relation("BankReconciliationReviewedBy", fields: [reviewedByUserId], references: [id])
+  reopenedByUser User?               @relation("BankReconciliationReopenedBy", fields: [reopenedByUserId], references: [id])
+  supersedes     BankReconciliation? @relation("BankReconciliationSupersede", fields: [supersedesReconciliationId], references: [id])
+  supersededBy   BankReconciliation? @relation("BankReconciliationSupersede")
+  transactions   BankTransaction[]
+
+  @@index([organisationId])
+  @@index([propertyId])
+  @@index([bankAccountId])
+  @@index([status])
+  @@map("bank_reconciliations")
 }
 
 /// A business/person record: an owner, tenant or resident on file for an
@@ -2455,6 +2868,16 @@ enum ActivityEventType {
   COLLECTION_NOTE_ADDED
   PAYMENT_REMINDER_DRAFTED
   PAYMENT_REMINDER_CANCELLED
+  /// M16.7 — Banking & Manual Bank Reconciliation.
+  BANK_ACCOUNT_CREATED
+  BANK_ACCOUNT_UPDATED
+  BANK_STATEMENT_IMPORTED
+  BANK_STATEMENT_IMPORT_REJECTED
+  BANK_TRANSACTION_MATCH_CONFIRMED
+  BANK_TRANSACTION_MATCH_REVERSED
+  BANK_RECONCILIATION_STARTED
+  BANK_RECONCILIATION_COMPLETED
+  BANK_RECONCILIATION_REOPENED
 }
 
 // --- Resident invitations (Slice 2 / M6.5) ---

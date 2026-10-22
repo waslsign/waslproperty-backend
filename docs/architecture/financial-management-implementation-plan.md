@@ -1,8 +1,8 @@
 # Financial Management — Architecture Validation & Implementation Plan
 
-**Version:** 1.6 | **Date:** 21 October 2026 | **Status:** M16.2.1, M16.2.2, M16.3, M16.4, M16.5 and M16.6 implemented; M16.7+ remain proposed
+**Version:** 1.7 | **Date:** 21 October 2026 | **Status:** M16.2.1, M16.2.2, M16.3, M16.4, M16.5, M16.6 and M16.7 implemented; M16.8+ remain proposed
 **Scope:** Validates `WaslProp_Financial_Architecture_Blueprint_Option_B.md` and `WaslProp_Complete_Financial_Requirements_Option_B.md` against the repository, and defines the roadmap from M16.2.1 onward.
-**Authority:** Sections 6 (M16.2.1), 7 (M16.2.2) and 8 (M16.3) are now implemented — see each section's own Implementation Report, plus the M16.4, M16.5 and M16.6 sections further below. M16.7+ remain a proposal pending architecture/client confirmation per ADR-018.
+**Authority:** Sections 6 (M16.2.1), 7 (M16.2.2) and 8 (M16.3) are now implemented — see each section's own Implementation Report, plus the M16.4, M16.5, M16.6 and M16.7 sections further below. M16.8+ remain a proposal pending architecture/client confirmation per ADR-018.
 
 ---
 
@@ -742,3 +742,30 @@ question this milestone opened with and the full correction record: the traceabi
 ADR-026's addendum on the posting-direction defect). Full test/verification detail, including the
 Harbour View Strata live validation and correction results: the traceability matrix's "M16.6" and
 "M16.5 historical correction" entries.
+
+## M16.7 — Banking & Manual Bank Reconciliation (21 October 2026)
+
+**Client-facing capability delivered:** a strata manager can register the scheme's real bank
+accounts (each linked to an existing GL cash account), import a bank statement as CSV in whatever
+column layout that bank actually exports, have WaslProp propose matches against existing receipts/
+ledger entries with a plain-language reason for each, confirm or correct those matches, turn a
+genuinely new deposit into a real receipt through the existing receipts workflow, and complete a
+full bank reconciliation for a statement period — with the system refusing to call it complete
+until the bank's own closing balance and the ledger's own cash balance agree exactly. No live bank
+feed, no automated payables — both explicit scope boundaries, not gaps.
+
+**Explicitly NOT delivered:** live bank feed integration (Open Banking/Basiq-style), automated
+accounts-payable creation from bank matching, cross-fund payment allocation (still unsupported, per
+M16.5), automatic interest/statutory notices (still deferred, per M16.6).
+
+**Hardening pass (22 October 2026):** a focused review found and fixed two real gaps — bank account
+registration originally accepted any ASSET-classified account (not just a genuine cash account) as
+a GL cash account, and reopening an earlier reconciliation period while a later one was already
+completed could silently break that later period's own opening-balance continuity. Both closed with
+precondition checks in the existing services; no accounting-policy change. Full detail: ADR-028
+Addendum, traceability matrix's "M16.7 hardening pass" entry.
+
+**Migrations:** `20261021180000_m16_7_banking_reconciliation`. Full decision record: ADR-028. Full
+test/verification detail, including the Harbour View Strata live validation (a real bank account,
+receipt, imported transaction and completed reconciliation, created through the actual UI): the
+traceability matrix's "M16.7" entry.

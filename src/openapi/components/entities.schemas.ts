@@ -1533,3 +1533,212 @@ export const aiStatusSchema = registry.register(
     reason: z.enum(['PLATFORM_DISABLED', 'ORGANISATION_DISABLED', 'NOT_AUTHORISED']).optional(),
   }),
 );
+
+// --- M16.7 — Banking & Manual Bank Reconciliation ---
+
+export const bankAccountTypeOpenApiSchema = registry.register(
+  'BankAccountType',
+  z.enum(['OPERATING', 'RESERVE', 'TRUST', 'OTHER']),
+);
+
+export const bankAccountStatusOpenApiSchema = registry.register(
+  'BankAccountStatus',
+  z.enum(['ACTIVE', 'INACTIVE']),
+);
+
+export const bankAccountViewSchema = registry.register(
+  'BankAccountView',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'BANK-7F3Q2L' }),
+    propertyId: z.string(),
+    accountName: z.string().openapi({ example: 'Operating Account — Administration Fund' }),
+    institutionName: z.string().openapi({ example: 'Commonwealth Bank' }),
+    accountIdentifierMasked: z.string().openapi({
+      description: 'The ONLY representation ever persisted — the raw identifier is never stored.',
+      example: '••••1234',
+    }),
+    currencyCode: z.string(),
+    accountType: bankAccountTypeOpenApiSchema,
+    glCashAccountId: z.string(),
+    glCashAccountCode: z.string(),
+    glCashAccountName: z.string(),
+    financialFundId: z.string().nullable(),
+    fundName: z.string().nullable(),
+    status: bankAccountStatusOpenApiSchema,
+    openingReconciledBalance: z.string().nullable(),
+    openingReconciledDate: z.string().nullable().openapi({ example: '2026-07-01' }),
+    lastReconciledDate: z.string().nullable().openapi({
+      description: 'periodEndDate of the latest RECONCILED reconciliation for this account, or null if never reconciled.',
+      example: '2026-09-30',
+    }),
+    reconciliationStatus: z.enum(['NEVER_RECONCILED', 'UP_TO_DATE', 'DRAFT_IN_PROGRESS', 'REOPENED']),
+    createdByUserId: z.string(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  }),
+);
+export const bankAccountListSchema = registry.register(
+  'BankAccountList',
+  z.object({ items: z.array(bankAccountViewSchema) }),
+);
+
+export const eligibleGlAccountViewSchema = registry.register(
+  'EligibleGlAccountView',
+  z.object({
+    accountId: z.string(),
+    accountCode: z.string(),
+    accountName: z.string(),
+    financialFundId: z.string().nullable(),
+    fundName: z.string().nullable(),
+  }),
+);
+export const eligibleGlAccountListSchema = registry.register(
+  'EligibleGlAccountList',
+  z.object({ items: z.array(eligibleGlAccountViewSchema) }),
+);
+
+export const bankImportPreviewRowSchema = registry.register(
+  'BankImportPreviewRow',
+  z.object({
+    rowNumber: z.number().int(),
+    transactionDate: z.string().nullable(),
+    valueDate: z.string().nullable(),
+    amount: z.string().nullable(),
+    description: z.string(),
+    bankReference: z.string().nullable(),
+    runningBalance: z.string().nullable(),
+    externalTransactionId: z.string().nullable(),
+    sourceRowHash: z.string().nullable(),
+    status: z.enum(['READY', 'DUPLICATE', 'ERROR']),
+    issues: z.array(z.string()),
+  }),
+);
+export const bankImportPreviewReportSchema = registry.register(
+  'BankImportPreviewReport',
+  z.object({
+    fileName: z.string().nullable(),
+    bankAccountId: z.string(),
+    totalRows: z.number().int(),
+    readyCount: z.number().int(),
+    duplicateCount: z.number().int(),
+    errorCount: z.number().int(),
+    rows: z.array(bankImportPreviewRowSchema),
+    fileAlreadyImported: z.boolean(),
+  }),
+);
+export const bankImportApplyResultSchema = registry.register(
+  'BankImportApplyResult',
+  z.object({
+    import: z.object({
+      id: z.string(),
+      publicReference: z.string().openapi({ example: 'BIMP-5K2J9P' }),
+      totalRows: z.number().int(),
+      importedCount: z.number().int(),
+      duplicateCount: z.number().int(),
+    }),
+    transactionIds: z.array(z.string()),
+  }),
+);
+
+export const bankTransactionMatchSummarySchema = registry.register(
+  'BankTransactionMatchSummary',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'BMTCH-3H8D1Q' }),
+    matchType: z.enum(['RECEIPT', 'JOURNAL_LINE', 'NEW_RECEIPT']),
+    status: z.enum(['SUGGESTED', 'CONFIRMED', 'REVERSED']),
+    confidence: z.string().openapi({ example: 'UNIQUE_REFERENCE' }),
+    explanation: z.string(),
+    receiptId: z.string().nullable(),
+    receiptPublicReference: z.string().nullable(),
+    journalLineId: z.string().nullable(),
+    confirmedByUserId: z.string().nullable(),
+    confirmedAt: z.string().datetime().nullable(),
+  }),
+);
+export const bankTransactionViewSchema = registry.register(
+  'BankTransactionView',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'BTX-2K9F3L' }),
+    propertyId: z.string(),
+    bankAccountId: z.string(),
+    importBatchId: z.string(),
+    transactionDate: z.string().openapi({ example: '2026-10-15' }),
+    valueDate: z.string().nullable(),
+    amount: z.string().openapi({ description: 'Signed — positive for a deposit, negative for a payment.' }),
+    currencyCode: z.string(),
+    description: z.string(),
+    bankReference: z.string().nullable(),
+    runningBalance: z.string().nullable(),
+    externalTransactionId: z.string().nullable(),
+    matchStatus: z.enum(['UNMATCHED', 'SUGGESTED', 'MATCHED', 'IGNORED']),
+    reconciliationStatus: z.enum(['UNRECONCILED', 'RECONCILED']),
+    reconciliationId: z.string().nullable(),
+    createdAt: z.string().datetime(),
+    activeMatch: bankTransactionMatchSummarySchema.nullable(),
+  }),
+);
+export const bankTransactionListSchema = registry.register(
+  'BankTransactionList',
+  z.object({ items: z.array(bankTransactionViewSchema) }),
+);
+
+export const bankMatchSuggestionSchema = registry.register(
+  'BankMatchSuggestion',
+  z.object({
+    id: z.string(),
+    publicReference: z.string(),
+    matchType: z.enum(['RECEIPT', 'JOURNAL_LINE']),
+    confidence: z.string(),
+    explanation: z.string(),
+    receiptId: z.string().nullable(),
+    receiptPublicReference: z.string().nullable(),
+    receiptAmount: z.string().nullable(),
+    journalLineId: z.string().nullable(),
+  }),
+);
+
+export const bankReconciliationStatusOpenApiSchema = registry.register(
+  'BankReconciliationStatus',
+  z.enum(['DRAFT', 'IN_REVIEW', 'RECONCILED', 'REOPENED']),
+);
+export const bankReconciliationViewSchema = registry.register(
+  'BankReconciliationView',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'RECN-8G2K1L' }),
+    propertyId: z.string(),
+    bankAccountId: z.string(),
+    periodStartDate: z.string().openapi({ example: '2026-10-01' }),
+    periodEndDate: z.string().openapi({ example: '2026-10-31' }),
+    statementOpeningBalance: z.string(),
+    statementClosingBalance: z.string(),
+    glOpeningBalance: z.string(),
+    glClosingBalance: z.string(),
+    outstandingDepositsTotal: z.string(),
+    unpresentedPaymentsTotal: z.string(),
+    difference: z.string().openapi({
+      description: 'glClosingBalance - outstandingDepositsTotal + unpresentedPaymentsTotal - statementClosingBalance. Must be 0.00 to complete.',
+    }),
+    status: bankReconciliationStatusOpenApiSchema,
+    supersedesReconciliationId: z.string().nullable(),
+    preparedByUserId: z.string(),
+    reviewedByUserId: z.string().nullable(),
+    completedAt: z.string().datetime().nullable(),
+    reopenedByUserId: z.string().nullable(),
+    reopenedAt: z.string().datetime().nullable(),
+    reopenReason: z.string().nullable(),
+    statementInternallyConsistent: z.boolean().openapi({
+      description: 'True if statementOpeningBalance + sum(imported transactions in period) == statementClosingBalance.',
+    }),
+    outstandingTransactionCount: z.number().int(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  }),
+);
+export const bankReconciliationListSchema = registry.register(
+  'BankReconciliationList',
+  z.object({ items: z.array(bankReconciliationViewSchema) }),
+);

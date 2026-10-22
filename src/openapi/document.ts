@@ -19,6 +19,7 @@ import './paths/financial-levies.paths.js';
 import './paths/financial-lot-ledger.paths.js';
 import './paths/financial-receipts.paths.js';
 import './paths/financial-arrears.paths.js';
+import './paths/financial-banking.paths.js';
 import './paths/people.paths.js';
 import './paths/invites.paths.js';
 import './paths/maintenance.paths.js';
