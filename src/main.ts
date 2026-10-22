@@ -3,6 +3,10 @@ import { env } from './config/env.js';
 import { logger } from './lib/logger.js';
 import { getDeliveryScheduler } from './modules/communications/communications.delivery.js';
 import { getComplianceScheduler } from './modules/contractors/compliance/complianceNotifications.service.js';
+import {
+  getReminderDispatchScheduler,
+  getReminderEligibilityScheduler,
+} from './modules/financials/reminder-scheduler.js';
 
 const app = createApp();
 
@@ -16,6 +20,13 @@ getDeliveryScheduler().start();
 // Same in-process pattern for contractor credential expiry notifications —
 // see complianceNotifications.service.ts.
 getComplianceScheduler().start();
+
+// M16.8 — arrears reminder eligibility evaluation and dispatch worker. Both
+// default to effectively inert (ReminderPolicy.enabled/deliveryEnabled are
+// false until a manager explicitly turns them on for a property) — see
+// reminder-scheduler.ts's doc comment.
+getReminderEligibilityScheduler().start();
+getReminderDispatchScheduler().start();
 
 app.listen(env.PORT, () => {
   logger.info(`waslproperty-backend listening on port ${env.PORT}`);

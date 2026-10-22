@@ -128,7 +128,12 @@ export async function resetDb() {
     // (and property/space/user, never journal_entries) — both must go
     // before collection_cases, and all three before space/property below.
     testPrisma.collectionNote.deleteMany(),
+    // M16.8 — delivery attempts and the reminder policy both reference
+    // payment_reminders/property and must go before payment_reminders and
+    // property below.
+    testPrisma.paymentReminderDeliveryAttempt.deleteMany(),
     testPrisma.paymentReminder.deleteMany(),
+    testPrisma.reminderPolicy.deleteMany(),
     testPrisma.collectionCase.deleteMany(),
     testPrisma.space.deleteMany(),
     testPrisma.property.deleteMany(),

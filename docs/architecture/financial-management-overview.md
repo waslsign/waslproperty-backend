@@ -1,6 +1,6 @@
 # Financial Management — Overview
 
-**Date:** 21 October 2026 · **Covers:** M16.1 – M16.7 (implemented) and M16.8+ (planned)
+**Date:** 22 October 2026 · **Covers:** M16.1 – M16.8 (fully implemented, backend and frontend) and M16.9 (planned)
 **Audience:** anyone who needs the current, true state of WaslProp's financial management
 capability without reading the full milestone-by-milestone implementation log.
 **Source of truth:** this page summarises and cross-references
@@ -133,6 +133,26 @@ period be marked complete once the two agree exactly — never a silent write-of
 completed reconciliation is a permanent record; correcting one later requires an explicit, audited
 reopen, never a quiet edit.
 
+### Arrears reminder delivery & scheduling (M16.8)
+A daily check (per property, only once explicitly turned on) looks at every lot's live overdue
+position and proposes a reminder once it has been overdue past a configurable initial delay (or
+past a configurable follow-up interval, for a second/third reminder), skipping anything below a
+configurable minimum-outstanding threshold or already capped by a per-case/rolling-window limit.
+A manager can also manually draft a reminder and explicitly "Submit for Review" it into this exact
+same pipeline — the two entry points share one lifecycle and one set of restriction rules, never a
+parallel system. Nothing is ever sent at this stage — only a `READY_FOR_REVIEW` candidate a manager
+can see, with its proposed recipient (resolved from the scheme's own ownership records — never
+guessed from a lot label or substituted with a manager's own address) and its full charge
+breakdown. A manager approves individually or in a controlled batch; approval independently
+re-checks the live debt and recipient one more time and refuses to proceed on stale figures — a
+debt that was settled in the meantime cancels the reminder outright rather than approving on old
+numbers. Only an approved reminder can be dispatched, and dispatch re-checks everything a third
+time, immediately before calling the email provider, and is a hard no-op (never a fake "sent")
+whenever the platform's email-sending kill switch is set. `SENT` means the provider accepted the
+message; `DELIVERED` is only ever set from a verified webhook callback, never assumed. All four
+frontend screens (Reminder Queue, Policy Settings, Review/Approval, Delivery History) are built and
+integrated into the Arrears Dashboard and Lot Detail navigation.
+
 ---
 
 ## 3. Implemented vs. planned — at a glance
@@ -149,8 +169,9 @@ reopen, never a quiet edit.
 | Receipts & payment allocation | ✅ Implemented (M16.5) |
 | Arrears ageing, register, dashboard | ✅ Implemented (M16.6) |
 | Manual collection cases & notes | ✅ Implemented (M16.6) |
-| Reminder **drafting/preview** | ✅ Implemented (M16.6) |
-| Reminder **dispatch** (email/SMS send) | ❌ Not implemented — no send path exists at all |
+| Reminder **drafting/preview**, unified with the pipeline below via Submit for Review | ✅ Implemented (M16.6 + M16.8, ADR-029) |
+| Reminder eligibility evaluation, approval queue, email dispatch | ✅ Implemented (M16.8, backend and frontend, ADR-029) |
+| Reminder delivery (SMS/WhatsApp/postal) | ❌ Not implemented — email only, by design (ADR-029) |
 | Interest on arrears | ❌ Not implemented — NSW rate/period unconfirmed (ADR-027) |
 | Statutory notices / debt-recovery charges | ❌ Not implemented — unresolved client/legal decision |
 | Bank accounts & CSV statement import | ✅ Implemented (M16.7) |
@@ -252,9 +273,42 @@ Full detail: the traceability matrix's "M16.6" and "M16.5 historical correction"
   accounting-policy change, no new models. Full detail: ADR-028 Addendum, traceability matrix's
   "M16.7 hardening pass" entry.
 
+## 5b. M16.8 closure — what was actually delivered
+
+- **Daily eligibility evaluation, review queue, approval, and email dispatch** for genuinely
+  overdue levy charges, all extending the existing M16.6 `PaymentReminder`/`CollectionCase` models
+  — no parallel collections system. Default-disabled per property on two independent switches
+  (evaluation, delivery), on top of the platform-wide `EMAIL_SEND_DISABLED` kill switch.
+- **A manually drafted reminder converges onto the same pipeline** via an explicit "Submit for
+  Review" action (`ReminderApprovalService.submitForReview`) — the two entry points share one
+  lifecycle and one set of restriction rules (minimum threshold, case-status suppression, caps,
+  duplicate-stage dedup), never a second implementation. A manual submission intentionally skips
+  only the `enabled`-switch requirement and the initial-delay/follow-up timing rule, both of which
+  exist to pace an *automated* sweep and have no meaning against a manager acting right now
+  (ADR-029 Addendum 2).
+- **Recipient resolution** against the scheme's own effective-dated ownership/contact records —
+  never a lot label, a username, or a substituted manager address; an ambiguous or missing
+  recipient is flagged for manual resolution, never guessed.
+- **Two independent revalidations** (at approval, and again immediately before dispatch) against
+  live arrears and recipient data — a settled or changed debt invalidates a stale approval rather
+  than sending outdated figures.
+- **An explicit delivery state machine** (`READY_FOR_REVIEW -> APPROVED -> QUEUED -> SENDING ->
+  SENT -> DELIVERED`, with `SUPPRESSED`/`FAILED`/`QUARANTINED`/`CANCELLED` off-ramps) — `SENT`
+  means the provider accepted it; `DELIVERED` is only ever set from a verified webhook signature,
+  never assumed. An ambiguous provider timeout is quarantined for manual resolution, never
+  auto-retried (a real duplicate-send risk otherwise).
+- **All four Stitch-designed frontend screens** (Reminder Queue, Policy Settings, Review/Approval,
+  Delivery History) are built and integrated into the Arrears Dashboard and Lot Detail navigation,
+  with a Submit for Review action on both the Lot Detail draft flow and the Reminder Detail screen.
+- **40 backend integration tests** (`financial-reminder-delivery.test.ts`) plus 26 frontend
+  component tests across the affected screens; full backend and frontend suites green; no real
+  email possible from any of it (the email transport is mocked throughout, and
+  `EMAIL_SEND_DISABLED` is independently enforced in the dispatch code itself, not just relied on
+  from the mock). Full detail: ADR-029 and its Addenda, traceability matrix's "M16.8" entries.
+
 ---
 
-## 6. Known limitations (current, as of 21 October 2026)
+## 6. Known limitations (current, as of 22 October 2026)
 
 These are deliberate scope boundaries, not oversights — each is a named decision in an ADR, not a
 silent gap.
@@ -265,12 +319,14 @@ silent gap.
 | **Automated accounts-payable from bank matching is not implemented.** | Outgoing transactions only match against existing GL cash movements already posted some other way; a full payables subsystem was explicitly out of scope. | ADR-028 D9 |
 | **Cross-fund payment allocation is unsupported.** | Rejected outright (409), not built — a payment covering two funds must be recorded as two separate receipts. No inter-fund-transfer mechanism exists yet. | ADR-026 |
 | **No automatic interest calculation on arrears.** | NSW SSMA 2015's interest provisions, and whether/how a scheme's by-laws opt in, remain unconfirmed by the client/legal review. Inventing a rate was explicitly avoided. | ADR-027 |
-| **No automatic arrears reminder dispatch.** | Reminders are drafted/previewed only; no send path exists. Reusing the Communications module's real SMTP pipeline for this was deliberately avoided pending an explicit, separately-authorised decision. | ADR-027 |
+| **Reminder delivery is email-only; no SMS/WhatsApp/postal.** | Explicitly out of scope for M16.8, by design — the brief restricts delivery to the existing email infrastructure only. | ADR-029 |
+| **No automated reconciliation against a provider's bounce/delivery log beyond the signed webhook.** | A `QUARANTINED` (ambiguous-timeout) reminder always requires a human to resolve it; there is no polling or log-reconciliation pass. | ADR-029 D6 |
+| **The eligibility evaluator's own (lot, stage) dedup is a service-level check, not a DB-level constraint.** | A known, documented limitation (ADR-029 D8) for the scheduler's own sweep; `submitForReview`'s cross-entry-point duplicate check is stronger (serializable-isolation transaction, ADR-029 Addendum 2 D18), but the automated sweep's own self-race remains theoretically possible under true multi-instance concurrency — never a duplicate *send*, since approval re-validates either way. | ADR-029 D8, Addendum 2 D18 |
 | **Lot Statement PDF export is deferred.** | The statement is print-friendly (`window.print()`), but WaslProp has no existing, reusable server-side PDF-generation pattern this milestone could safely extend — documented as a follow-up rather than a faked button. | M16.4 implementation report |
-| **Browser UI click-through QA is outstanding for M16.3–M16.6.** | No browser-automation tool was available in this environment for that frontend work. Every one of those screens was verified by (a) inspecting the generated Stitch HTML/screenshot before implementing, and (b) the React Testing Library suite — never a live browser session. **M16.7 is the exception:** a live Playwright session against the Harbour View Strata demo property verified the full bank-account-registration → statement-import → match-confirmation → reconciliation-completion flow end to end in a real browser. | each milestone's implementation report |
+| **Browser UI click-through QA is outstanding for M16.3–M16.6 and M16.8.** | No browser-automation tool was available in this environment for that frontend work. Every M16.3–M16.6 and M16.8 screen was instead verified by (a) inspecting the generated Stitch HTML/screenshot before implementing, (b) the React Testing Library suite, and (c) for M16.8, live HTTP calls against the running dev server — never a live browser session. **M16.7 is the exception:** a live Playwright session against the Harbour View Strata demo property verified the full bank-account-registration → statement-import → match-confirmation → reconciliation-completion flow end to end in a real browser. | each milestone's implementation report |
 | **GST/BAS is not implemented.** | Mandatory accountant sign-off on registration threshold, BAS cycle, and per-scheme applicability is outstanding — confirmed no WaslProp scheme is currently GST-registered. | ADR-018 (D6) |
-| **Purchase commitments / Accounts Payable do not exist.** | Planned M16.8+; work orders and quotes currently carry no fund/account/financial link. | roadmap §4 |
-| **Owner statements (formal), year-end close/rollover do not exist.** | Planned M16.8+; "Finalise Book" semantics are an open question pending client confirmation of what the reference product currently does. | ADR-018 (D9) |
+| **Purchase commitments / Accounts Payable do not exist.** | Planned M16.9+; work orders and quotes currently carry no fund/account/financial link. | roadmap §4 |
+| **Owner statements (formal), year-end close/rollover do not exist.** | Planned M16.9 (Financial Statements & Reporting, the final planned MVP feature milestone); "Finalise Book" semantics are an open question pending client confirmation of what the reference product currently does. | ADR-018 (D9) |
 
 ---
 

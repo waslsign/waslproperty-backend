@@ -7,6 +7,7 @@ import { errorHandler, notFoundHandler } from './middlewares/errorHandler.js';
 import { requestLogger } from './middlewares/requestLogger.js';
 import { asyncHandler } from './middlewares/asyncHandler.js';
 import { handleWaslSignCallback } from './modules/integrations/waslsign/waslsign.controller.js';
+import { handleReminderDeliveryWebhook } from './modules/financials/reminder-webhook.controller.js';
 import { apiV1Router } from './routes/v1/index.js';
 import { getOpenApiDocument } from './openapi/index.js';
 
@@ -59,6 +60,14 @@ export function createApp() {
     '/api/v1/integrations/waslsign/callback',
     express.raw({ type: 'application/json' }),
     asyncHandler(handleWaslSignCallback),
+  );
+
+  // M16.8 reminder-delivery provider webhook — same raw-body-before-json
+  // reasoning as the WaslSign callback above.
+  app.post(
+    '/api/v1/integrations/reminder-delivery/webhook',
+    express.raw({ type: 'application/json' }),
+    asyncHandler(handleReminderDeliveryWebhook),
   );
 
   app.use(express.json());

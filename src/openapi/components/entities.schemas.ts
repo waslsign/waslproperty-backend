@@ -853,7 +853,19 @@ export const collectionCaseStatusSchema = z.enum([
   'CLOSED',
 ]);
 
-export const paymentReminderStatusSchema = z.enum(['DRAFT', 'CANCELLED', 'SENT', 'FAILED']);
+export const paymentReminderStatusSchema = z.enum([
+  'DRAFT',
+  'CANCELLED',
+  'SENT',
+  'FAILED',
+  'READY_FOR_REVIEW',
+  'APPROVED',
+  'QUEUED',
+  'SENDING',
+  'DELIVERED',
+  'SUPPRESSED',
+  'QUARANTINED',
+]);
 
 export const chargeArrearsViewSchema = registry.register(
   'ChargeArrearsView',
@@ -1741,4 +1753,145 @@ export const bankReconciliationViewSchema = registry.register(
 export const bankReconciliationListSchema = registry.register(
   'BankReconciliationList',
   z.object({ items: z.array(bankReconciliationViewSchema) }),
+);
+
+// --- M16.8: Arrears Reminder Delivery & Scheduling (ADR-029) ---
+
+export const reminderPolicySchema = registry.register(
+  'ReminderPolicy',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'RPOL-9K2F3Q' }),
+    propertyId: z.string(),
+    enabled: z.boolean().openapi({ description: 'Daily eligibility evaluation on/off. Default false.' }),
+    deliveryEnabled: z.boolean().openapi({ description: 'Actual dispatch on/off — independent of `enabled`. Default false.' }),
+    initialDelayDays: z.number().int(),
+    followUpIntervalDays: z.number().int(),
+    minimumOutstandingAmount: z.string(),
+    maxRemindersPerCase: z.number().int().nullable(),
+    maxRemindersInRollingWindow: z.number().int().nullable(),
+    rollingWindowDays: z.number().int().nullable(),
+    timezone: z.string().openapi({ example: 'Australia/Sydney' }),
+    version: z.number().int(),
+    lastEvaluatedAt: z.string().datetime().nullable(),
+    lastEvaluationNote: z.string().nullable(),
+    updatedByUserId: z.string().nullable(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+    emailSendGloballyDisabled: z.boolean().openapi({
+      description: 'The process-wide EMAIL_SEND_DISABLED kill switch\'s current effect — true whenever a real send is blocked regardless of this property\'s own deliveryEnabled. Never exposes the underlying configuration value itself.',
+    }),
+  }),
+);
+
+export const reminderEvaluationSummarySchema = registry.register(
+  'ReminderEvaluationSummary',
+  z.object({
+    asOfDate: z.string(),
+    lotsConsidered: z.number().int(),
+    candidatesCreated: z.number().int(),
+    suppressedCreated: z.number().int(),
+    skipped: z.number().int(),
+  }),
+);
+
+export const reminderQueueItemSchema = registry.register(
+  'ReminderQueueItem',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'PRM-2C7Q2M' }),
+    spaceId: z.string(),
+    lotLabel: z.string(),
+    collectionCaseId: z.string().nullable(),
+    status: paymentReminderStatusSchema,
+    asOfDate: z.string(),
+    totalAmountOwing: z.string(),
+    currencyCode: z.string(),
+    content: z.record(z.string(), z.unknown()),
+    reminderStage: z.number().int(),
+    eligibilityReason: z.string().nullable(),
+    recipientEmail: z.string().nullable(),
+    recipientResolutionNote: z.string().nullable(),
+    dispatchAttempts: z.number().int(),
+    lastErrorCategory: z.string().nullable(),
+    submittedAt: z.string().datetime().nullable(),
+    deliveredAt: z.string().datetime().nullable(),
+    generatedAt: z.string().datetime(),
+    approvedAt: z.string().datetime().nullable(),
+    approvedByUserId: z.string().nullable(),
+    templateVersion: z.number().int(),
+    policyVersion: z.number().int().nullable(),
+    providerMessageId: z.string().nullable().openapi({
+      description: 'The email provider\'s own message id once SENT — never a raw provider payload.',
+    }),
+  }),
+);
+
+export const reminderQueueListSchema = registry.register(
+  'ReminderQueueList',
+  z.object({ items: z.array(reminderQueueItemSchema) }),
+);
+
+export const reminderDetailSchema = registry.register(
+  'ReminderDetail',
+  z.object({
+    reminder: reminderQueueItemSchema,
+    live: z.object({
+      asOfDate: z.string(),
+      totalOverdue: z.string(),
+      charges: z.array(z.record(z.string(), z.unknown())),
+      recipientStatus: z.string(),
+      recipientEmail: z.string().nullable(),
+      recipientNote: z.string().nullable(),
+    }),
+    emailPreview: z
+      .object({
+        subject: z.string(),
+        html: z.string(),
+        text: z.string(),
+        to: z.string(),
+      })
+      .nullable()
+      .openapi({
+        description: 'The exact email ReminderDispatchService would send — rendered from the same renderReminderEmail() call, never a frontend approximation. Null when no resolved recipient exists yet.',
+      }),
+    emailPreviewUnavailableReason: z.string().nullable(),
+    stale: z.boolean().openapi({
+      description: 'True if the live debt/recipient no longer matches this candidate\'s stored snapshot — re-review before approving.',
+    }),
+  }),
+);
+
+export const reminderBatchApproveResultSchema = registry.register(
+  'ReminderBatchApproveResult',
+  z.object({
+    approvedCount: z.number().int(),
+    skippedCount: z.number().int(),
+    results: z.array(
+      z.object({
+        reminderId: z.string(),
+        approved: z.boolean(),
+        reason: z.string().optional(),
+      }),
+    ),
+  }),
+);
+
+export const reminderDeliveryAttemptSchema = registry.register(
+  'ReminderDeliveryAttempt',
+  z.object({
+    id: z.string(),
+    publicReference: z.string().openapi({ example: 'PRDA-7H4M1N' }),
+    attemptNumber: z.number().int(),
+    outcome: z.enum(['SENT', 'FAILED', 'AMBIGUOUS']).nullable(),
+    startedAt: z.string().datetime(),
+    completedAt: z.string().datetime().nullable(),
+    providerMessageId: z.string().nullable(),
+    errorCategory: z.string().nullable(),
+  }),
+);
+
+export const reminderDeliveryAttemptListSchema = registry.register(
+  'ReminderDeliveryAttemptList',
+  z.object({ items: z.array(reminderDeliveryAttemptSchema) }),
 );

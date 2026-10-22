@@ -323,6 +323,18 @@ export class ArrearsService {
     });
   }
 
+  /** M16.8 — the one place ReminderEligibilityService reads per-lot
+   * overdue figures from, so the automated evaluator computes arrears
+   * exactly the same way the Arrears Dashboard/Register do — never a
+   * second, independently-maintained overdue calculation. Thin public
+   * wrapper around the same computeAllLots every other arrears read
+   * already uses; deliberately excludes owner-name enrichment (the
+   * evaluator has no use for it) and any fund filter (reminders consider
+   * a lot's total position across every fund). */
+  async getOverdueLotsForReminders(organisationId: string, propertyId: string, asOfDate: string) {
+    return this.computeAllLots(organisationId, propertyId, asOfDate, undefined, false);
+  }
+
   async getSummary(
     organisationId: string,
     propertyId: string,

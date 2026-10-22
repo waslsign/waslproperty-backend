@@ -100,6 +100,21 @@ import {
   updateCollectionCase,
 } from '../financials/arrears.controller.js';
 import {
+  approveReminder,
+  batchApproveReminders,
+  cancelReminderM168,
+  dispatchReminder,
+  evaluateReminders,
+  getReminderDetail,
+  getReminderPolicy,
+  listReminderDeliveryAttempts,
+  listReminderQueue,
+  resolveReminderQuarantine,
+  retryReminderDispatch,
+  submitReminderForReview,
+  updateReminderPolicy,
+} from '../financials/reminder-delivery.controller.js';
+import {
   getBankAccount,
   listBankAccounts,
   listEligibleGlAccounts,
@@ -728,6 +743,44 @@ propertiesRouter.post(
   requireCapability('financials.manage', fromParam('propertyId')),
   asyncHandler(draftReminder),
 );
+// M16.8 — Arrears Reminder Delivery & Scheduling (ADR-029). Policy
+// read/update, queue/detail reads, manual eligibility evaluation, and
+// approve/batch-approve/cancel are reversible review workflow
+// (financials.manage) — none of them sends an email or posts a GL
+// journal by themselves. Manual dispatch, retry, and quarantine
+// resolution DO trigger (or decide the outcome of) a real external send
+// attempt, so they sit at the same maker-checker tier as M16.7's
+// reconciliation-completion actions (financials.approve).
+//
+// The literal-segment routes below (policy, evaluate, queue) MUST be
+// registered before the M16.6 `GET /reminders/:reminderId` route further
+// down — Express matches in registration order, and `:reminderId` would
+// otherwise greedily capture "policy"/"queue" as if they were an id.
+propertiesRouter.get(
+  '/:propertyId/financials/arrears/reminders/policy',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getReminderPolicy),
+);
+propertiesRouter.patch(
+  '/:propertyId/financials/arrears/reminders/policy',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(updateReminderPolicy),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/evaluate',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(evaluateReminders),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/arrears/reminders/queue',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listReminderQueue),
+);
+
 propertiesRouter.get(
   '/:propertyId/financials/arrears/reminders/:reminderId',
   resolvePropertyReference('propertyId'),
@@ -739,6 +792,61 @@ propertiesRouter.post(
   resolvePropertyReference('propertyId'),
   requireCapability('financials.manage', fromParam('propertyId')),
   asyncHandler(cancelReminder),
+);
+
+propertiesRouter.get(
+  '/:propertyId/financials/arrears/reminders/queue/:reminderId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getReminderDetail),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/queue/:reminderId/submit-for-review',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(submitReminderForReview),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/queue/:reminderId/approve',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(approveReminder),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/queue/batch-approve',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(batchApproveReminders),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/queue/:reminderId/cancel',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(cancelReminderM168),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/queue/:reminderId/dispatch',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(dispatchReminder),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/queue/:reminderId/retry',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(retryReminderDispatch),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/queue/:reminderId/resolve-quarantine',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(resolveReminderQuarantine),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/arrears/reminders/queue/:reminderId/attempts',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listReminderDeliveryAttempts),
 );
 
 // M16.7 — Banking & Manual Bank Reconciliation. Registering/updating a

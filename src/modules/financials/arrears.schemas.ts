@@ -16,12 +16,24 @@ export const arrearsSummaryQuerySchema = z.object({
 });
 export type ArrearsSummaryQuery = z.infer<typeof arrearsSummaryQuerySchema>;
 
+export const collectionCaseStatusSchema = z.enum([
+  'OPEN',
+  'IN_PROGRESS',
+  'AWAITING_PAYMENT',
+  'ESCALATED',
+  'RESOLVED',
+  'CLOSED',
+  /// M16.8 — see CollectionCaseStatus's own schema doc comment.
+  'DISPUTED',
+  'PAUSED',
+]);
+
 export const arrearsRegisterQuerySchema = z.object({
   asOfDate: dateOnlySchema.optional(),
   financialFundId: z.string().trim().min(1).optional(),
   ageingBucket: ageingBucketSchema.optional(),
   collectionStatus: z
-    .enum(['OPEN', 'IN_PROGRESS', 'AWAITING_PAYMENT', 'ESCALATED', 'RESOLVED', 'CLOSED', 'NONE'])
+    .enum(['OPEN', 'IN_PROGRESS', 'AWAITING_PAYMENT', 'ESCALATED', 'RESOLVED', 'CLOSED', 'DISPUTED', 'PAUSED', 'NONE'])
     .optional(),
 });
 export type ArrearsRegisterQuery = z.infer<typeof arrearsRegisterQuerySchema>;
@@ -38,7 +50,7 @@ export const createCollectionCaseSchema = z.object({
 export type CreateCollectionCaseInput = z.infer<typeof createCollectionCaseSchema>;
 
 export const updateCollectionCaseSchema = z.object({
-  status: z.enum(['OPEN', 'IN_PROGRESS', 'AWAITING_PAYMENT', 'ESCALATED', 'RESOLVED', 'CLOSED']).optional(),
+  status: collectionCaseStatusSchema.optional(),
   assignedToUserId: z.string().trim().min(1).nullable().optional(),
   nextFollowUpDate: dateOnlySchema.nullable().optional(),
   closeReason: z.string().trim().max(500).optional(),

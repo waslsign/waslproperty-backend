@@ -151,9 +151,13 @@ payment fact and a date-relative fact in one slot without one clobbering the oth
 The *only* newly persisted state M16.6 introduces (`CollectionCase`, `CollectionNote`,
 `PaymentReminder`) — a human workflow layered on top of the computed arrears figures, never itself
 a source of financial truth. Gated on `financials.manage`, not `financials.approve` (reserved for
-immutable-ledger actions), since this state is fully reversible. Reminders reach `DRAFT` or
-`CANCELLED` only — there is no dispatch path, and the existing Communications module's real SMTP
-pipeline is deliberately not reused here.
+immutable-ledger actions), since this state is fully reversible. M16.6 itself only ever reached
+`DRAFT`/`CANCELLED` on a reminder — no dispatch path existed yet. M16.8 (below) extends this same
+model with the full eligibility/approval/dispatch lifecycle rather than introducing a parallel one.
+A manually drafted reminder bridges into that lifecycle via `ReminderApprovalService.
+submitForReview` — an explicit `DRAFT -> READY_FOR_REVIEW` transition on the same row, sharing the
+automated evaluator's own suppression/dedup rule functions rather than a second implementation
+(ADR-029 Addendum 2).
 
 - Code: `arrears.service.ts` (same module — collection workflow is not split into a separate
   service)
@@ -199,6 +203,42 @@ also gates completion. A `RECONCILED` row's balance fields are never edited agai
   `bank-reconciliation.service.ts`
 - **ADR-028**
 
+## Arrears reminder delivery and scheduling
+
+Nine load-bearing decisions (ADR-029). The two most structurally important: (1) two independent,
+default-off switches — `ReminderPolicy.enabled` (eligibility evaluation runs at all) and
+`ReminderPolicy.deliveryEnabled` (a dispatch is actually attempted) — sit on top of, never instead
+of, the process-wide `EMAIL_SEND_DISABLED`; (2) `resolveRecipient()` (`reminder-recipient.ts`) is
+the single function that answers "who do we email," called identically at candidate-creation,
+approval, and dispatch time against `PropertyMembership`(`role=OWNER`, effective-dated) joined to
+`PropertyContact` — never a lot label or a substituted address, and never cached or trusted from
+an earlier call.
+
+Approval and dispatch each independently recompute live arrears (via
+`ArrearsService.getOverdueLotsForReminders`/`getLotDetail` — the same M16.6 calculation, never a
+second one) and the current recipient, refusing to proceed on any mismatch — a settled debt
+cancels the reminder, a changed amount/recipient refreshes the snapshot and demands re-approval.
+Dispatch itself is an atomic `APPROVED -> QUEUED` claim (`updateMany` compare-and-swap, the same
+pattern as `CommunicationDeliveryService.processDue`) followed by an explicit
+`isEmailSendSuppressed()` check *before* ever calling `emailService.send()` — so a suppressed run
+can never be confused with a real `SENT` outcome. A provider timeout (outcome genuinely unknown)
+sets a dedicated `QUARANTINED` status that is never auto-retried, resolved only by an explicit
+human decision; `DELIVERED` is set only from a signed webhook callback (HMAC-SHA256, the same
+raw-body-before-`express.json()` pattern as the WaslSign callback), never assumed from `SENT`.
+
+Two real defects were found and fixed while building this: `resolveRecipient`'s effective-date
+comparison originally used `startDate: { lte: asOf }`, which wrongly excluded a same-day
+membership (a `DateTime` with a real time-of-day compared against a calendar-date-at-midnight
+`asOf`) — fixed to compare against the start of the following day instead; and `approve()`'s
+settled-debt/stale-content early-exit paths originally wrote their state change and then threw
+from inside the same `$transaction`, which rolled the write back along with the thrown error —
+fixed by moving those writes outside the transaction they used to share with the throw.
+
+- Code: `reminder-policy.service.ts`, `reminder-eligibility.service.ts`, `reminder-recipient.ts`,
+  `reminder-approval.service.ts`, `reminder-dispatch.service.ts`, `reminder-email.ts`,
+  `reminder-timezone.ts`, `reminder-webhook.controller.ts`, `reminder-scheduler.ts`
+- **ADR-029**
+
 ## Financial permissions and audit controls
 
 Three capabilities, re-verified directly in `capabilities.ts`: `financials.view` (read),
@@ -217,9 +257,11 @@ another — the same convention as every other module in this codebase.
 - Code: `src/modules/authorization/capabilities.ts`; `recordActivity()` calls throughout the
   financials module's services
 - **ADR-020** §"Audit history and authorization" (introduces `financials.approve`); **ADR-023**
-  §"Capability split" (applies it to levies); **ADR-026**/**ADR-027**/**ADR-028** (apply the same
-  split to receipts/allocations, the collection workflow, and banking/reconciliation — no new
-  capability introduced for M16.7; see ADR-028 D10 for why)
+  §"Capability split" (applies it to levies); **ADR-026**/**ADR-027**/**ADR-028**/**ADR-029**
+  (apply the same split to receipts/allocations, the collection workflow, banking/reconciliation,
+  and reminder delivery — no new capability introduced for M16.7 or M16.8; `financials.approve`
+  gates M16.8's dispatch/retry/resolve-quarantine actions, the same tier as reconciliation
+  completion)
 
 ---
 

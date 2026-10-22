@@ -80,6 +80,9 @@ model Organisation {
   bankTransactions                 BankTransaction[]
   bankTransactionMatches           BankTransactionMatch[]
   bankReconciliations              BankReconciliation[]
+  /// M16.8 — Arrears Reminder Delivery & Scheduling.
+  reminderPolicies                 ReminderPolicy[]
+  paymentReminderDeliveryAttempts  PaymentReminderDeliveryAttempt[]
   activityEvents                   ActivityEvent[]
   maintenanceRequests              MaintenanceRequest[]
   maintenanceRequestAttachments    MaintenanceRequestAttachment[]
@@ -190,6 +193,8 @@ model User {
   preparedBankReconciliations           BankReconciliation[]              @relation("BankReconciliationPreparedBy")
   reviewedBankReconciliations           BankReconciliation[]              @relation("BankReconciliationReviewedBy")
   reopenedBankReconciliations           BankReconciliation[]              @relation("BankReconciliationReopenedBy")
+  updatedReminderPolicies               ReminderPolicy[]                  @relation("ReminderPolicyUpdatedBy")
+  approvedPaymentReminders              PaymentReminder[]                 @relation("PaymentReminderApprovedBy")
 
   @@map("users")
 }
@@ -419,51 +424,54 @@ model Property {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  organisation           Organisation            @relation(fields: [organisationId], references: [id])
-  spaces                 Space[]
-  propertyMemberships    PropertyMembership[]
-  activityEvents         ActivityEvent[]
-  maintenanceRequests    MaintenanceRequest[]
-  workOrders             WorkOrder[]
-  quoteRounds            QuoteRound[]
+  organisation                    Organisation                     @relation(fields: [organisationId], references: [id])
+  spaces                          Space[]
+  propertyMemberships             PropertyMembership[]
+  activityEvents                  ActivityEvent[]
+  maintenanceRequests             MaintenanceRequest[]
+  workOrders                      WorkOrder[]
+  quoteRounds                     QuoteRound[]
   /// Reverse of PropertyDocument.createdPropertyId — set only for a
   /// property created via the M15 AI-assisted strata onboarding flow.
   /// Null for every property created the ordinary manual way.
-  createdFromDocument    PropertyDocument?
+  createdFromDocument             PropertyDocument?
   /// M16.1 — set only once financial setup has been started for this
   /// scheme (see FinancialConfiguration). Null, not a default row, for
   /// every property that hasn't started financial onboarding — never
   /// auto-created, never auto-activated (see migration doc comment).
-  financialConfiguration FinancialConfiguration?
+  financialConfiguration          FinancialConfiguration?
   /// M16.2 — every budget (every version, every financial year) ever
   /// created for this property; never deleted, see FinancialBudget's own
   /// doc comment on why.
-  financialBudgets       FinancialBudget[]
+  financialBudgets                FinancialBudget[]
   /// M16.2.1 — this property's own scheme-specific chart of accounts; see
   /// AccountingAccount's doc comment.
-  accountingAccounts     AccountingAccount[]
-  accountImportBatches   AccountImportBatch[]
+  accountingAccounts              AccountingAccount[]
+  accountImportBatches            AccountImportBatch[]
   /// M16.2.2 — General Ledger & Posting Engine.
-  accountingPeriods      AccountingPeriod[]
-  postingProfileRules    PostingProfileRule[]
-  journalEntries         JournalEntry[]
+  accountingPeriods               AccountingPeriod[]
+  postingProfileRules             PostingProfileRule[]
+  journalEntries                  JournalEntry[]
   /// M16.3 — Levy Management & UOE Allocation.
-  levySchedules          LevySchedule[]
-  lotLevyCharges         LotLevyCharge[]
-  levyAdjustments        LevyAdjustment[]
+  levySchedules                   LevySchedule[]
+  lotLevyCharges                  LotLevyCharge[]
+  levyAdjustments                 LevyAdjustment[]
   /// M16.5 — Receipts & Payment Allocation.
-  receipts               Receipt[]
-  paymentAllocations     PaymentAllocation[]
+  receipts                        Receipt[]
+  paymentAllocations              PaymentAllocation[]
   /// M16.6 — Arrears Management.
-  collectionCases        CollectionCase[]
-  collectionNotes        CollectionNote[]
-  paymentReminders       PaymentReminder[]
+  collectionCases                 CollectionCase[]
+  collectionNotes                 CollectionNote[]
+  paymentReminders                PaymentReminder[]
   /// M16.7 — Banking & Manual Bank Reconciliation.
-  bankAccounts           BankAccount[]
-  bankStatementImports   BankStatementImport[]
-  bankTransactions       BankTransaction[]
-  bankTransactionMatches BankTransactionMatch[]
-  bankReconciliations    BankReconciliation[]
+  bankAccounts                    BankAccount[]
+  bankStatementImports            BankStatementImport[]
+  bankTransactions                BankTransaction[]
+  bankTransactionMatches          BankTransactionMatch[]
+  bankReconciliations             BankReconciliation[]
+  /// M16.8 — Arrears Reminder Delivery & Scheduling.
+  reminderPolicy                  ReminderPolicy?
+  paymentReminderDeliveryAttempts PaymentReminderDeliveryAttempt[]
 
   @@unique([organisationId, code])
   @@index([organisationId])
@@ -2029,6 +2037,18 @@ enum CollectionCaseStatus {
   ESCALATED
   RESOLVED
   CLOSED
+  /// M16.8 — the owner has disputed this debt; automated reminder
+  /// eligibility (ReminderEligibilityService) suppresses this lot while
+  /// a case sits in this status. Set/cleared via the existing
+  /// updateCollectionCase action — no new endpoint.
+  DISPUTED
+  /// M16.8 — collection activity (including automated reminders) is on
+  /// hold for this case — e.g. a manager-agreed pause pending a
+  /// documented payment arrangement. This schema has no separate
+  /// PaymentArrangement model; AWAITING_PAYMENT already carries that
+  /// semantic for an in-progress arrangement and is treated the same way
+  /// (see ReminderEligibilityService's doc comment).
+  PAUSED
 }
 
 /// One arrears-collection episode for a lot — a human workflow record, not
@@ -2103,21 +2123,66 @@ model CollectionNote {
   @@map("collection_notes")
 }
 
+/// DRAFT/CANCELLED/SENT/FAILED are M16.6's original four (manual
+/// draft-and-preview, never auto-sent). M16.8 extends the SAME model with
+/// the full system-generated lifecycle below rather than a parallel
+/// table — see ReminderEligibilityService/ReminderApprovalService/
+/// ReminderDispatchService's own doc comments for exactly which service
+/// drives each transition. A DRAFT reminder (manually created via
+/// draftReminder, M16.6) can still only ever reach CANCELLED — it never
+/// enters the automated approve/dispatch pipeline, which starts only
+/// from READY_FOR_REVIEW.
 enum PaymentReminderStatus {
   DRAFT
   CANCELLED
-  /// Reserved for a future, explicitly-authorised dispatch milestone —
-  /// never set by M16.6. See ADR-027: reminders are drafted, never sent,
-  /// this milestone.
+  /// M16.6's original reserved value, now actually used: the terminal
+  /// "provider accepted this message" state — never "a human read it".
   SENT
+  /// M16.6's original reserved value, now actually used: exhausted
+  /// retries / a permanent provider error. Distinct from QUARANTINED
+  /// (an ambiguous outcome, never auto-retried) and SUPPRESSED (never
+  /// attempted at all).
   FAILED
+  /// A system-generated candidate, produced by
+  /// ReminderEligibilityService, awaiting manager review. Never created
+  /// by the manual draftReminder path.
+  READY_FOR_REVIEW
+  /// A manager has approved this exact content/recipient/amount — see
+  /// PaymentReminder.approvalSnapshot. Never itself a delivery event.
+  APPROVED
+  /// Atomically claimed by one dispatch-worker instance for processing —
+  /// the concurrency-safe "lease" state (mirrors Communication's
+  /// SCHEDULED->SENDING claim in communications.delivery.ts), preventing
+  /// two workers from both attempting the same send.
+  QUEUED
+  /// The provider call is actually in flight. If a process crashes/times
+  /// out while a reminder sits here, it is NEVER automatically reclaimed
+  /// and retried (unlike Communication) — see
+  /// ReminderDispatchService.quarantineStuckSending's doc comment for why
+  /// that would risk a duplicate real send.
+  SENDING
+  /// Provider confirmed delivery via a verified webhook callback — never
+  /// set any other way, never fabricated from SENT alone.
+  DELIVERED
+  /// A real eligibility match that a policy/case-state rule explicitly
+  /// suppressed (e.g. a DISPUTED case, a reminder cap reached) — kept as
+  /// a persisted, reviewable record so a manager can see WHY an overdue
+  /// lot did not get a reminder, never silently dropped.
+  SUPPRESSED
+  /// The unavoidable ambiguous-outcome case: the provider may or may not
+  /// have accepted the message before the dispatch attempt errored/timed
+  /// out. Never auto-retried (that could duplicate a real send) — a
+  /// manager must explicitly resolve it (see
+  /// ReminderDispatchService.resolveQuarantine).
+  QUARANTINED
 }
 
-/// A drafted (never automatically sent) payment reminder — `content` is a
-/// point-in-time SNAPSHOT of the outstanding charges/amounts as understood
-/// at generation time, for preview/print only. It is never read back as
-/// current arrears truth; the live arrears endpoints remain the only
-/// source of "what's actually owed right now" (see ADR-027).
+/// A manually drafted (M16.6) OR system-evaluated (M16.8) payment
+/// reminder — `content` is a point-in-time SNAPSHOT of the outstanding
+/// charges/amounts, for preview/print only; it is never read back as
+/// current arrears truth (ADR-027). `approvalSnapshot` (M16.8) is the
+/// SEPARATE, stricter immutable record of exactly what a manager
+/// approved — see that field's own doc comment.
 model PaymentReminder {
   id               String                @id @default(cuid())
   /// See Property.publicReference's doc comment — same system, "PRM" prefix.
@@ -2125,8 +2190,11 @@ model PaymentReminder {
   organisationId   String
   propertyId       String
   spaceId          String
-  /// Optional — a reminder can be drafted standalone or attached to an
-  /// open collection case for a unified timeline.
+  /// Optional — a reminder can be drafted standalone, attached to an
+  /// open collection case for a unified timeline, or (M16.8) linked to
+  /// whichever non-terminal case already existed for the lot at
+  /// evaluation time — eligibility evaluation never creates a case on
+  /// its own. See ReminderEligibilityService's doc comment.
   collectionCaseId String?
   status           PaymentReminderStatus @default(DRAFT)
   /// The arrears snapshot date this reminder's content was generated
@@ -2142,23 +2210,245 @@ model PaymentReminder {
   /// truth (see this model's own doc comment).
   content          Json
 
-  generatedByUserId String
+  /// M16.8 — which repeat this is for this lot's current debt episode
+  /// (1 = first reminder). Drives both the follow-up-interval timing and
+  /// the "no duplicate queued reminder for the same lot+stage" dedup
+  /// rule (service-level, not a DB constraint — same precedent as
+  /// PostingProfileRule's own duplicate-role check).
+  reminderStage     Int     @default(1)
+  /// M16.8 — the ReminderPolicy.version in effect when this candidate
+  /// was produced (eligibility) or approved — lets a later policy change
+  /// never silently reinterpret an already-approved reminder.
+  policyVersion     Int?
+  /// M16.8 — human-readable reason this candidate was created, or (for
+  /// SUPPRESSED) why it was not. Never a source of truth, display only.
+  eligibilityReason String?
+
+  /// M16.8 — the resolved recipient, from effective-dated
+  /// PropertyMembership/PropertyContact lookup — never inferred from a
+  /// lot label or an unrelated organisation user. Null until resolved;
+  /// approval is blocked while null (see ReminderApprovalService).
+  recipientContactId      String?
+  recipientEmail          String?
+  /// Set when resolution was ambiguous/impossible (no active owner, a
+  /// suspended contact, etc.) — surfaces in the review queue as "needs
+  /// manual resolution" rather than silently guessing a recipient.
+  recipientResolutionNote String?
+
+  /// M16.8 — set only by ReminderApprovalService.approve, distinct from
+  /// generatedByUserId/generatedAt (which record candidate CREATION, by
+  /// a human for a manual DRAFT or by the system for READY_FOR_REVIEW).
+  approvedByUserId String?
+  approvedAt       DateTime?
+  /// M16.8 — the IMMUTABLE record of exactly what was approved:
+  /// approver, timestamp, recipient (contactId + email), the specific
+  /// LotLevyCharge references and amounts, templateVersion and
+  /// policyVersion — written once at approval, never edited. Dispatch
+  /// revalidates live data against this snapshot and refuses to send on
+  /// a mismatch (see ReminderDispatchService.processDue) rather than
+  /// ever trusting stale content.
+  approvalSnapshot Json?
+  /// M16.8 — bumped whenever renderReminderEmail's own template changes
+  /// in a way that would alter previously-approved wording; recorded on
+  /// the snapshot so a completed send is always traceable to the exact
+  /// template version used.
+  templateVersion  Int       @default(1)
+
+  /// M16.8 — dispatch bookkeeping on the reminder itself (the
+  /// authoritative per-attempt log is PaymentReminderDeliveryAttempt;
+  /// these are a denormalised "current state" convenience for list/queue
+  /// views so they don't need to join the attempt table).
+  dispatchAttempts  Int       @default(0)
+  lastAttemptedAt   DateTime?
+  lastErrorCategory String?
+  /// Set once SENT — the provider's own id for this specific send,
+  /// never a secret, safe to display for support/audit purposes.
+  providerMessageId String?
+  /// SENT means the provider accepted the message — set the instant
+  /// EmailService.send() returns successfully. DELIVERED is separate and
+  /// strictly later, set only by a verified webhook callback.
+  submittedAt       DateTime?
+  deliveredAt       DateTime?
+
+  generatedByUserId String?
   generatedAt       DateTime  @default(now())
   cancelledByUserId String?
   cancelledAt       DateTime?
 
-  organisation    Organisation    @relation(fields: [organisationId], references: [id])
-  property        Property        @relation(fields: [propertyId], references: [id])
-  space           Space           @relation(fields: [spaceId], references: [id])
-  collectionCase  CollectionCase? @relation(fields: [collectionCaseId], references: [id])
-  generatedByUser User            @relation("PaymentReminderGeneratedBy", fields: [generatedByUserId], references: [id])
-  cancelledByUser User?           @relation("PaymentReminderCancelledBy", fields: [cancelledByUserId], references: [id])
+  organisation     Organisation                     @relation(fields: [organisationId], references: [id])
+  property         Property                         @relation(fields: [propertyId], references: [id])
+  space            Space                            @relation(fields: [spaceId], references: [id])
+  collectionCase   CollectionCase?                  @relation(fields: [collectionCaseId], references: [id])
+  /// M16.8 — nullable: a system-generated READY_FOR_REVIEW candidate has
+  /// no human "generator"; the manual M16.6 draftReminder path still
+  /// always sets this.
+  generatedByUser  User?                            @relation("PaymentReminderGeneratedBy", fields: [generatedByUserId], references: [id])
+  cancelledByUser  User?                            @relation("PaymentReminderCancelledBy", fields: [cancelledByUserId], references: [id])
+  recipientContact PropertyContact?                 @relation(fields: [recipientContactId], references: [id])
+  approvedByUser   User?                            @relation("PaymentReminderApprovedBy", fields: [approvedByUserId], references: [id])
+  deliveryAttempts PaymentReminderDeliveryAttempt[]
 
   @@index([organisationId])
   @@index([propertyId])
   @@index([spaceId])
   @@index([collectionCaseId])
+  @@index([recipientContactId])
+  @@index([status])
   @@map("payment_reminders")
+}
+
+// --- Strata Financial Management: Arrears Reminder Delivery & Scheduling (M16.8) ---
+//
+// Extends M16.6's CollectionCase/PaymentReminder — no parallel collections
+// system. See ADR-029 for the full decision record. Three load-bearing
+// decisions:
+//
+// 1. Default OFF, two independent switches. ReminderPolicy.enabled gates
+//    whether the daily eligibility evaluator runs AT ALL for a property;
+//    ReminderPolicy.deliveryEnabled is a SEPARATE gate a manager must also
+//    explicitly turn on before the dispatch worker will ever attempt a real
+//    send — on top of (never instead of) the process-wide
+//    EMAIL_SEND_DISABLED kill switch. A property can review/approve
+//    candidates with evaluation on and delivery off.
+//
+// 2. Approval is a snapshot, not a pointer. PaymentReminder.approvalSnapshot
+//    freezes exactly what a manager approved (amount, recipient, charges,
+//    template/policy version). Both approve() and dispatch() independently
+//    recompute live arrears/recipient/case-state and refuse to proceed on
+//    any mismatch — never send on stale content, per ADR-029.
+//
+// 3. Ambiguous delivery outcomes are quarantined, never retried. A
+//    PaymentReminderDeliveryAttempt row is written before the provider
+//    call and updated after; if the process never reaches the "after" step
+//    (crash/timeout), the attempt is left PENDING and the reminder sits in
+//    SENDING — a manager must explicitly resolve it
+//    (ReminderDispatchService.resolveQuarantine), never an automatic retry
+//    that risks a duplicate real email.
+
+enum PaymentReminderDeliveryOutcome {
+  SENT
+  FAILED
+  /// The provider call's own outcome could not be determined (e.g. a
+  /// network timeout after the request was already sent) — see this
+  /// section's doc comment, point 3.
+  AMBIGUOUS
+}
+
+/// One row per property — created on first PUT, default OFF. See this
+/// section's doc comment, point 1, for why `enabled` and `deliveryEnabled`
+/// are deliberately two separate switches.
+model ReminderPolicy {
+  id              String @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "RPOL" prefix.
+  publicReference String @unique
+  organisationId  String
+  propertyId      String @unique
+
+  /// Master switch for the daily eligibility evaluator — while false, no
+  /// READY_FOR_REVIEW/SUPPRESSED candidates are ever created for this
+  /// property, regardless of how overdue a lot is.
+  enabled         Boolean @default(false)
+  /// Separate switch the dispatch worker also checks before any real
+  /// provider call — approving a reminder is possible with this off; a
+  /// human must deliberately decide the property is ready for automated
+  /// email delivery, not just arrears tracking.
+  deliveryEnabled Boolean @default(false)
+
+  /// Days after a charge's due date before its FIRST reminder becomes
+  /// eligible. Conservative default — a real property must confirm this
+  /// before relying on it.
+  initialDelayDays            Int     @default(14)
+  /// Days between one SENT/DELIVERED reminder and the next eligible
+  /// follow-up for the same lot.
+  followUpIntervalDays        Int     @default(14)
+  /// A lot's total overdue amount must be at least this much before any
+  /// reminder is eligible — avoids reminders for trivial cent-level
+  /// residual balances.
+  minimumOutstandingAmount    Decimal @default(0) @db.Decimal(14, 2)
+  /// Optional lifetime cap on SENT/DELIVERED reminders for one
+  /// CollectionCase — null means no cap.
+  maxRemindersPerCase         Int?
+  /// Optional rolling-window cap — at most
+  /// maxRemindersInRollingWindow SENT/DELIVERED reminders per lot within
+  /// the trailing rollingWindowDays. Both null, or both set — never one
+  /// without the other (validated in ReminderPolicyService).
+  maxRemindersInRollingWindow Int?
+  rollingWindowDays           Int?
+
+  /// IANA zone the evaluator computes "today"/due-date boundaries in —
+  /// every instant is still stored in UTC (DateTime columns throughout
+  /// this schema); only the day-boundary math for eligibility is
+  /// timezone-aware. Australia/Sydney for the NSW MVP, configurable per
+  /// property for a future non-NSW scheme.
+  timezone String @default("Australia/Sydney")
+
+  /// Bumped on every update — snapshotted onto each PaymentReminder
+  /// (policyVersion) so a later policy change never silently reinterprets
+  /// an already-created or already-approved reminder.
+  version Int @default(1)
+
+  /// Observability only, never read back as a gating condition — the
+  /// evaluator's own idempotency comes from the per-(lot, stage) dedup
+  /// check, not from this timestamp.
+  lastEvaluatedAt    DateTime?
+  lastEvaluationNote String?
+
+  updatedByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organisation  Organisation @relation(fields: [organisationId], references: [id])
+  property      Property     @relation(fields: [propertyId], references: [id])
+  updatedByUser User?        @relation("ReminderPolicyUpdatedBy", fields: [updatedByUserId], references: [id])
+
+  @@index([organisationId])
+  @@map("reminder_policies")
+}
+
+/// One row per dispatch attempt — the authoritative, append-only delivery
+/// log (PaymentReminder's own dispatchAttempts/lastAttemptedAt/etc. are a
+/// denormalised "current state" convenience, never the source of truth).
+/// `idempotencyKey` is unique so a retried/duplicated worker claim can
+/// never write two rows for what is meant to be the same attempt.
+model PaymentReminderDeliveryAttempt {
+  id                String @id @default(cuid())
+  /// See Property.publicReference's doc comment — same system, "PRDA" prefix.
+  publicReference   String @unique
+  organisationId    String
+  propertyId        String
+  paymentReminderId String
+  attemptNumber     Int
+  /// `{paymentReminderId}:{attemptNumber}` — see
+  /// ReminderDispatchService.dispatchOne for exactly how this is used to
+  /// make a repeated API call/worker retry a no-op rather than a second
+  /// real send.
+  idempotencyKey    String @unique
+
+  /// Null while the attempt is in flight (provider call not yet
+  /// returned) — see this section's doc comment, point 3, on why a row
+  /// stuck null here is quarantined, never auto-retried.
+  outcome PaymentReminderDeliveryOutcome?
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  /// The provider's own id for this specific send — never a secret, safe
+  /// to display for support/audit purposes.
+  providerMessageId String?
+  /// A short category ("TRANSIENT" / "PERMANENT" / "TIMEOUT"), never the
+  /// raw provider error payload (which could carry recipient PII or
+  /// provider-internal detail this codebase doesn't log elsewhere).
+  errorCategory     String?
+  errorMessage      String?
+
+  paymentReminder PaymentReminder @relation(fields: [paymentReminderId], references: [id])
+  organisation    Organisation    @relation(fields: [organisationId], references: [id])
+  property        Property        @relation(fields: [propertyId], references: [id])
+
+  @@index([paymentReminderId])
+  @@index([organisationId])
+  @@index([propertyId])
+  @@map("payment_reminder_delivery_attempts")
 }
 
 // --- Strata Financial Management: Banking & Manual Bank Reconciliation (M16.7) ---
@@ -2572,6 +2862,9 @@ model PropertyContact {
   invites                 ContactInvite[]
   communicationRecipients CommunicationRecipient[]
   sessions                Session[]
+  /// M16.8 — every PaymentReminder this contact was resolved as the
+  /// recipient for.
+  paymentReminders        PaymentReminder[]
 
   @@unique([organisationId, email])
   @@unique([organisationId, userId])
@@ -2878,6 +3171,26 @@ enum ActivityEventType {
   BANK_RECONCILIATION_STARTED
   BANK_RECONCILIATION_COMPLETED
   BANK_RECONCILIATION_REOPENED
+  /// M16.8 — Arrears Reminder Delivery & Scheduling.
+  REMINDER_POLICY_UPDATED
+  REMINDER_CANDIDATE_CREATED
+  REMINDER_CANDIDATE_SUPPRESSED
+  REMINDER_APPROVED
+  REMINDER_APPROVAL_INVALIDATED
+  REMINDER_DISPATCH_SUPPRESSED_BY_KILL_SWITCH
+  REMINDER_SENT
+  REMINDER_DELIVERY_CONFIRMED
+  REMINDER_DELIVERY_FAILED
+  REMINDER_DELIVERY_QUARANTINED
+  REMINDER_DELIVERY_QUARANTINE_RESOLVED
+  REMINDER_DELIVERY_RETRIED
+  /// M16.8.1 — manual-draft submission into the unified review pipeline
+  /// (ADR-029 Addendum 2), distinguished from the automated
+  /// REMINDER_CANDIDATE_CREATED/SUPPRESSED events above so the audit
+  /// trail always shows whether a reviewable candidate originated from
+  /// a manager's own draft or from the daily eligibility evaluator.
+  REMINDER_SUBMITTED_FOR_REVIEW
+  REMINDER_SUBMISSION_SUPPRESSED
 }
 
 // --- Resident invitations (Slice 2 / M6.5) ---

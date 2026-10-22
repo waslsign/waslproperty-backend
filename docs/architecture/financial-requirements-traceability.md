@@ -1033,3 +1033,243 @@ date/asOfDate in the 4 affected tests is computed from it instead of a frozen li
 is now correct regardless of which real day it runs on. Not an M16.7 regression; the fix is
 test-only, touches no service code. All 23 tests in the file pass; full backend suite re-confirmed
 green afterward.
+
+## M16.8 — Arrears Reminder Delivery & Scheduling (22 October 2026)
+
+Extends M16.6's existing `PaymentReminder`/`CollectionCase` models and reuses the application's
+existing email infrastructure (`src/lib/email.ts`) — no parallel collections or notification
+system. Full decision record: **ADR-029**.
+
+### Database / schema
+
+`PaymentReminderStatus` extended from 4 to 11 values (`READY_FOR_REVIEW`, `APPROVED`, `QUEUED`,
+`SENDING`, `DELIVERED`, `SUPPRESSED`, `QUARANTINED` added). New enum
+`PaymentReminderDeliveryOutcome`. `CollectionCaseStatus` gains `DISPUTED`/`PAUSED` (see ADR-029 D2
+on why `AWAITING_PAYMENT` stands in for "an active payment arrangement" rather than a new model).
+`PaymentReminder` extended with policy/recipient/approval/dispatch fields (`reminderStage`,
+`policyVersion`, `eligibilityReason`, `recipientContactId`/`recipientEmail`/
+`recipientResolutionNote`, `approvedByUserId`/`approvedAt`/`approvalSnapshot`, `dispatchAttempts`/
+`lastAttemptedAt`/`lastErrorCategory`, `submittedAt`/`providerMessageId`/`deliveredAt`,
+`templateVersion`). New models `ReminderPolicy` (one per property, created lazily with safe
+disabled defaults) and `PaymentReminderDeliveryAttempt`. 12 new `ActivityEventType` values.
+Migration `20261022045957_m16_8_reminder_delivery_scheduling`, applied to both the dev and test
+databases.
+
+### Backend services
+
+- `reminder-policy.service.ts` — `ReminderPolicy` get/update, lazily created on first read.
+- `reminder-eligibility.service.ts` — the daily evaluator: reuses
+  `ArrearsService.getOverdueLotsForReminders` (one new thin method on the existing M16.6 service,
+  never a second overdue calculation) for every figure and `resolveRecipient` for every recipient
+  question; produces `READY_FOR_REVIEW`/`SUPPRESSED` candidates only, never an email; idempotent
+  per `(lot, stage)` across repeated runs.
+- `reminder-recipient.ts` — `resolveRecipient()`, the single ownership/contact resolution function
+  called at candidate-creation, approval, and dispatch time alike (ADR-029 D4).
+- `reminder-approval.service.ts` — queue listing, live-recalculated detail, approve/batch-approve/
+  cancel, with the two-independent-revalidation safety rule (ADR-029 D5).
+- `reminder-dispatch.service.ts` — the dispatch worker: atomic `APPROVED -> QUEUED` claim,
+  explicit `EMAIL_SEND_DISABLED` hard stop before any provider call (ADR-029 D7), the
+  `QUARANTINED` ambiguous-timeout path (ADR-029 D6), controlled retry for transient failures
+  (bounded by `REMINDER_DISPATCH_MAX_ATTEMPTS`), and the verified-webhook `SENT -> DELIVERED`
+  confirmation (compare-and-swap, naturally deduplicating a redelivered event).
+- `reminder-email.ts` / `reminder-timezone.ts` — the rendered transactional email (courtesy
+  reminder only — no penalty/enforcement/statutory-notice language) and a UTC-instant-to-
+  property-timezone day-boundary helper for Australia/Sydney DST correctness.
+- `reminder-webhook.controller.ts` — HMAC-SHA256 signed-raw-body verification, mirroring the
+  existing WaslSign callback pattern exactly (`REMINDER_DELIVERY_WEBHOOK_SECRET`, 503 if
+  unconfigured, 401 on signature mismatch).
+- `reminder-scheduler.ts` — `InProcessReminderEligibilityScheduler` /
+  `InProcessReminderDispatchScheduler`, the same `setInterval` + `.unref()` convention as
+  `InProcessComplianceScheduler`/`InProcessDeliveryScheduler`; registered in `main.ts` for the live
+  server process only (never in tests).
+
+Two real defects were found and fixed while writing M16.8's own integration tests (full detail in
+ADR-029 D4/D5): (1) `resolveRecipient`'s effective-date comparison wrongly excluded a membership
+created later the same UTC day it started, because `asOf` is a calendar date at midnight while
+`startDate` carries a real time-of-day; (2) `approve()`'s settled-debt/stale-content early-exit
+paths wrote their state change and then threw from inside the same `$transaction`, which rolled
+the write back along with the error — the write that was supposed to survive a reported failure
+was silently discarded. Both are fixed in the code reported above, not design debt carried forward.
+
+### API
+
+11 new routes under `/properties/:propertyId/financials/arrears/reminders/...` (policy get/
+update, manual evaluate, queue list/detail, approve/batch-approve/cancel, dispatch/retry/
+resolve-quarantine, attempt history) plus the unauthenticated, HMAC-verified
+`/integrations/reminder-delivery/webhook`. Authorization: `financials.view` (all reads),
+`financials.manage` (policy update, evaluate, approve/batch-approve/cancel — reversible review
+workflow, never a real send), `financials.approve` (dispatch, retry, resolve-quarantine — the
+actions that actually trigger or decide a provider call, same maker-checker tier as M16.7's
+reconciliation-completion actions).
+
+OpenAPI: `src/openapi/paths/financial-reminder-delivery.paths.ts` (12 registered paths), entity
+schemas appended to `entities.schemas.ts`. `test/unit/openapi-route-coverage.test.ts` confirms
+100% route coverage.
+
+### Tests
+
+`test/integration/financial-reminder-delivery.test.ts` — 22 tests covering: policy defaults and
+validation; overdue-eligibility creation past the initial delay and its absence before it;
+evaluation idempotency across repeated runs; suppression on a `DISPUTED` collection case; a lot
+with no active owner correctly flagged (`recipientEmail: null`) rather than a fabricated address;
+approval of a valid candidate with an immutable snapshot; cancellation (not approval) of a
+candidate whose debt was fully settled since generation; batch-approval with one independent
+failure; live staleness detection on the review-detail endpoint; the `EMAIL_SEND_DISABLED` hard
+stop (dispatch never calls the mocked provider, never reports `SENT`); a successful dispatch
+through the mocked transport; a repeated-dispatch-click/retry duplicate-send guard (second call is
+a 409, provider called exactly once); an ambiguous provider timeout quarantining the reminder
+without auto-retry, then a human `resolveQuarantine`; a permanent provider failure marking
+`FAILED` with a working manual retry; approval invalidation (no send) when the debt is settled
+between approval and dispatch; the signed delivery-confirmation webhook moving `SENT -> DELIVERED`
+and deduplicating a redelivered event; cross-organisation 404 isolation; and `financials.manage`
+RBAC rejection. All 22 pass. `emailService.send`/`isEmailSendSuppressed` are mocked throughout
+(`vi.mock('../../src/lib/email.js', ...)`, same pattern as `communications.test.ts`) — no real
+email is ever possible from this suite regardless of the real `EMAIL_SEND_DISABLED` value.
+`test/helpers/db.ts` updated to clean up `ReminderPolicy`/`PaymentReminderDeliveryAttempt` rows
+(FK order) between tests.
+
+### Frontend (completed 22 October 2026)
+
+All four screens designed in Stitch (project `17365736688974073408`, design system "Wasl Property",
+`#662A6F`) and inspected (downloaded HTML + screenshot) before implementation, then translated into
+the existing component library (`Card`, `Badge`, `Tabs`, `SegmentedControl`, `FormModal`, `Button`)
+rather than copied verbatim:
+
+- **Reminder Queue** (`ReminderQueuePage.tsx`) — status-tab-filtered table (All/Ready for
+  Review/Approved/Queued/Sent/Delivered/Failed/Suppressed/Quarantined/Cancelled), per-row
+  suppression/quarantine reason captions, a flagged-missing-recipient state (never a fabricated
+  email), individual + batch-approve checkboxes gated to `READY_FOR_REVIEW` rows only, an
+  EMAIL_SEND_DISABLED/deliveryEnabled banner, and an optional `?spaceId=` filter for lot-scoped
+  entry.
+- **Reminder Policy Settings** (`ReminderPolicySettingsPage.tsx`) — `enabled`/`deliveryEnabled` as
+  two independent `SegmentedControl`s, a read-only (non-toggleable)
+  `emailSendGloballyDisabled` banner, a required confirmation checkbox the first time delivery is
+  turned on, and the full timing/threshold/timezone form.
+- **Reminder Review & Approval** (`ReminderReviewPage.tsx`) — live charge breakdown, recipient
+  resolution state, a tabbed Subject/HTML/Plain-text email preview rendered from the backend's own
+  `emailPreview` (an `<iframe sandbox="">` for the HTML tab, never `dangerouslySetInnerHTML`), a
+  stale-approval warning, and Approve/Dispatch/Cancel actions gated on `financials.manage`/
+  `financials.approve` respectively.
+- **Delivery History & Detail** (`ReminderDeliveryHistoryPage.tsx`) — a status timeline built only
+  from real persisted timestamps (Generated/Approved/Sent/Delivered — no fabricated
+  Queued/Sending times), the full delivery-attempts table with truncated provider message ids, an
+  Audit Evidence card (approver, template/policy version, recipient — no provider payloads), and
+  Retry/Resolve-Quarantine/Cancel actions each disabled with an explanatory caption when not
+  currently valid for the reminder's status.
+
+**Backend contract extensions required to support the UI honestly** (found by building the UI
+against the real API, not assumed shapes — see ADR-029 Addendum D10–D12): `getDetail` now renders
+the actual `emailPreview` via the same `renderReminderEmail()` the dispatch worker calls;
+`ReminderPolicyService` now returns `emailSendGloballyDisabled` (a boolean, never the underlying
+env value); `toQueueView` now exposes `approvedByUserId`/`templateVersion`/`policyVersion`/
+`providerMessageId` for the Audit Evidence card. All three are additive, OpenAPI-documented, and
+covered by 3 new backend integration tests (25 total in the M16.8 suite before the scheduler-safety
+additions below).
+
+**Navigation integration:** a "Payment Reminders" link card on the Arrears Dashboard; a "Reminder
+Queue" button (lot-filtered) next to "Draft Reminder" on the Lot Detail page.
+
+**New frontend modules:** `reminder-delivery-types.ts`, `reminder-delivery-api.ts`,
+`reminder-delivery-hooks.ts`, `reminder-status.ts` (shared status label/tone map), following the
+exact `banking-*`/`arrears-*` naming and TanStack Query conventions already established.
+`arrears-types.ts`'s `PaymentReminderStatus`/`CollectionCaseStatus` extended to the full M16.8 enum
+(two pre-existing `Record<CollectionCaseStatus...>` maps in `ArrearsRegisterPage.tsx`/
+`LotArrearsDetailPage.tsx` updated for the new `DISPUTED`/`PAUSED` values at the same time, since
+TypeScript's own exhaustiveness check caught the gap immediately).
+
+### Scheduler safety review (22 October 2026)
+
+A focused review (no refactor, no new infrastructure) against six specific questions — detailed in
+ADR-029's Addendum. Summary: the dispatch-side atomic claim is genuinely safe even across multiple
+app instances sharing one database (verified with a true `Promise.allSettled` concurrency test, not
+just sequential retries); the eligibility-side (lot, stage) dedup is a known, already-documented
+single-point-in-time race (ADR-029 D8) that could in theory produce a duplicate *candidate* under
+true multi-instance concurrency, but never a duplicate *send* (approval independently re-validates
+either way); there is no catch-up mass dispatch after downtime; `EMAIL_SEND_DISABLED` was
+re-confirmed live against the actual running dev server (not just the mocked test suite). No code
+changes were required — this was a verification pass, backed by 3 new tests.
+
+### Tests (final count)
+
+28 integration tests in `test/integration/financial-reminder-delivery.test.ts` (22 from the first
+pass + 3 for the new backend contract fields + 3 for scheduler-safety concurrency), 20 frontend
+component tests across 4 new files (`reminder-queue-page.test.tsx`,
+`reminder-policy-settings-page.test.tsx`, `reminder-review-page.test.tsx`,
+`reminder-delivery-history-page.test.tsx`). Full backend suite (995+ tests) and full frontend suite
+(290 tests) both green; `tsc`/`eslint`/`npm run build` clean on both repos; OpenAPI route coverage
+100%.
+
+### Live validation
+
+No browser-automation tool (Playwright or equivalent) was available in this environment, so the
+"view policy settings → run evaluation → review → approve → confirm dispatch blocked → inspect
+history" walkthrough could not be driven through an actual rendered browser session — this is an
+honest tooling limitation, not a skipped step. In its place: (1) every new frontend module was
+confirmed to load without error through Vite's own dev-transform endpoint on the running dev
+server (`curl` returning 200 for each `.tsx` file, which fails loudly on any syntax/import error);
+(2) the full reminder-policy → evaluate → queue → (no-op, no financial setup) flow was exercised
+live via direct HTTP calls against the actual running dev backend (not the test suite, not mocked)
+using a freshly-created organisation — never the Harbour View Strata demo tenant, which was neither
+read from nor written to; (3) that live call confirmed `emailSendGloballyDisabled: true` correctly
+reflects the dev server's real `EMAIL_SEND_DISABLED=true`, and a signature-less webhook call
+correctly returned 503. No real email was possible or attempted at any point.
+
+### Known limitations carried forward
+
+- No automated reconciliation against the provider's own delivery/bounce log beyond the signed
+  webhook — a `QUARANTINED` reminder always requires a human to resolve it.
+- `AWAITING_PAYMENT` is a documented stand-in for "an active payment arrangement," not a real
+  payment-plan feature (ADR-029 D2) — revisit if that becomes its own milestone.
+- Statutory NSW debt notices, recovery costs, and legal escalation remain entirely out of scope,
+  by design.
+- The (lot, stage) candidate dedup is a service-level check, not a DB-level constraint (ADR-029
+  D8) — safe for sends (approval re-validates), not fully safe against a duplicate *candidate*
+  under true multi-instance concurrency. Worth a DB-level partial unique index if/when this app
+  moves to multi-instance deployment.
+- No browser-automation tool was available for a true end-to-end UI walkthrough this pass (see
+  "Live validation" above) — a Playwright pass remains a reasonable follow-up whenever such a tool
+  is available in this environment.
+- `approvedByUserId` is shown as a raw user id in the Audit Evidence card, not a resolved display
+  name — consistent with this codebase's existing `BankReconciliation` audit-field convention
+  (`preparedByUserId`/`reviewedByUserId`), not a new gap introduced by this milestone.
+
+## M16.8 integration fix — unifying the M16.6 manual draft and M16.8 automated pipelines (22 October 2026)
+
+**Defect:** a manually drafted (M16.6) reminder started and stayed in `DRAFT` forever — the M16.8
+approval/dispatch pipeline only ever accepted `READY_FOR_REVIEW`, so a manager had no way to
+approve or send a manually drafted reminder; the only available action was `cancel`.
+
+**Fix:** one new explicit, human-authorized transition, `ReminderApprovalService.submitForReview`
+(`POST .../reminders/queue/{reminderId}/submit-for-review`, `financials.manage`), moving a `DRAFT`
+reminder in place (never a new row, never deleting history) into `READY_FOR_REVIEW`, `SUPPRESSED`,
+or `CANCELLED` — reusing the exact same suppression/dedup rule functions the automated evaluator
+uses (`computeSuppressionReason`/`hasActiveReminderForStage`, extracted from
+`ReminderEligibilityService.evaluate` and now shared by both entry points, never duplicated).
+Deliberately does NOT require `ReminderPolicy.enabled` and does NOT apply the initial-delay/
+follow-up-interval timing rule (ADR-029 Addendum 2, D16 — documented as intentional, not an
+oversight); every other restriction (minimum threshold, case-status suppression, caps, duplicate-
+stage dedup) applies identically to both paths. The duplicate-check and status write run inside one
+`Serializable`-isolation transaction — stronger than the evaluator's own documented check-then-
+create dedup (ADR-029 D8) — so two concurrent requests, or a manual draft and an automated
+candidate for the same lot/stage, can never both end up active.
+
+**Frontend:** "Submit for Review" added to both the M16.6 `ReminderPreviewModal` (Lot Detail) and
+the M16.8 `ReminderReviewPage` (Reminder Detail) for a `DRAFT` reminder — both call the same M16.8
+endpoint via the existing hooks, no new submission logic in the frontend. The stale-approval banner
+is suppressed for `DRAFT` (it doesn't apply pre-review) in favour of an explanatory note. A related
+pre-existing gap fixed in the same pass: both Approve and the new Submit action now refetch the
+detail after a 409, since a settled-debt rejection still changes the reminder's status server-side.
+
+**Tests:** 12 new backend integration tests (40 total in `financial-reminder-delivery.test.ts`) —
+full convergence through approve+dispatch, independence from `ReminderPolicy.enabled`, timing-rule
+exemption, settled-debt cancellation, threshold enforcement, case-status suppression, missing-
+recipient handling, cross-entry-point duplicate blocking, status-guard rejection, true concurrency,
+authorization, and history preservation. 6 new frontend tests (`reminder-preview-modal.test.tsx`,
+`reminder-review-page.test.tsx`). New migration `20261022104429_m16_8_1_manual_submit_for_review`
+(2 new `ActivityEventType` values: `REMINDER_SUBMITTED_FOR_REVIEW`, `REMINDER_SUBMISSION_SUPPRESSED`).
+Full backend and frontend suites, `tsc`, `eslint`, `build`, and OpenAPI route coverage all green —
+see the final report for this pass for exact counts. Full detail: ADR-029 Addendum 2.
+
+**M16.9 readiness:** Financial Statements & Reporting (the final planned MVP feature milestone) is
+unaffected by anything in M16.8 — reminders are a communications workflow with no GL postings or
+balance changes, confirmed by the test suite above. M16.9 has not been started.

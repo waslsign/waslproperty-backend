@@ -1,8 +1,8 @@
 # Financial Management — Architecture Validation & Implementation Plan
 
-**Version:** 1.7 | **Date:** 21 October 2026 | **Status:** M16.2.1, M16.2.2, M16.3, M16.4, M16.5, M16.6 and M16.7 implemented; M16.8+ remain proposed
+**Version:** 1.8 | **Date:** 22 October 2026 | **Status:** M16.2.1, M16.2.2, M16.3, M16.4, M16.5, M16.6, M16.7 and M16.8 (backend) implemented; M16.8 frontend and M16.9 remain outstanding
 **Scope:** Validates `WaslProp_Financial_Architecture_Blueprint_Option_B.md` and `WaslProp_Complete_Financial_Requirements_Option_B.md` against the repository, and defines the roadmap from M16.2.1 onward.
-**Authority:** Sections 6 (M16.2.1), 7 (M16.2.2) and 8 (M16.3) are now implemented — see each section's own Implementation Report, plus the M16.4, M16.5, M16.6 and M16.7 sections further below. M16.8+ remain a proposal pending architecture/client confirmation per ADR-018.
+**Authority:** Sections 6 (M16.2.1), 7 (M16.2.2) and 8 (M16.3) are now implemented — see each section's own Implementation Report, plus the M16.4, M16.5, M16.6, M16.7 and M16.8 sections further below. M16.8's own note: "M16.8" elsewhere in this document's earlier forward-looking tables/roadmap prose referred to GST/BAS under the pre-reconciliation-era numbering — that text is historical and superseded; the M16.8 actually implemented (22 October 2026) is Arrears Reminder Delivery & Scheduling, immediately following M16.7 in the resequenced roadmap. M16.9 (Financial Statements & Reporting, the final planned MVP feature milestone) remains a proposal pending architecture/client confirmation per ADR-018.
 
 ---
 
@@ -769,3 +769,29 @@ Addendum, traceability matrix's "M16.7 hardening pass" entry.
 test/verification detail, including the Harbour View Strata live validation (a real bank account,
 receipt, imported transaction and completed reconciliation, created through the actual UI): the
 traceability matrix's "M16.7" entry.
+
+## M16.8 — Arrears Reminder Delivery & Scheduling (22 October 2026, backend only)
+
+**Client-facing capability delivered (backend/API):** a daily eligibility check surfaces which
+overdue lots are due a payment reminder (respecting a configurable initial delay, follow-up
+interval, minimum-outstanding threshold, and per-case/rolling-window caps), a manager reviews each
+candidate against its live, freshly-recalculated debt and recipient before approving it
+individually or in a batch, and only an explicitly approved reminder can be dispatched — through
+the application's existing email infrastructure, revalidated a second time immediately before
+sending, and never once if `EMAIL_SEND_DISABLED` is set. Delivery status is tracked through an
+explicit state machine (`READY_FOR_REVIEW -> APPROVED -> QUEUED -> SENDING -> SENT -> DELIVERED`,
+with `SUPPRESSED`/`FAILED`/`QUARANTINED`/`CANCELLED` as the documented off-ramps), `SENT` means the
+provider accepted it and `DELIVERED` is only ever set from a verified webhook callback — never
+fabricated.
+
+**Explicitly NOT delivered:** the four Stitch-designed frontend screens (Reminder Queue, Policy
+Settings, Review/Approval, Delivery History) — see the traceability matrix's "M16.8" entry for why,
+and treat this as the explicit next step before M16.8 is UI-complete. Also out of scope, by design,
+same as the original brief: automatic dispatch without manager approval, SMS/WhatsApp/postal
+delivery, interest/penalty calculation, recovery costs, legal escalation, and statutory NSW debt
+notices.
+
+**Migrations:** `20261022045957_m16_8_reminder_delivery_scheduling`. Full decision record:
+ADR-029. Full test/verification detail (22 integration tests, full 995-test backend suite green,
+no live browser validation yet — no frontend exists to drive it): the traceability matrix's
+"M16.8" entry.
