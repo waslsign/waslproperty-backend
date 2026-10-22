@@ -50,7 +50,7 @@ jobs:
                 --allow-build="@scarf/scarf" --allow-build="argon2" \
                 --allow-build="esbuild" --allow-build="prisma" --allow-build="tesseract.js"
               pnpm run build
-              tar -czf /src/backend.tar.gz dist node_modules package.json
+              tar -czf /src/backend.tar.gz dist node_modules package.json prisma
             '
 
       # Host comes from a repo variable, never hardcoded here — update
