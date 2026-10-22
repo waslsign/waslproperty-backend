@@ -37,7 +37,7 @@ topic, each pointing to its governing ADR).
 | FIN-018 | Bank accounts and statement import | **M16.7** (was M16.6) | Planned | — | — | — |
 | FIN-019 | Bank reconciliation | **M16.7** (was M16.6) | Planned | — | — | — |
 | FIN-020 | GST and tax treatment | **M16.8+** (was M16.8) | Planned | — | — | ADR-018 (D6 recommendation, mandatory validation flagged) |
-| FIN-021 | Financial statements and owner statements | **M16.8+** (was M16.8) | Planned | — | — | — |
+| FIN-021 | Financial statements and owner statements (limited scope: property summaries, income/expense reporting, owner statements for strata lots, PDF export — see `financial-statements-reporting-spec.md`) | **Scoped, pending approval** (client-authorized 23 Oct 2026; supersedes the old "M16.8+"/unconfirmed "M16.9" placeholder for this requirement only) | Spec drafted | — | — | ADR-030 |
 | FIN-022 | Year-end close and rollover | **M16.8+** (was M16.8) | Planned | — | — | ADR-018 (D9 recommendation) |
 | FIN-023 | Arrears, interest and collections | **M16.6** (was M16.7) | **Partial** | `arrears.service.ts` — live ageing/register/dashboard computation and the manual `CollectionCase`/`CollectionNote`/`PaymentReminder` workflow are **Done**; interest calculation, statutory notices, and recovery-cost charge-backs are **Deferred** (no NSW rate/period/fee schedule confirmed — see ADR-027); reminder **dispatch** (send) is **Deferred** (drafting/preview only, no send path exists) | `financial-arrears.test.ts` (23 tests) | ADR-027 |
 | FIN-024 | External payment/bank/accounting adapters | **M16.8+** (was M16.9) | Planned | — | — | — |
@@ -1270,6 +1270,9 @@ authorization, and history preservation. 6 new frontend tests (`reminder-preview
 Full backend and frontend suites, `tsc`, `eslint`, `build`, and OpenAPI route coverage all green —
 see the final report for this pass for exact counts. Full detail: ADR-029 Addendum 2.
 
-**M16.9 readiness:** Financial Statements & Reporting (the final planned MVP feature milestone) is
+**FIN-021 readiness (formerly referred to as "M16.9"):** Financial Statements & Reporting is
 unaffected by anything in M16.8 — reminders are a communications workflow with no GL postings or
-balance changes, confirmed by the test suite above. M16.9 has not been started.
+balance changes, confirmed by the test suite above. As of 23 October 2026, FIN-021 has a
+client-authorized limited scope and a drafted specification (`financial-statements-reporting-spec.md`,
+ADR-030) pending implementation approval — see the FIN-021 row above. The old "M16.9" milestone
+number is retired; this work is tracked against FIN-021 directly.
