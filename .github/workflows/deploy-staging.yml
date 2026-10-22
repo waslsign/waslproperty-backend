@@ -35,16 +35,19 @@ jobs:
       - name: Build (arm64, via emulated container)
         run: |
           docker run --rm --platform linux/arm64 \
-            -v "$PWD":/workspace -w /workspace \
+            -v "$PWD":/src -w /app \
             node:22-slim bash -euxc '
+              cp -r /src/. /app/
               corepack enable
-              pnpm install --frozen-lockfile
+              pnpm config set store-dir /tmp/pnpm-store
+              pnpm install --frozen-lockfile \
+                --allow-build="@prisma/client" --allow-build="@prisma/engines" \
+                --allow-build="@scarf/scarf" --allow-build="argon2" \
+                --allow-build="esbuild" --allow-build="prisma" --allow-build="tesseract.js"
               pnpm run build
               pnpm prune --prod
+              tar -czf /src/backend.tar.gz dist node_modules package.json
             '
-
-      - name: Package artifact
-        run: tar -czf backend.tar.gz dist node_modules package.json
 
       # Host comes from a repo variable, never hardcoded here — update
       # vars.STAGING_HOST if the instance's public IP ever changes (no
