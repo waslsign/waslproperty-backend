@@ -97,6 +97,20 @@ export async function resetDb() {
     // accounting_accounts/financial_configurations (payment_allocations,
     // which also reference receipts, are already deleted above, before
     // lot_levy_charges) — must go before journal_entries/journal_lines.
+    // M16.7 — bank_transaction_matches reference receipts/journal_lines/
+    // bank_transactions (all nullable except bankTransactionId) — must go
+    // before receipts/journal_lines/journal_entries below and before
+    // bank_transactions. bank_transactions reference bank_accounts/
+    // bank_statement_imports/bank_reconciliations — must go before all
+    // three. bank_statement_imports and bank_reconciliations both
+    // reference bank_accounts — must go before it; bank_accounts itself
+    // references accounting_accounts/financial_funds/
+    // financial_configurations — must go before those below.
+    testPrisma.bankTransactionMatch.deleteMany(),
+    testPrisma.bankTransaction.deleteMany(),
+    testPrisma.bankStatementImport.deleteMany(),
+    testPrisma.bankReconciliation.deleteMany(),
+    testPrisma.bankAccount.deleteMany(),
     testPrisma.receipt.deleteMany(),
     testPrisma.journalLine.deleteMany(),
     testPrisma.journalEntry.deleteMany(),
@@ -114,7 +128,12 @@ export async function resetDb() {
     // (and property/space/user, never journal_entries) — both must go
     // before collection_cases, and all three before space/property below.
     testPrisma.collectionNote.deleteMany(),
+    // M16.8 — delivery attempts and the reminder policy both reference
+    // payment_reminders/property and must go before payment_reminders and
+    // property below.
+    testPrisma.paymentReminderDeliveryAttempt.deleteMany(),
     testPrisma.paymentReminder.deleteMany(),
+    testPrisma.reminderPolicy.deleteMany(),
     testPrisma.collectionCase.deleteMany(),
     testPrisma.space.deleteMany(),
     testPrisma.property.deleteMany(),

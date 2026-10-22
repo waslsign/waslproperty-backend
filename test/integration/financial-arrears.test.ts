@@ -358,11 +358,22 @@ async function issueRegularLevy(
   return { schedule: issued, chargeAmount: amount };
 }
 
-/** Today is fixed at 2026-10-21 throughout this suite (matches the real
- * server clock used by `new Date()` in arrears.controller.ts) — every
- * test below chooses due dates relative to that fixed point so "overdue"
- * assertions are deterministic. */
-const TODAY = '2026-10-21';
+/** "YYYY-MM-DD" -> "YYYY-MM-DD" offset by `days` (negative for the past) —
+ * every date-relative assertion below is computed through this rather
+ * than a hardcoded literal, so the suite stays correct regardless of the
+ * real calendar date the test happens to run on. */
+function addDays(dateOnly: string, days: number): string {
+  const date = new Date(`${dateOnly}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+/** Today, derived from the real server clock at test-run time (matches
+ * `new Date()` in arrears.controller.ts) — every test below chooses due
+ * dates relative to this via `addDays` so "overdue"/ageing assertions
+ * stay deterministic no matter what real calendar date the suite runs
+ * on. */
+const TODAY = new Date().toISOString().slice(0, 10);
 
 describe('M16.6 Arrears Management', () => {
   beforeEach(async () => {
@@ -390,12 +401,13 @@ describe('M16.6 Arrears Management', () => {
     it('2. an unpaid levy after its due date is overdue, in the 1-30 bucket', async () => {
       const { accessToken } = await registerAuOrg();
       const scheme = await createSchemeReadyForArrears(accessToken);
-      await issueRegularLevy(accessToken, scheme.property.id, scheme.administrationFundId, scheme.income.id, 500, '2026-10-15');
+      const dueDate = addDays(TODAY, -6);
+      await issueRegularLevy(accessToken, scheme.property.id, scheme.administrationFundId, scheme.income.id, 500, dueDate);
 
-      const detail = await getLotArrearsDetail(accessToken, scheme.property.id, scheme.spaceId);
+      const detail = await getLotArrearsDetail(accessToken, scheme.property.id, scheme.spaceId, `?asOfDate=${TODAY}`);
       expect(detail.body.totalOverdue).toBe('500.00');
       expect(detail.body.charges[0].isOverdue).toBe(true);
-      expect(detail.body.charges[0].daysOverdue).toBe(6); // 2026-10-21 - 2026-10-15
+      expect(detail.body.charges[0].daysOverdue).toBe(6);
       expect(detail.body.charges[0].ageingBucket).toBe('DAYS_1_30');
     });
   });
@@ -643,7 +655,7 @@ describe('M16.6 Arrears Management', () => {
     it('13. buckets fall exactly at 30/31/60/61/90/91 day boundaries', async () => {
       const { accessToken } = await registerAuOrg();
       const scheme = await createSchemeReadyForArrears(accessToken);
-      // TODAY = 2026-10-21. Due dates chosen so daysOverdue lands exactly
+      // Due dates chosen so daysOverdue (relative to TODAY) lands exactly
       // on each boundary: 30 (1-30), 31 (31-60), 60 (31-60), 61 (61-90),
       // 90 (61-90), 91 (90+).
       const budget = await createApprovedLevyBudget(accessToken, scheme.property.id, scheme.administrationFundId, scheme.income.id, 600);
@@ -652,18 +664,18 @@ describe('M16.6 Arrears Management', () => {
         financialBudgetId: budget.id,
         name: 'Boundary levy',
         installments: [
-          { dueDate: '2026-09-21', amount: 100 }, // 30 days overdue
-          { dueDate: '2026-09-20', amount: 100 }, // 31 days overdue
-          { dueDate: '2026-08-22', amount: 100 }, // 60 days overdue
-          { dueDate: '2026-08-21', amount: 100 }, // 61 days overdue
-          { dueDate: '2026-07-23', amount: 100 }, // 90 days overdue
-          { dueDate: '2026-07-22', amount: 100 }, // 91 days overdue
+          { dueDate: addDays(TODAY, -30), amount: 100 }, // 30 days overdue
+          { dueDate: addDays(TODAY, -31), amount: 100 }, // 31 days overdue
+          { dueDate: addDays(TODAY, -60), amount: 100 }, // 60 days overdue
+          { dueDate: addDays(TODAY, -61), amount: 100 }, // 61 days overdue
+          { dueDate: addDays(TODAY, -90), amount: 100 }, // 90 days overdue
+          { dueDate: addDays(TODAY, -91), amount: 100 }, // 91 days overdue
         ],
       });
       await approveSchedule(accessToken, scheme.property.id, created.body.id);
       for (let i = 0; i < 6; i += 1) await issueInstallment(accessToken, scheme.property.id, created.body.id);
 
-      const detail = await getLotArrearsDetail(accessToken, scheme.property.id, scheme.spaceId);
+      const detail = await getLotArrearsDetail(accessToken, scheme.property.id, scheme.spaceId, `?asOfDate=${TODAY}`);
       const byDays = new Map(detail.body.charges.map((c: { daysOverdue: number; ageingBucket: string }) => [c.daysOverdue, c.ageingBucket]));
       expect(byDays.get(30)).toBe('DAYS_1_30');
       expect(byDays.get(31)).toBe('DAYS_31_60');
@@ -678,13 +690,13 @@ describe('M16.6 Arrears Management', () => {
     it('14. a charge due exactly on the as-of date is CURRENT, not overdue; one day later it is overdue', async () => {
       const { accessToken } = await registerAuOrg();
       const scheme = await createSchemeReadyForArrears(accessToken);
-      await issueRegularLevy(accessToken, scheme.property.id, scheme.administrationFundId, scheme.income.id, 500, '2026-10-21');
+      await issueRegularLevy(accessToken, scheme.property.id, scheme.administrationFundId, scheme.income.id, 500, TODAY);
 
-      const sameDay = await getLotArrearsDetail(accessToken, scheme.property.id, scheme.spaceId, '?asOfDate=2026-10-21');
+      const sameDay = await getLotArrearsDetail(accessToken, scheme.property.id, scheme.spaceId, `?asOfDate=${TODAY}`);
       expect(sameDay.body.charges[0].isOverdue).toBe(false);
       expect(sameDay.body.charges[0].ageingBucket).toBe('CURRENT');
 
-      const nextDay = await getLotArrearsDetail(accessToken, scheme.property.id, scheme.spaceId, '?asOfDate=2026-10-22');
+      const nextDay = await getLotArrearsDetail(accessToken, scheme.property.id, scheme.spaceId, `?asOfDate=${addDays(TODAY, 1)}`);
       expect(nextDay.body.charges[0].isOverdue).toBe(true);
       expect(nextDay.body.charges[0].daysOverdue).toBe(1);
     });
@@ -714,7 +726,7 @@ describe('M16.6 Arrears Management', () => {
       // not duplicated here.
       const { accessToken } = await registerAuOrg();
       const scheme = await createSchemeReadyForArrears(accessToken);
-      await issueRegularLevy(accessToken, scheme.property.id, scheme.administrationFundId, scheme.income.id, 500, '2026-10-01');
+      await issueRegularLevy(accessToken, scheme.property.id, scheme.administrationFundId, scheme.income.id, 500, addDays(TODAY, -20));
       const charges = await getLotLevyCharges(accessToken, scheme.property.id, scheme.spaceId);
 
       await recordReceipt(accessToken, scheme.property.id, {
@@ -733,7 +745,7 @@ describe('M16.6 Arrears Management', () => {
       // A real historical date before today (before this instalment was
       // actually issued) — the charge must not appear at all, never shown
       // as a fabricated "500.00 overdue" position that never truly existed.
-      const beforeIssuance = await getLotArrearsDetail(accessToken, scheme.property.id, scheme.spaceId, '?asOfDate=2026-10-20');
+      const beforeIssuance = await getLotArrearsDetail(accessToken, scheme.property.id, scheme.spaceId, `?asOfDate=${addDays(TODAY, -1)}`);
       expect(beforeIssuance.body.charges).toEqual([]);
       expect(beforeIssuance.body.totalOverdue).toBe('0.00');
     });

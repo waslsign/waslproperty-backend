@@ -1,0 +1,917 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+<head>
+<meta charset="UTF-8" />
+<title>WaslProp Financial Management — Product Journeys</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --purple: #662A6F;
+    --purple-dark: #4A1E51;
+    --purple-tint: #F4EEF6;
+    --purple-tint2: #ECE1EF;
+    --ink: #1C1420;
+    --ink-soft: #5B5062;
+    --line: #E3DAE6;
+    --paper: #FFFFFF;
+    --canvas: #FBF9FC;
+    --positive: #1E7D44;
+    --warning: #B5790A;
+    --negative: #B3261E;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: var(--ink);
+    background: var(--canvas);
+  }
+  .page {
+    width: 1600px;
+    height: 1000px;
+    position: relative;
+    background: var(--paper);
+    page-break-after: always;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .page:last-child { page-break-after: auto; }
+
+  /* ---------- shared chrome ---------- */
+  .page-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 36px 64px 20px 64px;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .brand .mark {
+    width: 34px; height: 34px; border-radius: 9px;
+    background: var(--purple);
+    display: flex; align-items: center; justify-content: center;
+    color: white; font-weight: 800; font-size: 17px;
+  }
+  .brand .word { font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
+  .page-eyebrow {
+    font-size: 12.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--purple);
+  }
+  .page-footer {
+    margin-top: auto;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 64px 28px 64px;
+    border-top: 1px solid var(--line);
+    font-size: 11.5px; color: var(--ink-soft);
+  }
+  .page-footer .num { font-variant-numeric: tabular-nums; }
+
+  .journey-badge {
+    width: 46px; height: 46px; border-radius: 50%;
+    background: var(--purple); color: white;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 19px; flex: none;
+  }
+
+  h1.page-title { font-size: 30px; font-weight: 800; margin: 0 0 4px 0; letter-spacing: -0.01em; }
+  p.page-sub { font-size: 14.5px; color: var(--ink-soft); margin: 0; max-width: 820px; line-height: 1.5; }
+
+  .shot {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 1px 2px rgba(28,20,32,0.04), 0 10px 28px rgba(28,20,32,0.08);
+    background: #fff;
+  }
+  .shot img { display: block; width: 100%; height: auto; }
+  .shot .chrome {
+    height: 22px; background: #F1EDF3; display: flex; align-items: center; gap: 6px; padding: 0 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .shot .chrome span { width: 7px; height: 7px; border-radius: 50%; background: #D7CCDB; }
+
+  .cap {
+    font-size: 11.5px; color: var(--ink-soft); margin-top: 8px; text-align: center;
+  }
+
+  /* ---------- COVER ---------- */
+  .cover {
+    background:
+      radial-gradient(1100px 620px at 85% -10%, #7C3A86 0%, var(--purple) 46%, var(--purple-dark) 100%);
+    color: white;
+    justify-content: space-between;
+  }
+  .cover-top { padding: 56px 72px 0 72px; display: flex; align-items: center; justify-content: space-between; }
+  .cover-top .brand .mark { background: white; color: var(--purple); }
+  .cover-top .brand .word { color: white; }
+  .cover-tag {
+    font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: rgba(255,255,255,0.72);
+    border: 1px solid rgba(255,255,255,0.35);
+    padding: 6px 12px; border-radius: 999px;
+  }
+  .cover-main { padding: 0 72px; }
+  .cover-main h1 {
+    font-size: 58px; line-height: 1.04; font-weight: 800; letter-spacing: -0.02em;
+    margin: 0 0 20px 0; max-width: 980px;
+  }
+  .cover-main p {
+    font-size: 18px; color: rgba(255,255,255,0.84); max-width: 640px; line-height: 1.6; margin: 0;
+  }
+  .cover-strip {
+    display: flex; gap: 0;
+    padding: 30px 72px 48px 72px;
+    border-top: 1px solid rgba(255,255,255,0.22);
+  }
+  .cover-strip .stat { flex: 1; padding-right: 28px; }
+  .cover-strip .stat + .stat { border-left: 1px solid rgba(255,255,255,0.22); padding-left: 28px; }
+  .cover-strip .stat .n { font-size: 26px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .cover-strip .stat .l { font-size: 12.5px; color: rgba(255,255,255,0.72); margin-top: 2px; }
+
+  /* ---------- AT A GLANCE ---------- */
+  .glance-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px;
+    padding: 30px 64px;
+  }
+  .glance-card {
+    border: 1px solid var(--line); border-radius: 12px; padding: 20px;
+    background: var(--canvas);
+  }
+  .glance-card .num {
+    width: 30px; height: 30px; border-radius: 8px; background: var(--purple-tint2); color: var(--purple);
+    display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 14px; margin-bottom: 14px;
+  }
+  .glance-card h3 { font-size: 15.5px; margin: 0 0 6px 0; font-weight: 700; }
+  .glance-card p { font-size: 12.5px; color: var(--ink-soft); line-height: 1.55; margin: 0; }
+
+  .glance-kpis {
+    display: flex; gap: 14px; padding: 0 64px 28px 64px;
+  }
+  .kpi {
+    flex: 1; border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px;
+    background: white;
+  }
+  .kpi .l { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-soft); }
+  .kpi .v { font-size: 21px; font-weight: 800; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .kpi.neg .v { color: var(--negative); }
+  .kpi.warn .v { color: var(--warning); }
+  .kpi.pos .v { color: var(--positive); }
+
+  /* ---------- JOURNEY LAYOUTS ---------- */
+  .journey-head {
+    display: flex; align-items: flex-start; gap: 18px;
+    padding: 30px 64px 0 64px;
+  }
+  .journey-body {
+    display: flex; gap: 30px; padding: 22px 64px 0 64px; flex: 1; min-height: 0;
+  }
+  .journey-left { width: 380px; flex: none; display: flex; flex-direction: column; gap: 16px; }
+  .journey-right { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 16px; min-width: 0; }
+  .journey-right.two-up { flex-direction: row; align-items: flex-start; }
+  .journey-right.two-up .shot-wrap { flex: 1; min-width: 0; }
+
+  .scenario {
+    background: var(--purple-tint);
+    border: 1px solid var(--purple-tint2);
+    border-radius: 12px; padding: 16px 18px;
+  }
+  .scenario .l { font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--purple); margin-bottom: 6px; }
+  .scenario p { font-size: 13px; line-height: 1.55; margin: 0; color: var(--ink); }
+
+  .flow {
+    display: flex; flex-direction: column; gap: 0;
+  }
+  .flow .step { display: flex; gap: 12px; padding: 10px 0; }
+  .flow .step .dot {
+    width: 22px; height: 22px; border-radius: 50%; background: var(--purple); color: white;
+    font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex: none; margin-top: 1px;
+  }
+  .flow .step .tx h4 { font-size: 13px; margin: 0 0 2px 0; font-weight: 700; }
+  .flow .step .tx p { font-size: 12px; margin: 0; color: var(--ink-soft); line-height: 1.45; }
+  .flow .rule { width: 1px; background: var(--line); margin-left: 10.5px; height: 10px; }
+
+  .benefit {
+    border-left: 3px solid var(--purple); padding: 4px 0 4px 14px;
+  }
+  .benefit .l { font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-soft); margin-bottom: 4px; }
+  .benefit p { font-size: 13px; line-height: 1.5; margin: 0; }
+
+  /* ---------- CONNECTED EXAMPLE ---------- */
+  .ledger-table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+  }
+  .ledger-table th {
+    text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--ink-soft); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--line);
+  }
+  .ledger-table td { padding: 10px 10px; border-bottom: 1px solid var(--line); }
+  .ledger-table td.num, .ledger-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .ledger-table tr.total td { font-weight: 800; border-top: 2px solid var(--ink); border-bottom: none; }
+
+  /* ---------- CAPABILITIES ---------- */
+  .cap-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; padding: 28px 64px; }
+  .cap-card { border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+  .cap-card h4 { font-size: 14px; margin: 0 0 8px 0; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .cap-card h4 .ic { width: 8px; height: 8px; border-radius: 50%; background: var(--purple); flex: none; }
+  .cap-card ul { margin: 0; padding-left: 16px; }
+  .cap-card li { font-size: 12px; color: var(--ink-soft); line-height: 1.7; }
+
+  /* ---------- ROADMAP ---------- */
+  .road-track { padding: 10px 64px 0 64px; }
+  .road-row { display: flex; align-items: center; gap: 18px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+  .road-row:last-child { border-bottom: none; }
+  .road-pill {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+    padding: 5px 12px; border-radius: 999px; flex: none; width: 112px; text-align: center;
+  }
+  .road-pill.live { background: #E4F3E9; color: var(--positive); }
+  .road-pill.next { background: #FCEFD9; color: var(--warning); }
+  .road-row .rt { flex: 1; }
+  .road-row .rt h4 { margin: 0 0 3px 0; font-size: 14.5px; font-weight: 700; }
+  .road-row .rt p { margin: 0; font-size: 12.5px; color: var(--ink-soft); line-height: 1.5; }
+
+  .status-chip {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600;
+    padding: 4px 10px; border-radius: 999px; background: var(--purple-tint2); color: var(--purple);
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ PAGE 1 — COVER ============ -->
+<section class="page cover">
+  <div class="cover-top">
+    <div class="brand">
+      <div class="mark">W</div>
+      <div class="word">WaslProp</div>
+    </div>
+    <div class="cover-tag">Financial Management</div>
+  </div>
+  <div class="cover-main">
+    <h1>Financial Management —<br>Product Journeys</h1>
+    <p>A visual walkthrough of how WaslProp manages levies, receipts, lot accounts and
+      arrears for Australian strata schemes — shown using a real demonstration scheme,
+      Harbour View Strata.</p>
+  </div>
+  <div class="cover-strip">
+    <div class="stat"><div class="n">12</div><div class="l">Lots under management</div></div>
+    <div class="stat"><div class="n">2</div><div class="l">Statutory funds tracked</div></div>
+    <div class="stat"><div class="n">AUD 144,000</div><div class="l">Annual budget, FY2026/27</div></div>
+    <div class="stat"><div class="n">7</div><div class="l">Core financial journeys</div></div>
+  </div>
+</section>
+
+<!-- ============ PAGE 2 — AT A GLANCE ============ -->
+<section class="page">
+  <div class="page-header">
+    <div class="brand"><div class="mark">W</div><div class="word">WaslProp</div></div>
+    <div class="page-eyebrow">At a glance</div>
+  </div>
+  <div style="padding: 30px 64px 0 64px;">
+    <h1 class="page-title">A complete financial record for every scheme</h1>
+    <p class="page-sub">WaslProp keeps one connected financial picture per strata scheme — from the annual
+      budget through to the balance each lot owner holds today. Every figure on this page is
+      drawn from the live Harbour View Strata demonstration scheme.</p>
+  </div>
+  <div class="glance-kpis">
+    <div class="kpi"><div class="l">Annual budget</div><div class="v">AUD 144,000.00</div></div>
+    <div class="kpi"><div class="l">Levies issued to lots</div><div class="v">AUD 124,368.42</div></div>
+    <div class="kpi warn"><div class="l">Currently overdue</div><div class="v">AUD 29,368.42</div></div>
+    <div class="kpi pos"><div class="l">Unapplied owner credits</div><div class="v">AUD 500.00</div></div>
+  </div>
+  <div class="glance-grid">
+    <div class="glance-card">
+      <div class="num">1</div>
+      <h3>Scheme set-up</h3>
+      <p>Financial year, funds and opening balances are configured once per scheme, with no
+        historical activity invented before the agreed start date.</p>
+    </div>
+    <div class="glance-card">
+      <div class="num">2</div>
+      <h3>Budgeting</h3>
+      <p>Annual budgets are built fund-by-fund, revenue against expenditure, with a full
+        version history as revisions are approved.</p>
+    </div>
+    <div class="glance-card">
+      <div class="num">3</div>
+      <h3>Levy issuance</h3>
+      <p>Quarterly or special levies are raised against the budget and issued to lots
+        instalment by instalment, each one separately recorded.</p>
+    </div>
+    <div class="glance-card">
+      <div class="num">4</div>
+      <h3>Lot accounts</h3>
+      <p>Every lot has its own running account — charges, receipts and balance — with a
+        statement available at any time.</p>
+    </div>
+    <div class="glance-card">
+      <div class="num">5</div>
+      <h3>Receipts &amp; payments</h3>
+      <p>Owner payments are recorded against the bank and allocated to specific levy
+        charges, or held as credit until the owner's next charge.</p>
+    </div>
+    <div class="glance-card">
+      <div class="num">6</div>
+      <h3>Arrears &amp; collections</h3>
+      <p>Overdue balances are identified automatically by ageing bucket, with a managed
+        workflow for follow-up and reminder letters.</p>
+    </div>
+    <div class="glance-card">
+      <div class="num">7</div>
+      <h3>Oversight &amp; audit</h3>
+      <p>Every transaction is posted to a full general ledger, so the committee and its
+        accountant can always see a balanced, auditable record.</p>
+    </div>
+    <div class="glance-card" style="background: var(--purple-tint); border-color: var(--purple-tint2);">
+      <div class="num" style="background:var(--purple); color:white;">→</div>
+      <h3>Next up</h3>
+      <p>Bank feed reconciliation is in development — see the roadmap page at the end of
+        this document.</p>
+    </div>
+  </div>
+  <div class="page-footer">
+    <span>WaslProp Financial Management</span>
+    <span class="num">Page 2</span>
+  </div>
+</section>
+
+<!-- ============ PAGE 3 — JOURNEY 1: ONBOARDING ============ -->
+<section class="page">
+  <div class="page-header">
+    <div class="brand"><div class="mark">W</div><div class="word">WaslProp</div></div>
+    <div class="page-eyebrow">Journey 1 of 7</div>
+  </div>
+  <div class="journey-head">
+    <div class="journey-badge">1</div>
+    <div>
+      <h1 class="page-title">Getting a scheme's finances set up</h1>
+      <p class="page-sub">Before any levy is raised, the committee's financial year, funds and
+        chart of accounts are configured — and WaslProp never fabricates history before the
+        agreed start date.</p>
+    </div>
+  </div>
+  <div class="journey-body">
+    <div class="journey-left">
+      <div class="scenario">
+        <div class="l">Business scenario</div>
+        <p>A new strata manager is bringing Harbour View Strata onto WaslProp partway through
+          a financial year. They need the scheme's funds and cut-over date set up before any
+          transaction can be recorded.</p>
+      </div>
+      <div class="flow">
+        <div class="step"><div class="dot">1</div><div class="tx"><h4>Confirm the financial year</h4><p>Start, end and cut-over date — any 12-month cycle, not assumed to be July–June.</p></div></div>
+        <div class="rule"></div>
+        <div class="step"><div class="dot">2</div><div class="tx"><h4>Set up funds &amp; balances</h4><p>Administration and Capital Works funds, each with its own ledger accounts.</p></div></div>
+        <div class="rule"></div>
+        <div class="step"><div class="dot">3</div><div class="tx"><h4>Record opening positions</h4><p>Each lot's starting balance, carried in from the scheme's previous records.</p></div></div>
+        <div class="rule"></div>
+        <div class="step"><div class="dot">4</div><div class="tx"><h4>Review &amp; confirm</h4><p>A reconciliation check before the scheme goes live on the platform.</p></div></div>
+      </div>
+      <div class="benefit">
+        <div class="l">Why it matters</div>
+        <p>A clean, agreed starting point means every figure WaslProp shows afterwards can be
+          trusted — nothing is backfilled or guessed.</p>
+      </div>
+    </div>
+    <div class="journey-right">
+      <div class="shot-wrap">
+        <div class="shot"><div class="chrome"><span></span><span></span><span></span></div><img src="../screenshots/02-financial-setup.png" alt="Set up financial management wizard"></div>
+        <div class="cap">Setting the financial year and cut-over date for Harbour View Strata</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-footer">
+    <span>Journey 1 — Getting set up</span>
+    <span class="num">Page 3</span>
+  </div>
+</section>
+
+<!-- ============ PAGE 4 — JOURNEY 2: BUDGETING ============ -->
+<section class="page">
+  <div class="page-header">
+    <div class="brand"><div class="mark">W</div><div class="word">WaslProp</div></div>
+    <div class="page-eyebrow">Journey 2 of 7</div>
+  </div>
+  <div class="journey-head">
+    <div class="journey-badge">2</div>
+    <div>
+      <h1 class="page-title">Planning the year's budget</h1>
+      <p class="page-sub">Each financial year starts with a fund-by-fund budget — the figure
+        every levy for the year is ultimately raised against.</p>
+    </div>
+  </div>
+  <div class="journey-body">
+    <div class="journey-left">
+      <div class="scenario">
+        <div class="l">Business scenario</div>
+        <p>The committee approves Harbour View Strata's FY2026/27 budget: AUD 96,000 for
+          Administration Fund running costs and AUD 48,000 for the Capital Works Fund.
+          A revision adds the Capital Works lines after the first draft.</p>
+      </div>
+      <div class="flow">
+        <div class="step"><div class="dot">1</div><div class="tx"><h4>Build the budget</h4><p>Revenue and expenditure lines entered per fund, by account.</p></div></div>
+        <div class="rule"></div>
+        <div class="step"><div class="dot">2</div><div class="tx"><h4>Revise if needed</h4><p>A new version is created rather than overwriting the approved figure.</p></div></div>
+        <div class="rule"></div>
+        <div class="step"><div class="dot">3</div><div class="tx"><h4>Approve &amp; activate</h4><p>The active version becomes the reference point for levy issuance.</p></div></div>
+      </div>
+      <div class="benefit">
+        <div class="l">Why it matters</div>
+        <p>A full version history means the committee can always see what changed between
+          drafts, and when — without losing the original figures.</p>
+      </div>
+    </div>
+    <div class="journey-right two-up">
+      <div class="shot-wrap">
+        <div class="shot"><div class="chrome"><span></span><span></span><span></span></div><img src="../screenshots/06-budgets-list.png" alt="Budgets list"></div>
+        <div class="cap">Budget overview — AUD 144,000 across two funds</div>
+      </div>
+      <div class="shot-wrap">
+        <div class="shot"><div class="chrome"><span></span><span></span><span></span></div><img src="../screenshots/07-budget-detail.png" alt="Budget detail"></div>
+        <div class="cap">Administration Fund budget lines, v2</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-footer">
+    <span>Journey 2 — Budgeting</span>
+    <span class="num">Page 4</span>
+  </div>
+</section>
+
+<!-- ============ PAGE 5 — JOURNEY 3: LEVY ISSUANCE ============ -->
+<section class="page">
+  <div class="page-header">
+    <div class="brand"><div class="mark">W</div><div class="word">WaslProp</div></div>
+    <div class="page-eyebrow">Journey 3 of 7</div>
+  </div>
+  <div class="journey-head">
+    <div class="journey-badge">3</div>
+    <div>
+      <h1 class="page-title">Issuing levies to lot owners</h1>
+      <p class="page-sub">Once a budget is approved, quarterly or special levies are raised
+        against it and issued to every lot — instalment by instalment.</p>
+    </div>
+  </div>
+  <div class="journey-body">
+    <div class="journey-left">
+      <div class="scenario">
+        <div class="l">Business scenario</div>
+        <p>Harbour View Strata's Administration Fund levy is issued as four quarterly
+          instalments of AUD 24,000 each (AUD 96,000 for the year), apportioned across the
+          scheme's 12 lots and posted to each lot's account as it falls due.</p>
+      </div>
+      <div class="flow">
+        <div class="step"><div class="dot">1</div><div class="tx"><h4>Draft the schedule</h4><p>Total amount, fund and instalment dates for the year.</p></div></div>
+        <div class="rule"></div>
+        <div class="step"><div class="dot">2</div><div class="tx"><h4>Approve</h4><p>Confirms the schedule is ready to issue.</p></div></div>
+        <div class="rule"></div>
+        <div class="step"><div class="dot">3</div><div class="tx"><h4>Issue each instalment</h4><p>Posted on its own due date — never all at once — with an owner notice for each lot.</p></div></div>
+      </div>
+      <div class="benefit">
+        <div class="l">Why it matters</div>
+        <p>Instalments landing on their real due dates keeps each lot's statement accurate to
+          the day, and gives owners advance notice of what's coming.</p>
+      </div>
+    </div>
+    <div class="journey-right two-up">
+      <div class="shot-wrap">
+        <div class="shot"><div class="chrome"><span></span><span></span><span></span></div><img src="../screenshots/08-levy-schedules-list.png" alt="Levy schedules list"></div>
+        <div class="cap">Administration and Capital Works levy schedules</div>
+      </div>
+      <div class="shot-wrap">
+        <div class="shot"><div class="chrome"><span></span><span></span><span></span></div><img src="../screenshots/09-levy-schedule-detail.png" alt="Levy schedule detail"></div>
+        <div class="cap">Four instalments issued, with a full audit history</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-footer">
+    <span>Journey 3 — Levy issuance</span>
+    <span class="num">Page 5</span>
+  </div>
+</section>
+
+<!-- ============ PAGE 6 — JOURNEY 4: LOT ACCOUNTS ============ -->
+<section class="page">
+  <div class="page-header">
+    <div class="brand"><div class="mark">W</div><div class="word">WaslProp</div></div>
+    <div class="page-eyebrow">Journey 4 of 7</div>
+  </div>
+  <div class="journey-head">
+    <div class="journey-badge">4</div>
+    <div>
+      <h1 class="page-title">Every lot has its own financial account</h1>
+      <p class="page-sub">Charges, receipts and balance for each lot are tracked individually —
+        the same record an owner would expect from their own statement.</p>
+    </div>
+  </div>
+  <div class="journey-body">
+    <div class="journey-left">
+      <div class="scenario">
+        <div class="l">Business scenario</div>
+        <p>Lot 1's owner, Sarah Thompson, wants to know where her account stands. Her
+          financial account shows AUD 13,642.11 owing, apportioned across both funds, with
+          every charge and receipt that brought her to that figure.</p>
+      </div>
+      <div class="flow">
+        <div class="step"><div class="dot">1</div><div class="tx"><h4>Account balance</h4><p>Total owing, by fund, updated with every transaction.</p></div></div>
+        <div class="rule"></div>
+        <div class="step"><div class="dot">2</div><div class="tx"><h4>Receipts &amp; charges</h4><p>Everything issued and received against the lot, in one place.</p></div></div>
+        <div class="rule"></div>
+        <div class="step"><div class="dot">3</div><div class="tx"><h4>Statement on demand</h4><p>A printable statement for any date range, for the owner or their agent.</p></div></div>
+      </div>
+      <div class="benefit">
+        <div class="l">Why it matters</div>
+        <p>Owners and strata managers can answer "what do I owe and why" in seconds, with the
+          full transaction trail behind the number.</p>
+      </div>
+    </div>
+    <div class="journey-right two-up">
+      <div class="shot-wrap">
+        <div class="shot"><div class="chrome"><span></span><span></span><span></span></div><img src="../screenshots/10-lot-financial-account.png" alt="Lot financial account"></div>
+        <div class="cap">Lot 1 — financial account, fund breakdown and receipt history</div>
+      </div>
+      <div class="shot-wrap">
+        <div class="shot"><div class="chrome"><span></span><span></span><span></span></div><img src="../screenshots/13-lot-statement.png" alt="Lot statement"></div>
+        <div class="cap">Lot 1 — printable statement of itemised movements</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-footer">
+    <span>Journey 4 — Lot accounts</span>
+    <span class="num">Page 6</span>
+  </div>
+</section>
+
+<!-- ============ PAGE 7 — JOURNEY 5: RECEIPTS & PAYMENTS ============ -->
+<section class="page">
+  <div class="page-header">
+    <div class="brand"><div class="mark">W</div><div class="word">WaslProp</div></div>
+    <div class="page-eyebrow">Journey 5 of 7</div>
+  </div>
+  <div class="journey-head">
+    <div class="journey-badge">5</div>
+    <div>
+      <h1 class="page-title">Recording and allocating owner payments</h1>
+      <p class="page-sub">A payment is recorded against the bank first, then allocated to the
+        specific levy charge it pays — or held as credit if the owner pays early.</p>
+    </div>
+  </div>
+  <div class="journey-body">
+    <div class="journey-left">
+      <div class="scenario">
+        <div class="l">Business scenario</div>
+        <p>Sarah Thompson (Lot 1) pays her Q1 Administration levy of AUD 3,031.58 by bank
+          transfer, and it is applied in full. Separately, Michael O'Brien (Lot 4) sends
+          AUD 500 ahead of his next levy — left unapplied until a charge exists to allocate
+          it against, never force-applied.</p>
+      </div>
+      <div class="flow">
+        <div class="step"><div class="dot">1</div><div class="tx"><h4>Record the receipt</h4><p>Amount, method and reference, against the right fund.</p></div></div>
+        <div class="rule"></div>
+        <div class="step"><div class="dot">2</div><div class="tx"><h4>Choose how to apply it</h4><p>Leave unapplied, auto-allocate oldest-first, or choose charges manually.</p></div></div>
+        <div class="rule"></div>
+        <div class="step"><div class="dot">3</div><div class="tx"><h4>Allocation is recorded</h4><p>Applied and unapplied balances are always visible on the receipt.</p></div></div>
+      </div>
+      <div class="benefit">
+        <div class="l">Why it matters</div>
+        <p>Owner credit is never assumed to belong to a specific charge — it stays visible as
+          "available" until someone deliberately allocates it.</p>
+      </div>
+    </div>
+    <div class="journey-right two-up">
+      <div class="shot-wrap">
+        <div class="shot"><div class="chrome"><span></span><span></span><span></span></div><img src="../screenshots/11-record-receipt-modal.png" alt="Record receipt modal"></div>
+        <div class="cap">Recording a bank transfer receipt for Lot 1</div>
+      </div>
+      <div class="shot-wrap">
+        <div class="shot"><div class="chrome"><span></span><span></span><span></span></div><img src="../screenshots/16-allocate-payment-modal.png" alt="Allocate payment modal"></div>
+        <div class="cap">Allocating Lot 4's advance payment to an outstanding charge</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-footer">
+    <span>Journey 5 — Receipts &amp; payments</span>
+    <span class="num">Page 7</span>
+  </div>
+</section>
+
+<!-- ============ PAGE 8 — JOURNEY 6: ARREARS & COLLECTIONS ============ -->
+<section class="page">
+  <div class="page-header">
+    <div class="brand"><div class="mark">W</div><div class="word">WaslProp</div></div>
+    <div class="page-eyebrow">Journey 6 of 7</div>
+  </div>
+  <div class="journey-head">
+    <div class="journey-badge">6</div>
+    <div>
+      <h1 class="page-title">Identifying and following up arrears</h1>
+      <p class="page-sub">Overdue balances are calculated live from each lot's charges and
+        payments, grouped by age, with a simple workflow for following up.</p>
+    </div>
+  </div>
+  <div class="journey-body">
+    <div class="journey-left">
+      <div class="scenario">
+        <div class="l">Business scenario</div>
+        <p>As of 21 October 2026, 12 of Harbour View Strata's lots have an amount overdue —
+          AUD 29,368.42 in total, all within the 1–30 day bucket. The strata manager opens a
+          collection case for Lot 1 and drafts a reminder letter for review.</p>
+      </div>
+      <div class="flow">
+        <div class="step"><div class="dot">1</div><div class="tx"><h4>See the dashboard</h4><p>Total overdue, ageing distribution, and the funds most affected.</p></div></div>
+        <div class="rule"></div>
+        <div class="step"><div class="dot">2</div><div class="tx"><h4>Drill into the register</h4><p>Every lot in arrears, sortable and searchable, with running totals.</p></div></div>
+        <div class="rule"></div>
+        <div class="step"><div class="dot">3</div><div class="tx"><h4>Open a case &amp; follow up</h4><p>Log contact attempts and draft a reminder letter for review before anything is sent.</p></div></div>
+      </div>
+      <div class="benefit">
+        <div class="l">Why it matters</div>
+        <p>Reminder letters are drafted for review, never sent automatically — the strata
+          manager stays in control of every owner communication.</p>
+      </div>
+    </div>
+    <div class="journey-right two-up">
+      <div class="shot-wrap">
+        <div class="shot"><div class="chrome"><span></span><span></span><span></span></div><img src="../screenshots/17-arrears-dashboard.png" alt="Arrears dashboard"></div>
+        <div class="cap">Arrears dashboard — AUD 29,368.42 overdue across 12 lots</div>
+      </div>
+      <div class="shot-wrap">
+        <div class="shot"><div class="chrome"><span></span><span></span><span></span></div><img src="../screenshots/20-reminder-preview-modal.png" alt="Reminder preview"></div>
+        <div class="cap">A draft reminder letter, awaiting review — not yet sent</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-footer">
+    <span>Journey 6 — Arrears &amp; collections</span>
+    <span class="num">Page 8</span>
+  </div>
+</section>
+
+<!-- ============ PAGE 9 — JOURNEY 7: OVERSIGHT & AUDITABILITY ============ -->
+<section class="page">
+  <div class="page-header">
+    <div class="brand"><div class="mark">W</div><div class="word">WaslProp</div></div>
+    <div class="page-eyebrow">Journey 7 of 7</div>
+  </div>
+  <div class="journey-head">
+    <div class="journey-badge">7</div>
+    <div>
+      <h1 class="page-title">A balanced, auditable record behind every figure</h1>
+      <p class="page-sub">Every transaction in WaslProp — levies, receipts, allocations — posts
+        to a full general ledger, so the committee's accountant always has a complete,
+        balanced record to work from.</p>
+    </div>
+  </div>
+  <div class="journey-body">
+    <div class="journey-left">
+      <div class="scenario">
+        <div class="l">Business scenario</div>
+        <p>Harbour View Strata's committee wants assurance that the numbers on every lot
+          statement tie back to the scheme's overall accounts. The Financial Overview and
+          General Ledger give a single, always-balanced answer.</p>
+      </div>
+      <div class="flow">
+        <div class="step"><div class="dot">1</div><div class="tx"><h4>Financial overview</h4><p>Cash, receivables and fund balances for the whole scheme, at a glance.</p></div></div>
+        <div class="rule"></div>
+        <div class="step"><div class="dot">2</div><div class="tx"><h4>General ledger</h4><p>Every journal entry, fully itemised and traceable to its source.</p></div></div>
+        <div class="rule"></div>
+        <div class="step"><div class="dot">3</div><div class="tx"><h4>Trial balance</h4><p>Debits and credits confirmed equal, fund by fund, on demand.</p></div></div>
+      </div>
+      <div class="benefit">
+        <div class="l">Why it matters</div>
+        <p>Nothing is a stored "total" that can drift — every balance shown is calculated
+          fresh from the underlying ledger entries, every time.</p>
+      </div>
+    </div>
+    <div class="journey-right two-up">
+      <div class="shot-wrap">
+        <div class="shot"><div class="chrome"><span></span><span></span><span></span></div><img src="../screenshots/01-financial-overview.png" alt="Financial overview"></div>
+        <div class="cap">Financial Overview — fund balances at a glance</div>
+      </div>
+      <div class="shot-wrap">
+        <div class="shot"><div class="chrome"><span></span><span></span><span></span></div><img src="../screenshots/05-general-ledger-trial-balance.png" alt="Trial balance"></div>
+        <div class="cap">Trial Balance — AUD 293,750.50 debit and credit, balanced</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-footer">
+    <span>Journey 7 — Oversight &amp; auditability</span>
+    <span class="num">Page 9</span>
+  </div>
+</section>
+
+<!-- ============ PAGE 10 — CONNECTED EXAMPLE ============ -->
+<section class="page">
+  <div class="page-header">
+    <div class="brand"><div class="mark">W</div><div class="word">WaslProp</div></div>
+    <div class="page-eyebrow">Connected example</div>
+  </div>
+  <div style="padding: 30px 64px 0 64px;">
+    <h1 class="page-title">How it all connects — Harbour View Strata</h1>
+    <p class="page-sub">The same demonstration scheme used throughout this document, as of
+      21 October 2026 — showing how a budget becomes a levy, a levy becomes a lot balance,
+      and a lot balance becomes an overdue figure the committee can act on.</p>
+  </div>
+  <div style="padding: 22px 64px 0 64px;">
+    <table class="ledger-table">
+      <thead>
+        <tr>
+          <th>Step</th>
+          <th>What happened</th>
+          <th class="num">Amount (AUD)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>1. Budget approved</td>
+          <td>FY2026/27 budget — Administration Fund AUD 96,000, Capital Works Fund AUD 48,000</td>
+          <td class="num">144,000.00</td>
+        </tr>
+        <tr>
+          <td>2. Levies issued</td>
+          <td>Quarterly instalments issued across both funds to all 12 lots</td>
+          <td class="num">124,368.42</td>
+        </tr>
+        <tr>
+          <td>3. Receipts applied</td>
+          <td>Owner payments recorded and allocated against outstanding charges</td>
+          <td class="num">4,547.37</td>
+        </tr>
+        <tr>
+          <td>4. Held as credit</td>
+          <td>One advance payment (Lot 4) not yet allocated to a charge</td>
+          <td class="num">500.00</td>
+        </tr>
+        <tr class="total">
+          <td>Net outstanding today</td>
+          <td>Across all 12 lots, both funds</td>
+          <td class="num">124,368.42</td>
+        </tr>
+        <tr class="total">
+          <td>Of which, overdue</td>
+          <td>Past due date, 1–30 day ageing bucket</td>
+          <td class="num">29,368.42</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div style="padding: 22px 64px 0 64px; display:flex; gap:16px;">
+    <div class="kpi"><div class="l">Trial balance</div><div class="v">AUD 293,750.50 · Balanced</div></div>
+    <div class="kpi"><div class="l">Lots in arrears</div><div class="v">12 of 12</div></div>
+    <div class="kpi"><div class="l">Oldest overdue charge</div><div class="v">6 days past due</div></div>
+  </div>
+  <div class="page-footer">
+    <span>Connected example — Harbour View Strata</span>
+    <span class="num">Page 10</span>
+  </div>
+</section>
+
+<!-- ============ PAGE 11 — CAPABILITIES ============ -->
+<section class="page">
+  <div class="page-header">
+    <div class="brand"><div class="mark">W</div><div class="word">WaslProp</div></div>
+    <div class="page-eyebrow">Capabilities</div>
+  </div>
+  <div style="padding: 30px 64px 0 64px;">
+    <h1 class="page-title">What's available today</h1>
+    <p class="page-sub">A summary of the financial management capabilities shown in this
+      document, grouped by area.</p>
+  </div>
+  <div class="cap-grid">
+    <div class="cap-card">
+      <h4><span class="ic"></span>Scheme set-up</h4>
+      <ul>
+        <li>Financial year &amp; cut-over configuration</li>
+        <li>Fund structure (Administration, Capital Works)</li>
+        <li>Chart of accounts per fund</li>
+        <li>Lot opening balances</li>
+      </ul>
+    </div>
+    <div class="cap-card">
+      <h4><span class="ic"></span>Budgeting</h4>
+      <ul>
+        <li>Fund-by-fund annual budgets</li>
+        <li>Revenue &amp; expenditure lines by account</li>
+        <li>Full revision/version history</li>
+      </ul>
+    </div>
+    <div class="cap-card">
+      <h4><span class="ic"></span>Levies</h4>
+      <ul>
+        <li>Regular and special levy schedules</li>
+        <li>Instalment-by-instalment issuance</li>
+        <li>Owner notices on issuance</li>
+        <li>Reversal with full audit trail</li>
+      </ul>
+    </div>
+    <div class="cap-card">
+      <h4><span class="ic"></span>Lot accounts</h4>
+      <ul>
+        <li>Per-lot running balance, by fund</li>
+        <li>Full charge &amp; receipt history</li>
+        <li>Printable statements, any date range</li>
+      </ul>
+    </div>
+    <div class="cap-card">
+      <h4><span class="ic"></span>Receipts &amp; payments</h4>
+      <ul>
+        <li>Receipt recording against the bank</li>
+        <li>Manual, auto, or unapplied allocation</li>
+        <li>Reversal of receipts and allocations</li>
+      </ul>
+    </div>
+    <div class="cap-card">
+      <h4><span class="ic"></span>Arrears &amp; collections</h4>
+      <ul>
+        <li>Live ageing by days overdue</li>
+        <li>Arrears register, searchable and filterable</li>
+        <li>Collection cases &amp; follow-up notes</li>
+        <li>Draft reminder letters (review only)</li>
+      </ul>
+    </div>
+    <div class="cap-card">
+      <h4><span class="ic"></span>Oversight &amp; audit</h4>
+      <ul>
+        <li>Financial overview dashboard</li>
+        <li>Full general ledger, every journal</li>
+        <li>Trial balance, calculated live</li>
+      </ul>
+    </div>
+    <div class="cap-card">
+      <h4><span class="ic"></span>Multi-fund &amp; multi-currency</h4>
+      <ul>
+        <li>Statutory fund separation (NSW-style)</li>
+        <li>AUD throughout, scheme currency configurable</li>
+      </ul>
+    </div>
+    <div class="cap-card" style="background: var(--purple-tint); border-color: var(--purple-tint2);">
+      <h4><span class="ic"></span>Coming next</h4>
+      <ul>
+        <li>Bank feed reconciliation</li>
+        <li>See the roadmap on the following page</li>
+      </ul>
+    </div>
+  </div>
+  <div class="page-footer">
+    <span>Capabilities at a glance</span>
+    <span class="num">Page 11</span>
+  </div>
+</section>
+
+<!-- ============ PAGE 12 — ROADMAP ============ -->
+<section class="page">
+  <div class="page-header">
+    <div class="brand"><div class="mark">W</div><div class="word">WaslProp</div></div>
+    <div class="page-eyebrow">What's next</div>
+  </div>
+  <div style="padding: 30px 64px 0 64px;">
+    <h1 class="page-title">Roadmap</h1>
+    <p class="page-sub">WaslProp's financial management capability continues to develop.
+      Items marked "Next" are in progress and not yet committed to a delivery date.</p>
+  </div>
+  <div class="road-track">
+    <div class="road-row">
+      <div class="road-pill live">Live today</div>
+      <div class="rt">
+        <h4>Scheme set-up, budgeting, levies, lot accounts, receipts, arrears &amp; collections, general ledger</h4>
+        <p>Every journey shown in this document is available now, demonstrated on the Harbour View Strata scheme.</p>
+      </div>
+    </div>
+    <div class="road-row">
+      <div class="road-pill next">Next</div>
+      <div class="rt">
+        <h4>Banking &amp; Reconciliation</h4>
+        <p>Matching bank statement lines to recorded receipts, to confirm the cash ledger
+          reflects what has actually cleared the bank.</p>
+      </div>
+    </div>
+    <div class="road-row">
+      <div class="road-pill next">Next</div>
+      <div class="rt">
+        <h4>Automated reminder delivery</h4>
+        <p>Sending reviewed reminder letters directly to owners — building on today's
+          draft-and-preview workflow.</p>
+      </div>
+    </div>
+  </div>
+  <div style="margin-top:auto; padding: 0 64px 28px 64px;">
+    <div class="scenario" style="background:var(--canvas); border-color:var(--line);">
+      <div class="l" style="color:var(--ink-soft);">About this document</div>
+      <p>Every screen, figure and scenario shown in this document reflects WaslProp's current
+        functionality, demonstrated on a representative strata scheme. Items shown as "Next"
+        are planned but not yet available.</p>
+    </div>
+  </div>
+  <div class="page-footer">
+    <span>Roadmap</span>
+    <span class="num">Page 12</span>
+  </div>
+</section>
+
+</body>
+</html>

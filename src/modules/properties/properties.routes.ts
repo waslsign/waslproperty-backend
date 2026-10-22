@@ -99,6 +99,51 @@ import {
   getReminder,
   updateCollectionCase,
 } from '../financials/arrears.controller.js';
+import {
+  approveReminder,
+  batchApproveReminders,
+  cancelReminderM168,
+  dispatchReminder,
+  evaluateReminders,
+  getReminderDetail,
+  getReminderPolicy,
+  listReminderDeliveryAttempts,
+  listReminderQueue,
+  resolveReminderQuarantine,
+  retryReminderDispatch,
+  submitReminderForReview,
+  updateReminderPolicy,
+} from '../financials/reminder-delivery.controller.js';
+import {
+  getBankAccount,
+  listBankAccounts,
+  listEligibleGlAccounts,
+  registerBankAccount,
+  updateBankAccount,
+} from '../financials/bank-accounts.controller.js';
+import {
+  applyBankStatement,
+  listBankStatementImports,
+  previewBankStatement,
+} from '../financials/bank-import.controller.js';
+import { getBankTransaction, listBankTransactions } from '../financials/bank-transactions.controller.js';
+import {
+  confirmSuggestedMatch,
+  createReceiptFromTransaction,
+  generateMatchSuggestion,
+  ignoreTransaction,
+  manualMatchJournalLine,
+  manualMatchReceipt,
+  reverseMatch,
+} from '../financials/bank-matching.controller.js';
+import {
+  calculateReconciliation,
+  completeReconciliation,
+  createReconciliationDraft,
+  getReconciliation,
+  listReconciliations,
+  reopenReconciliation,
+} from '../financials/bank-reconciliation.controller.js';
 import { createSpaceForProperty, listSpacesForProperty } from '../spaces/spaces.controller.js';
 import {
   bulkSetStrataLots,
@@ -698,6 +743,44 @@ propertiesRouter.post(
   requireCapability('financials.manage', fromParam('propertyId')),
   asyncHandler(draftReminder),
 );
+// M16.8 — Arrears Reminder Delivery & Scheduling (ADR-029). Policy
+// read/update, queue/detail reads, manual eligibility evaluation, and
+// approve/batch-approve/cancel are reversible review workflow
+// (financials.manage) — none of them sends an email or posts a GL
+// journal by themselves. Manual dispatch, retry, and quarantine
+// resolution DO trigger (or decide the outcome of) a real external send
+// attempt, so they sit at the same maker-checker tier as M16.7's
+// reconciliation-completion actions (financials.approve).
+//
+// The literal-segment routes below (policy, evaluate, queue) MUST be
+// registered before the M16.6 `GET /reminders/:reminderId` route further
+// down — Express matches in registration order, and `:reminderId` would
+// otherwise greedily capture "policy"/"queue" as if they were an id.
+propertiesRouter.get(
+  '/:propertyId/financials/arrears/reminders/policy',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getReminderPolicy),
+);
+propertiesRouter.patch(
+  '/:propertyId/financials/arrears/reminders/policy',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(updateReminderPolicy),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/evaluate',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(evaluateReminders),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/arrears/reminders/queue',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listReminderQueue),
+);
+
 propertiesRouter.get(
   '/:propertyId/financials/arrears/reminders/:reminderId',
   resolvePropertyReference('propertyId'),
@@ -709,4 +792,211 @@ propertiesRouter.post(
   resolvePropertyReference('propertyId'),
   requireCapability('financials.manage', fromParam('propertyId')),
   asyncHandler(cancelReminder),
+);
+
+propertiesRouter.get(
+  '/:propertyId/financials/arrears/reminders/queue/:reminderId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getReminderDetail),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/queue/:reminderId/submit-for-review',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(submitReminderForReview),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/queue/:reminderId/approve',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(approveReminder),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/queue/batch-approve',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(batchApproveReminders),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/queue/:reminderId/cancel',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(cancelReminderM168),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/queue/:reminderId/dispatch',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(dispatchReminder),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/queue/:reminderId/retry',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(retryReminderDispatch),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/arrears/reminders/queue/:reminderId/resolve-quarantine',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(resolveReminderQuarantine),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/arrears/reminders/queue/:reminderId/attempts',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listReminderDeliveryAttempts),
+);
+
+// M16.7 — Banking & Manual Bank Reconciliation. Registering/updating a
+// bank account and importing/matching statement data is reversible
+// workflow data (financials.manage) — none of it posts a GL journal by
+// itself. Completing a reconciliation, reopening one, and creating a new
+// Receipt from an unmatched deposit DO change immutable-ledger-adjacent
+// state (the same maker-checker bar as closing an accounting period or
+// reversing a journal), so those sit on financials.approve instead — see
+// bank-matching.service.ts / bank-reconciliation.service.ts doc comments.
+propertiesRouter.post(
+  '/:propertyId/financials/bank-accounts',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(registerBankAccount),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/bank-accounts',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listBankAccounts),
+);
+// Registered before the :bankAccountId route below so the literal
+// "eligible-gl-accounts" segment is never shadowed by the param route.
+propertiesRouter.get(
+  '/:propertyId/financials/bank-accounts/eligible-gl-accounts',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listEligibleGlAccounts),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/bank-accounts/:bankAccountId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getBankAccount),
+);
+propertiesRouter.patch(
+  '/:propertyId/financials/bank-accounts/:bankAccountId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(updateBankAccount),
+);
+
+propertiesRouter.post(
+  '/:propertyId/financials/bank-accounts/:bankAccountId/statements/preview',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(previewBankStatement),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/bank-accounts/:bankAccountId/statements/apply',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(applyBankStatement),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/bank-accounts/:bankAccountId/statements',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listBankStatementImports),
+);
+
+propertiesRouter.get(
+  '/:propertyId/financials/bank-accounts/:bankAccountId/transactions',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listBankTransactions),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/bank-transactions/:bankTransactionId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getBankTransaction),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/bank-transactions/:bankTransactionId/suggest-match',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(generateMatchSuggestion),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/bank-transactions/:bankTransactionId/match/receipt',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(manualMatchReceipt),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/bank-transactions/:bankTransactionId/match/journal-line',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(manualMatchJournalLine),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/bank-transactions/:bankTransactionId/ignore',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(ignoreTransaction),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/bank-transactions/:bankTransactionId/create-receipt',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(createReceiptFromTransaction),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/bank-transaction-matches/:matchId/confirm',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(confirmSuggestedMatch),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/bank-transaction-matches/:matchId/reverse',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(reverseMatch),
+);
+
+propertiesRouter.post(
+  '/:propertyId/financials/bank-accounts/:bankAccountId/reconciliations',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(createReconciliationDraft),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/bank-accounts/:bankAccountId/reconciliations',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(listReconciliations),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/reconciliations/:reconciliationId',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getReconciliation),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/reconciliations/:reconciliationId/calculate',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.manage', fromParam('propertyId')),
+  asyncHandler(calculateReconciliation),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/reconciliations/:reconciliationId/complete',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(completeReconciliation),
+);
+propertiesRouter.post(
+  '/:propertyId/financials/reconciliations/:reconciliationId/reopen',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.approve', fromParam('propertyId')),
+  asyncHandler(reopenReconciliation),
 );

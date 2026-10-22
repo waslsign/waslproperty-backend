@@ -124,6 +124,17 @@ const envSchema = z.object({
   WASLSIGN_SERVICE_CLIENT_SECRET: z.string().optional(),
   WASLSIGN_WEBHOOK_SECRET: z.string().optional(),
 
+  // --- M16.8: Arrears Reminder Delivery & Scheduling ---
+  // HMAC-SHA256 shared secret for the reminder-delivery provider webhook
+  // (src/modules/financials/reminder-webhook.controller.ts) — same
+  // signed-raw-body verification pattern as WASLSIGN_WEBHOOK_SECRET
+  // above. Unset in dev/test; the webhook route 503s rather than ever
+  // accepting an unverifiable callback.
+  REMINDER_DELIVERY_WEBHOOK_SECRET: z.string().optional(),
+  // Maximum dispatch attempts for a FAILED (transient) reminder before it
+  // is left for manual-only retry — never auto-retried past this bound.
+  REMINDER_DISPATCH_MAX_ATTEMPTS: z.coerce.number().default(3),
+
   // --- Backoffice / Platform Operations (M10.5) ---
   // Every one of these defaults to the safe/disabled state when absent —
   // production is never accidentally opened up just because a var wasn't
