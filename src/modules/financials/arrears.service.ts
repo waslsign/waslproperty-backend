@@ -103,8 +103,16 @@ function lotLabelFor(space: { lotNumber: string | null; code: string; name: stri
  * to exactly 2dp before leaving the service, same discipline as every
  * other money field in this codebase (a bare Decimal's own toString/
  * toJSON drops trailing zeros, e.g. "500" instead of "500.00"). */
-function toReminderView<T extends { totalAmountOwing: Prisma.Decimal }>(reminder: T): Omit<T, 'totalAmountOwing'> & { totalAmountOwing: string } {
-  return { ...reminder, totalAmountOwing: reminder.totalAmountOwing.toFixed(2) };
+function toCollectionCaseView<T extends { nextFollowUpDate: Date | null }>(
+  kase: T,
+): Omit<T, 'nextFollowUpDate'> & { nextFollowUpDate: string | null } {
+  return { ...kase, nextFollowUpDate: kase.nextFollowUpDate ? formatDateOnly(kase.nextFollowUpDate) : null };
+}
+
+function toReminderView<T extends { totalAmountOwing: Prisma.Decimal; asOfDate: Date }>(
+  reminder: T,
+): Omit<T, 'totalAmountOwing' | 'asOfDate'> & { totalAmountOwing: string; asOfDate: string } {
+  return { ...reminder, totalAmountOwing: reminder.totalAmountOwing.toFixed(2), asOfDate: formatDateOnly(reminder.asOfDate) };
 }
 
 /** The one place a charge's position is computed as of a given date —
@@ -553,7 +561,7 @@ export class ArrearsService {
       description: null,
     });
 
-    return kase;
+    return toCollectionCaseView(kase);
   }
 
   async updateCollectionCase(
@@ -601,7 +609,7 @@ export class ArrearsService {
       description: input.closeReason ?? null,
     });
 
-    return updated;
+    return toCollectionCaseView(updated);
   }
 
   async getCollectionCase(organisationId: string, propertyId: string, caseId: string) {
@@ -611,7 +619,10 @@ export class ArrearsService {
       include: { notes: { orderBy: { createdAt: 'desc' } }, reminders: { orderBy: { generatedAt: 'desc' } } },
     });
     if (!kase) throw new NotFoundError('Collection case not found');
-    return kase;
+    return {
+      ...toCollectionCaseView(kase),
+      reminders: kase.reminders.map((r) => toReminderView(r)),
+    };
   }
 
   async addCollectionNote(
