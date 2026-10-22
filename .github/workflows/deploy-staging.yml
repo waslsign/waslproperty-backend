@@ -1,0 +1,64 @@
+name: Deploy staging (backend)
+
+# Manual trigger only — never runs on push or merge. Optional ref input
+# lets you deploy any branch/tag/commit, defaulting to the repo's
+# default branch when left blank.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref (branch, tag, or commit SHA) to deploy. Leave blank for the default branch."
+        required: false
+        default: ""
+
+concurrency:
+  group: staging-backend-deploy
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      # The staging host is EC2 t4g.micro (Graviton/arm64); this runner
+      # is x86_64. Building node_modules natively here would package
+      # argon2's x86_64 prebuild, which fails to load on an arm64 host.
+      # QEMU emulation avoids a dedicated arm64-hosted runner (no new
+      # recurring cost) at the cost of slower CI minutes.
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build (arm64, via emulated container)
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD":/workspace -w /workspace \
+            node:22-slim bash -euxc '
+              corepack enable
+              pnpm install --frozen-lockfile
+              pnpm run build
+              pnpm prune --prod
+            '
+
+      - name: Package artifact
+        run: tar -czf backend.tar.gz dist node_modules package.json
+
+      # Host comes from a repo variable, never hardcoded here — update
+      # vars.STAGING_HOST if the instance's public IP ever changes (no
+      # Elastic IP is provisioned). The deploy key only ever reaches the
+      # forced-command dispatcher on the host; it cannot open a shell.
+      - name: Transfer artifact and trigger deploy
+        env:
+          SSH_KEY: ${{ secrets.STAGING_DEPLOY_SSH_KEY }}
+          STAGING_HOST: ${{ vars.STAGING_HOST }}
+        run: |
+          umask 077
+          echo "$SSH_KEY" > deploy_key
+          scp -O -i deploy_key -o StrictHostKeyChecking=accept-new \
+            backend.tar.gz "ci-deploy@$STAGING_HOST:/opt/waslproperty/releases/incoming/backend.tar.gz"
+          ssh -i deploy_key -o StrictHostKeyChecking=accept-new \
+            "ci-deploy@$STAGING_HOST" deploy-backend
+          rm -f deploy_key
