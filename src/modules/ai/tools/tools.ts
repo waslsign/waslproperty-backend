@@ -1182,6 +1182,15 @@ const getWorkOrderContext: AiToolDefinition<z.infer<typeof workOrderContextParam
  * tool, and this array is the only place a new capability can ever be
  * exposed to the model. Order is presentation-only (also the order
  * surfaced to the provider). */
+// `any` here is load-bearing, not a shortcut: TParams appears in a
+// contravariant position (AiToolDefinition['resolvePropertyId']'s params
+// argument), so a heterogeneous array of tools each with their own
+// concrete TParams has no sound common supertype — `unknown` fails to
+// compile (every tool's resolvePropertyId would reject it), and a union
+// of all twelve params types would still need widening per new tool
+// added. `any` is TypeScript's accepted escape hatch for exactly this
+// shape; each tool's own exported const stays fully, narrowly typed.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const AI_TOOLS: AiToolDefinition<any, unknown>[] = [
   getMaintenanceRequestContext,
   getMaintenanceTimeline,
@@ -1197,6 +1206,9 @@ export const AI_TOOLS: AiToolDefinition<any, unknown>[] = [
   getWorkOrderContext,
 ];
 
+// Same reasoning as AI_TOOLS above — a lookup map over the same
+// heterogeneous collection.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const AI_TOOLS_BY_NAME: ReadonlyMap<string, AiToolDefinition<any, unknown>> = new Map(
   AI_TOOLS.map((t) => [t.name, t]),
 );
