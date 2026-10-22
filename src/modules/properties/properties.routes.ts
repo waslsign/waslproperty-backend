@@ -75,6 +75,15 @@ import {
   reverseLevySchedule,
 } from '../financials/levies.controller.js';
 import {
+  downloadBalanceSheetPdf,
+  downloadIncomeExpenseStatementPdf,
+  downloadLotOwnerStatementPdf,
+  downloadPropertyFinancialSummaryPdf,
+  getBalanceSheet,
+  getIncomeExpenseStatement,
+  getPropertyFinancialSummary,
+} from '../financials/financial-reports.controller.js';
+import {
   getLotFinancialAccount,
   getLotLedger,
   getLotStatement,
@@ -536,6 +545,47 @@ propertiesRouter.get(
   asyncHandler(getTrialBalance),
 );
 
+// Financial Statements & Reporting (FIN-021, limited scope — see
+// docs/architecture/financial-statements-reporting-spec.md, ADR-030). All
+// read-only (financials.view only) — these are reports over the ledger,
+// never a new write surface.
+propertiesRouter.get(
+  '/:propertyId/financials/reports/income-expense',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getIncomeExpenseStatement),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/reports/income-expense/pdf',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(downloadIncomeExpenseStatementPdf),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/reports/balance-sheet',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getBalanceSheet),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/reports/balance-sheet/pdf',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(downloadBalanceSheetPdf),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/reports/summary',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(getPropertyFinancialSummary),
+);
+propertiesRouter.get(
+  '/:propertyId/financials/reports/summary/pdf',
+  resolvePropertyReference('propertyId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(downloadPropertyFinancialSummaryPdf),
+);
+
 // Opening journal (M16.1 -> ledger transition).
 propertiesRouter.post(
   '/:propertyId/financials/opening-journal',
@@ -643,6 +693,16 @@ propertiesRouter.get(
   resolveSpaceReference('spaceId'),
   requireCapability('financials.view', fromParam('propertyId')),
   asyncHandler(getLotStatement),
+);
+// Lot Owner Statement PDF (FIN-021, limited scope) — manager-facing only,
+// same financials.view bar as the JSON statement above; no owner
+// self-service scoping (see spec §5 / ADR-030).
+propertiesRouter.get(
+  '/:propertyId/financials/lots/:spaceId/statement/pdf',
+  resolvePropertyReference('propertyId'),
+  resolveSpaceReference('spaceId'),
+  requireCapability('financials.view', fromParam('propertyId')),
+  asyncHandler(downloadLotOwnerStatementPdf),
 );
 
 // Receipts & Payment Allocation (M16.5, ADR-026) — recording a receipt or

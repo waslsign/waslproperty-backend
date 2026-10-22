@@ -10,6 +10,11 @@ export default defineConfig({
     // schema isolation yet), so run test files sequentially to avoid
     // concurrent resetDb() calls racing against each other.
     fileParallelism: false,
+    // resetDb()'s multi-table delete transaction (test/helpers/db.ts) can
+    // occasionally exceed Vitest's 10s default hook timeout under full-suite
+    // load, even though each file passes quickly in isolation — give it
+    // headroom rather than let an otherwise-passing suite flake.
+    hookTimeout: 30000,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html'],

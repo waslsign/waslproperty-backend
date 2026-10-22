@@ -17,6 +17,7 @@ import './paths/financial-accounts.paths.js';
 import './paths/financial-ledger.paths.js';
 import './paths/financial-levies.paths.js';
 import './paths/financial-lot-ledger.paths.js';
+import './paths/financial-reports.paths.js';
 import './paths/financial-receipts.paths.js';
 import './paths/financial-arrears.paths.js';
 import './paths/financial-banking.paths.js';
