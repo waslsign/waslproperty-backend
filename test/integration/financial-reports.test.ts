@@ -260,6 +260,43 @@ async function issueRegularLevy(
   return { scheduleId: created.body.id as string, installmentId: issued.installments?.[0]?.id ?? issued.id };
 }
 
+/** Posts a manual expense journal (Dr expense / Cr cash) against the given
+ * fund, creating its own EXPENSE and cash ASSET accounts — manual journals
+ * need no posting-profile role, just two valid accounts. Returns the
+ * created journal's id. */
+async function postExpense(
+  accessToken: string,
+  propertyId: string,
+  fundId: string,
+  amount: number,
+  effectiveDate: string,
+) {
+  const suffix = Math.random().toString(36).slice(2, 8);
+  const expenseAccount = await createAccount(accessToken, propertyId, {
+    code: `5${suffix}`,
+    name: 'Repairs & Maintenance',
+    classification: 'EXPENSE',
+  });
+  const cashAccount = await createAccount(accessToken, propertyId, {
+    code: `1${suffix}`,
+    name: 'Fund Bank Account',
+    classification: 'ASSET',
+  });
+  const res = await request(app)
+    .post(`/api/v1/properties/${propertyId}/financials/journals`)
+    .set(authHeader(accessToken))
+    .send({
+      effectiveDate,
+      narration: 'Test expense',
+      lines: [
+        { accountId: expenseAccount.id, financialFundId: fundId, debit: amount },
+        { accountId: cashAccount.id, financialFundId: fundId, credit: amount },
+      ],
+    });
+  expect(res.status).toBe(201);
+  return { journalId: res.body.id as string, expenseAccount, cashAccount };
+}
+
 function getIncomeExpense(accessToken: string, propertyId: string, start: string, end: string, fundId?: string) {
   const q = fundId ? `&financialFundId=${fundId}` : '';
   return request(app)
@@ -505,6 +542,82 @@ describe('FIN-021 Financial Statements & Reporting (limited scope)', () => {
       const after = await getBalanceSheet(accessToken, scheme.property.id, '2026-12-31');
       expect(before.body.totalAssets).toBe('0.00');
       expect(after.body.totalAssets).toBe('1000.00');
+    });
+
+    // Regression coverage for a bug where getBalanceSheet's current-earnings
+    // calculation ADDED both income and expense net amounts instead of
+    // subtracting expense — every demo/property with any posted expense
+    // produced a Balance Sheet that silently failed to balance (overstated
+    // by exactly 2x the expense total). AC2/AC3's own test above never
+    // caught this because it never posts an expense.
+    it('an expense reduces current earnings and the sheet still balances (regression)', async () => {
+      const { accessToken } = await registerAuOrg();
+      const scheme = await createSchemeReadyForLevies(accessToken);
+      await issueRegularLevy(accessToken, scheme.property.id, scheme.administrationFundId, scheme.income.id, 1000);
+      await postExpense(accessToken, scheme.property.id, scheme.administrationFundId, 300, '2026-08-15');
+
+      const res = await getBalanceSheet(accessToken, scheme.property.id, '2026-12-31');
+      expect(res.status).toBe(200);
+      // Income (1000) minus expense (300) — not the sum (1300).
+      expect(res.body.currentEarningsUnclosed).toBe('700.00');
+      expect(res.body.totalAssets).toBe(res.body.totalLiabilitiesAndEquity);
+      expect(res.body.balanceCheckDifference).toBe('0.00');
+    });
+
+    it('an expense with no income still balances (negative current earnings)', async () => {
+      const { accessToken } = await registerAuOrg();
+      const scheme = await createSchemeReadyForLevies(accessToken);
+      await postExpense(accessToken, scheme.property.id, scheme.administrationFundId, 250, '2026-08-15');
+
+      const res = await getBalanceSheet(accessToken, scheme.property.id, '2026-12-31');
+      expect(res.status).toBe(200);
+      expect(res.body.currentEarningsUnclosed).toBe('-250.00');
+      expect(res.body.totalAssets).toBe(res.body.totalLiabilitiesAndEquity);
+      expect(res.body.balanceCheckDifference).toBe('0.00');
+    });
+
+    it('an expense posted after the as-of date is excluded, keeping the sheet balanced', async () => {
+      const { accessToken } = await registerAuOrg();
+      const scheme = await createSchemeReadyForLevies(accessToken);
+      await issueRegularLevy(accessToken, scheme.property.id, scheme.administrationFundId, scheme.income.id, 1000, '2026-08-01');
+      await postExpense(accessToken, scheme.property.id, scheme.administrationFundId, 300, '2026-12-01');
+
+      const before = await getBalanceSheet(accessToken, scheme.property.id, '2026-11-30');
+      expect(before.body.currentEarningsUnclosed).toBe('1000.00');
+      expect(before.body.totalAssets).toBe(before.body.totalLiabilitiesAndEquity);
+
+      const after = await getBalanceSheet(accessToken, scheme.property.id, '2026-12-31');
+      expect(after.body.currentEarningsUnclosed).toBe('700.00');
+      expect(after.body.totalAssets).toBe(after.body.totalLiabilitiesAndEquity);
+    });
+
+    it('an expense in a second fund only reduces that fund’s own earnings, not the other fund’s', async () => {
+      const { accessToken } = await registerAuOrg();
+      const scheme = await createSchemeReadyForLevies(accessToken);
+      await issueRegularLevy(accessToken, scheme.property.id, scheme.administrationFundId, scheme.income.id, 1000);
+
+      // scheme only exposes the Administration fund by name; fetch the
+      // Capital Works fund id the same way createSchemeReadyForLevies
+      // resolved Administration's.
+      const fundsRes = await request(app)
+        .get(`/api/v1/properties/${scheme.property.id}/financials`)
+        .set(authHeader(accessToken));
+      const capitalFund = (fundsRes.body.funds as Array<{ id: string; fundType: string }>).find(
+        (f) => f.fundType === 'CAPITAL_WORKS',
+      )!;
+
+      await postExpense(accessToken, scheme.property.id, capitalFund.id, 400, '2026-08-15');
+
+      const combined = await getBalanceSheet(accessToken, scheme.property.id, '2026-12-31');
+      expect(combined.body.currentEarningsUnclosed).toBe('600.00'); // 1000 - 400
+      expect(combined.body.totalAssets).toBe(combined.body.totalLiabilitiesAndEquity);
+
+      const adminOnly = await request(app)
+        .get(
+          `/api/v1/properties/${scheme.property.id}/financials/reports/balance-sheet?asOfDate=2026-12-31&financialFundId=${scheme.administrationFundId}`,
+        )
+        .set(authHeader(accessToken));
+      expect(adminOnly.body.currentEarningsUnclosed).toBe('1000.00');
     });
   });
 
