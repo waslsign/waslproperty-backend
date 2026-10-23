@@ -328,8 +328,16 @@ export class FinancialReportsService {
     );
     let currentEarnings = new Prisma.Decimal(0);
     for (const b of sinceInception.values()) {
-      if (b.classification === 'INCOME' || b.classification === 'EXPENSE') {
+      // accountNet returns each classification's own normal-balance
+      // magnitude (credit-debit for INCOME, debit-credit for EXPENSE —
+      // both positive for a normal balance, same convention the Income &
+      // Expense Statement uses). Earnings is income minus expense, never
+      // the sum of both — an expense must reduce current earnings, not
+      // inflate it alongside income.
+      if (b.classification === 'INCOME') {
         currentEarnings = currentEarnings.plus(this.accountNet(b.classification, b.debit, b.credit));
+      } else if (b.classification === 'EXPENSE') {
+        currentEarnings = currentEarnings.minus(this.accountNet(b.classification, b.debit, b.credit));
       }
     }
     totalLiabilitiesEquity = totalLiabilitiesEquity.plus(currentEarnings);
