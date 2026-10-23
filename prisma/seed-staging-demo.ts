@@ -384,8 +384,17 @@ async function main() {
     }
   }
 
+  // QuotesService.approve() auto-releases the work order DRAFT -> READY
+  // itself as a side effect (maybeReleaseWorkOrder) — re-fetch rather than
+  // trust the `workOrder` variable captured before approval, or a rerun
+  // (or this same run, right after approving above) 409s trying to move
+  // an already-READY work order to READY again.
+  workOrder = await prisma.workOrder.findUniqueOrThrow({ where: { id: workOrder.id } });
   if (workOrder.status === 'DRAFT' && quote.status === 'APPROVED') {
     await api('patch', `/api/v1/work-orders/${workOrder.id}/status`, auth, { status: 'READY' });
+    workOrder = await prisma.workOrder.findUniqueOrThrow({ where: { id: workOrder.id } });
+  }
+  if (workOrder.status === 'READY') {
     await api('patch', `/api/v1/work-orders/${workOrder.id}/status`, auth, {
       status: 'SCHEDULED',
       scheduledAt: '2026-10-28T09:00:00.000Z',
