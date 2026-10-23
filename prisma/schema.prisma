@@ -1,5 +1,11 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // "native" covers local dev (darwin-arm64/linux-x64 etc.). The arm64
+  // staging host runs Amazon Linux 2023, which ships OpenSSL 3.0 — the
+  // CI build container's "native" detection resolved to the
+  // openssl-1.1.x engine variant instead, so the deployed binary
+  // couldn't load there. Explicit per the exact error Prisma raises.
+  binaryTargets = ["native", "linux-arm64-openssl-3.0.x"]
 }
 
 datasource db {
