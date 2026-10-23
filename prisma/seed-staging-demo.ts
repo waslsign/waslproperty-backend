@@ -31,18 +31,24 @@
  * and DATABASE_URL's host doesn't look like a production database — see
  * assertSafeToRun() below.
  *
- * Run with: ALLOW_DEMO_SEED_EXECUTION=true pnpm tsx prisma/seed-staging-demo.ts
+ * Run with (after `pnpm run build`): ALLOW_DEMO_SEED_EXECUTION=true pnpm tsx prisma/seed-staging-demo.ts
  */
+// Imports from ../dist (compiled output), not ../src: the deploy artifact
+// ships prisma/ as raw TypeScript alongside dist/ and node_modules/, but
+// never src/ itself (see .github/workflows/deploy-staging.yml) — this
+// script must run against what's actually deployed, which also makes a
+// local run exercise the same compiled code staging does. Run `pnpm run
+// build` first if dist/ doesn't exist yet.
 import request from 'supertest';
 import { PrismaClient } from '@prisma/client';
-import { createApp } from '../src/app.js';
+import { createApp } from '../dist/app.js';
 import {
   signAccessToken,
   generateInviteToken,
   hashInviteToken,
   inviteTokenExpiresAt,
-} from '../src/lib/tokens.js';
-import { buildPublicReference } from '../src/lib/public-reference.js';
+} from '../dist/lib/tokens.js';
+import { buildPublicReference } from '../dist/lib/public-reference.js';
 
 const prisma = new PrismaClient();
 const app = createApp();
