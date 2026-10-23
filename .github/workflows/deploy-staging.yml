@@ -32,19 +32,23 @@ jobs:
         with:
           platforms: arm64
 
+      # Deliberately NOT pruning devDependencies: RDS has no public
+      # endpoint, so `prisma migrate deploy` can only run from this EC2
+      # host using this same artifact — and the prisma CLI (unlike
+      # @prisma/client) is a devDependency. A larger artifact is the
+      # simpler tradeoff vs. a separate migration mechanism.
       - name: Build (arm64, via emulated container)
         run: |
           docker run --rm --platform linux/arm64 \
-            -v "$PWD":/workspace -w /workspace \
+            -v "$PWD":/src -w /app \
             node:22-slim bash -euxc '
+              cp -r /src/. /app/
               corepack enable
+              pnpm config set store-dir /tmp/pnpm-store
               pnpm install --frozen-lockfile
               pnpm run build
-              pnpm prune --prod
+              tar -czf /src/backend.tar.gz dist node_modules package.json prisma
             '
-
-      - name: Package artifact
-        run: tar -czf backend.tar.gz dist node_modules package.json
 
       # Host comes from a repo variable (Settings > Secrets and variables >
       # Actions — a plain repo variable, not a GitHub "Environment" one;
