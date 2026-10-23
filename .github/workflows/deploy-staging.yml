@@ -45,10 +45,7 @@ jobs:
               cp -r /src/. /app/
               corepack enable
               pnpm config set store-dir /tmp/pnpm-store
-              pnpm install --frozen-lockfile \
-                --allow-build="@prisma/client" --allow-build="@prisma/engines" \
-                --allow-build="@scarf/scarf" --allow-build="argon2" \
-                --allow-build="esbuild" --allow-build="prisma" --allow-build="tesseract.js"
+              pnpm install --frozen-lockfile
               pnpm run build
               tar -czf /src/backend.tar.gz dist node_modules package.json prisma
             '
