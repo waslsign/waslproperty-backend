@@ -33,6 +33,7 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed:staging-demo": "tsx prisma/seed-staging-demo.ts",
     "prisma:backfill-public-references": "tsx prisma/backfill-public-references.ts",
     "platform:create-user": "tsx prisma/create-platform-user.ts"
   },
