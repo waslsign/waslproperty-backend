@@ -284,11 +284,19 @@ async function main() {
 
   // --- 4. Maintenance: open request (Lot 101, water leak) + full
   //        contractor/quote/approval/work-order chain ------------------
+  // Each sub-step below (request, work order, quote, approval, schedule)
+  // is idempotent independently, keyed by its own natural key — not
+  // nested inside one big "if the request doesn't exist" block. A script
+  // that dies partway through (e.g. the amount this org's Approval &
+  // Acceptance policy requires turning out stricter than expected) must
+  // be able to resume exactly where it left off on rerun, not skip the
+  // rest forever just because the outer maintenance request already
+  // exists.
   let openMr = await prisma.maintenanceRequest.findFirst({
     where: { organisationId, propertyId: property.id, title: 'Water leak under kitchen sink' },
   });
   if (!openMr) {
-    console.log('Creating open maintenance request (Lot 101 water leak) and its work order...');
+    console.log('Creating open maintenance request (Lot 101 water leak)...');
     const mrRes = await api('post', '/api/v1/maintenance-requests', auth, {
       propertyId: property.id,
       spaceId: lot101Id,
@@ -299,63 +307,89 @@ async function main() {
       priority: 'URGENT',
     });
     openMr = await prisma.maintenanceRequest.findUniqueOrThrow({ where: { id: mrRes.body.id } });
-
     await api('patch', `/api/v1/maintenance-requests/${openMr.id}/status`, auth, { status: 'UNDER_REVIEW' });
     await api('patch', `/api/v1/maintenance-requests/${openMr.id}/status`, auth, { status: 'IN_PROGRESS' });
+  } else {
+    console.log('Open maintenance request already exists, reusing.');
+  }
 
+  let workOrder = await prisma.workOrder.findFirst({ where: { maintenanceRequestId: openMr.id } });
+  if (!workOrder) {
+    console.log('Creating work order for the water leak...');
     const woRes = await api('post', '/api/v1/work-orders', auth, {
       maintenanceRequestId: openMr.id,
       title: 'Repair kitchen sink water leak — Lot 101',
       description: 'Isolate supply, replace failed connector/trap, pressure test, confirm no further leak.',
       priority: 'URGENT',
     });
-    const workOrderId = woRes.body.id as string;
+    workOrder = await prisma.workOrder.findUniqueOrThrow({ where: { id: woRes.body.id } });
+  } else {
+    console.log('Work order already exists, reusing.');
+  }
 
+  let quote = await prisma.contractorQuote.findFirst({ where: { workOrderId: workOrder.id } });
+  if (!quote) {
+    console.log('Creating and submitting the contractor quote...');
     const quoteRes = await api('post', '/api/v1/quotes', auth, {
-      workOrderId,
+      workOrderId: workOrder.id,
       contractorId: contractor.id,
       amount: 420,
       description:
         'Isolate and replace failed under-sink connector/trap, pressure test, callout included.',
     });
-    const quoteId = quoteRes.body.id as string;
+    await api('patch', `/api/v1/quotes/${quoteRes.body.id}/submit`, auth, {});
+    quote = await prisma.contractorQuote.findUniqueOrThrow({ where: { id: quoteRes.body.id } });
+  } else {
+    console.log('Contractor quote already exists, reusing.');
+  }
 
-    await api('patch', `/api/v1/quotes/${quoteId}/submit`, auth, {});
+  if (!workOrder.contractorId) {
+    await api('patch', `/api/v1/work-orders/${workOrder.id}/contractor`, auth, {
+      contractorId: contractor.id,
+    });
+  }
 
+  if (quote.status === 'SUBMITTED') {
     // Never override the organisation's own Approval & Acceptance policy —
     // requiredWorkflowMode (resolved at quote-creation time from whatever
     // policy the org actually has, null if none) is the floor a manager
     // must confirm or exceed (see QuotesService.setWorkflowMode's guard).
-    const requiredWorkflowMode = quoteRes.body.requiredWorkflowMode as string | null;
-    const workflowMode = requiredWorkflowMode ?? 'NONE';
-
-    await api('patch', `/api/v1/quotes/${quoteId}/workflow-mode`, auth, { workflowMode });
-
-    await api('patch', `/api/v1/work-orders/${workOrderId}/contractor`, auth, {
-      contractorId: contractor.id,
-    });
+    // NONE is only ever settable when the policy itself already resolved
+    // NONE as that floor — with no policy configured at all (null, the
+    // case for a brand-new organisation like this one), the service
+    // explicitly refuses NONE as a silent "no approval needed" escape
+    // hatch and requires an explicit workflow instead. APPROVAL_ONLY is
+    // the natural choice here: a demo of a *completed* approval decision,
+    // not an auto-bypassed one.
+    const workflowMode = quote.requiredWorkflowMode ?? 'APPROVAL_ONLY';
 
     if (workflowMode === 'NONE' || workflowMode === 'APPROVAL_ONLY') {
-      await api('post', `/api/v1/quotes/${quoteId}/approve`, auth, {});
-      await api('patch', `/api/v1/work-orders/${workOrderId}/status`, auth, { status: 'READY' });
-      await api('patch', `/api/v1/work-orders/${workOrderId}/status`, auth, {
-        status: 'SCHEDULED',
-        scheduledAt: '2026-10-28T09:00:00.000Z',
-      });
+      await api('patch', `/api/v1/quotes/${quote.id}/workflow-mode`, auth, { workflowMode });
+      await api('post', `/api/v1/quotes/${quote.id}/approve`, auth, {});
+      quote = await prisma.contractorQuote.findUniqueOrThrow({ where: { id: quote.id } });
     } else {
       // This organisation's policy requires a contractor signature
-      // (SIGNATURE_ONLY / APPROVAL_THEN_SIGNATURE) for a quote this size —
-      // genuinely starting that workflow means a real WaslSign agreement,
-      // out of scope for seed data. Leave the quote at SUBMITTED and the
-      // work order in DRAFT rather than fabricating an approval the
-      // policy doesn't actually allow.
+      // (SIGNATURE_ONLY / APPROVAL_THEN_SIGNATURE) for a quote this size.
+      // Deliberately never call PATCH .../workflow-mode with either of
+      // these values: QuotesService.setWorkflowMode doesn't just record
+      // the choice, it immediately calls the real WaslSign API to start a
+      // signature workflow (confirmed the hard way — this is not inert).
+      // Genuinely starting that is out of scope for seed data, so this
+      // leaves the quote at SUBMITTED and the work order in DRAFT rather
+      // than triggering a real external signature request.
       console.log(
         `  Org policy requires "${workflowMode}" for this quote amount — leaving it at SUBMITTED ` +
-          'rather than fabricating approval/signature. Approve it through the app to continue.',
+          'rather than starting a real signature workflow. Approve it through the app to continue.',
       );
     }
-  } else {
-    console.log('Open maintenance request already exists, reusing.');
+  }
+
+  if (workOrder.status === 'DRAFT' && quote.status === 'APPROVED') {
+    await api('patch', `/api/v1/work-orders/${workOrder.id}/status`, auth, { status: 'READY' });
+    await api('patch', `/api/v1/work-orders/${workOrder.id}/status`, auth, {
+      status: 'SCHEDULED',
+      scheduledAt: '2026-10-28T09:00:00.000Z',
+    });
   }
 
   // --- 5. Maintenance: completed historical request --------------------
