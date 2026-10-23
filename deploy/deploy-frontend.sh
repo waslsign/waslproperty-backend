@@ -15,10 +15,23 @@ CURRENT_LINK=/opt/waslproperty/frontend/current
 
 # Bounded polling, same rationale as deploy-backend.sh: nginx reload is
 # fast, but give it a little headroom instead of a single fixed probe.
+#
+# Certbot's nginx plugin split the single placeholder "listen 80
+# default_server; server_name _;" block into a domain-scoped HTTPS
+# server block (no `listen 80` of its own) plus a separate HTTP->HTTPS
+# redirect block that only redirects requests whose Host matches the
+# domain, otherwise falling through to a bare `return 404`. A plain
+# `curl http://127.0.0.1/health` (Host: 127.0.0.1) always 404s there —
+# and even sending the right Host header over plain HTTP would only
+# exercise the redirect, not the app. --resolve pins the real hostname
+# to localhost so this hits the actual HTTPS server block with correct
+# SNI/Host/cert, i.e. the same path real traffic takes.
+HEALTH_HOST="staging-prop.waslsign.com"
 wait_for_health() {
   local attempt
   for attempt in $(seq 1 6); do
-    if curl -fsS --max-time 3 http://127.0.0.1/health >/dev/null; then
+    if curl -fsS --max-time 3 --resolve "$HEALTH_HOST:443:127.0.0.1" \
+         "https://$HEALTH_HOST/health" >/dev/null; then
       return 0
     fi
     sleep 2
